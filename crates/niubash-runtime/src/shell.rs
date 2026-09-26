@@ -3054,19 +3054,17 @@ fn executable_extension_candidates(env: &HashMap<String, String>) -> Vec<String>
         .map(|value| {
             value
                 .split(';')
-                .filter_map(|ext| {
-                    ext.trim()
-                        .trim_start_matches('.')
-                        .split_whitespace()
-                        .next()
-                })
+                .filter_map(|ext| ext.trim().trim_start_matches('.').split_whitespace().next())
                 .filter(|ext| !ext.is_empty())
                 .map(|ext| format!(".{}", ext.to_ascii_lowercase()))
                 .collect()
         })
         .unwrap_or_default();
     for ext in [".exe", ".com", ".bat", ".cmd", ".ps1"] {
-        if !exts.iter().any(|candidate| candidate.eq_ignore_ascii_case(ext)) {
+        if !exts
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(ext))
+        {
             exts.push(ext.to_string());
         }
     }
@@ -3078,7 +3076,6 @@ fn winuxcmd_dispatcher_commands() -> &'static Vec<String> {
     static COMMANDS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     COMMANDS.get_or_init(crate::winuxcmd::list_commands)
 }
-
 
 fn command_not_found_host_external_output(
     command: &str,
@@ -6648,10 +6645,7 @@ niubash_run_precmd_hooks() {
             pipeline.stages[1].words,
             vec!["grep.exe", "-E", "a.\u{11}+c"]
         );
-        assert_eq!(
-            decode_to_visible_text(&pipeline.stages[1].words[2]),
-            "a.+c"
-        );
+        assert_eq!(decode_to_visible_text(&pipeline.stages[1].words[2]), "a.+c");
     }
 
     #[test]

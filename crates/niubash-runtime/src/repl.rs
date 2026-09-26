@@ -1573,17 +1573,11 @@ mod tests {
         let mut emacs = default_emacs_keybindings();
         add_system_clipboard_keybindings(&mut emacs);
         assert_eq!(
-            emacs.find_binding(
-                KeyModifiers::CONTROL,
-                KeyCode::Char('c')
-            ),
+            emacs.find_binding(KeyModifiers::CONTROL, KeyCode::Char('c')),
             Some(ReedlineEvent::CtrlC)
         );
         assert_eq!(
-            emacs.find_binding(
-                KeyModifiers::CONTROL,
-                KeyCode::Char('v')
-            ),
+            emacs.find_binding(KeyModifiers::CONTROL, KeyCode::Char('v')),
             Some(ReedlineEvent::Edit(vec![EditCommand::PasteSystem]))
         );
     }
@@ -1593,10 +1587,7 @@ mod tests {
         let mut insert = default_vi_insert_keybindings();
         add_system_clipboard_keybindings(&mut insert);
         assert_eq!(
-            insert.find_binding(
-                KeyModifiers::CONTROL,
-                KeyCode::Char('v')
-            ),
+            insert.find_binding(KeyModifiers::CONTROL, KeyCode::Char('v')),
             Some(ReedlineEvent::Edit(vec![EditCommand::PasteSystem]))
         );
     }
