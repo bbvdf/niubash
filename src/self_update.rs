@@ -23,6 +23,19 @@ use windows_sys::Win32::Networking::WinHttp::{
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 #[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+// Same closed-pipe contract as the crate-root shadowing in main.rs
+// (#125/#140): self-update progress output must not abort when the reader
+// closed stdout.
+macro_rules! println {
+    () => {
+        crate::write_stdout_lossy("\n")
+    };
+    ($($arg:tt)*) => {
+        crate::write_stdout_lossy(&format!("{}\n", format_args!($($arg)*)))
+    };
+}
+
 const DEFAULT_REPO: &str = "unixwin/niubash";
 #[cfg(windows)]
 const USER_AGENT: &str = concat!("niubash/", env!("CARGO_PKG_VERSION"));

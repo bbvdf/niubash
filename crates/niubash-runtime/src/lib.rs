@@ -4,6 +4,62 @@
 //! This crate provides the interactive shell experience: reedline REPL,
 //! completion system, theming, configuration, and Windows integration.
 
+/// #125/#140: std `println!`/`print!` panic on any stdout write error, and
+/// the niu binary builds with `panic = "abort"`, so a reader closing the
+/// pipe (Windows reports os error 232 = ERROR_NO_DATA rather than EPIPE)
+/// aborts the whole process mid-output. Shadow both macros crate-wide with
+/// writers that follow the engine's closed-pipe rule (`BrokenPipe` or raw
+/// os error 232): write what fits, exit 0 quietly — the SIGPIPE death GNU
+/// exhibits when its stdout reader goes away. stderr writes get the same
+/// treatment minus the exit; a dead stderr must not abort either.
+pub(crate) fn write_stdout_lossy(text: &str) {
+    use std::io::Write;
+    let mut stdout = std::io::stdout().lock();
+    match stdout
+        .write_all(text.as_bytes())
+        .and_then(|()| stdout.flush())
+    {
+        Ok(()) => {}
+        Err(error)
+            if error.kind() == std::io::ErrorKind::BrokenPipe
+                || error.raw_os_error() == Some(232) =>
+        {
+            std::process::exit(0)
+        }
+        Err(_) => {}
+    }
+}
+
+pub(crate) fn write_stderr_lossy(text: &str) {
+    use std::io::Write;
+    let mut stderr = std::io::stderr().lock();
+    let _ = stderr
+        .write_all(text.as_bytes())
+        .and_then(|()| stderr.flush());
+}
+
+macro_rules! print {
+    ($($arg:tt)*) => {
+        crate::write_stdout_lossy(&format!($($arg)*))
+    };
+}
+macro_rules! println {
+    () => {
+        crate::write_stdout_lossy("\n")
+    };
+    ($($arg:tt)*) => {
+        crate::write_stdout_lossy(&format!("{}\n", format_args!($($arg)*)))
+    };
+}
+macro_rules! eprintln {
+    () => {
+        crate::write_stderr_lossy("\n")
+    };
+    ($($arg:tt)*) => {
+        crate::write_stderr_lossy(&format!("{}\n", format_args!($($arg)*)))
+    };
+}
+
 pub mod autosuggest;
 pub mod completion;
 pub mod config;

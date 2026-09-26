@@ -33,6 +33,67 @@ use std::process::ExitCode;
 
 use rubash::invocation::ShellInvocation;
 
+/// #125/#140: std `println!`/`print!` panic on any stdout write error, and
+/// this binary builds with `panic = "abort"`, so a reader closing the pipe
+/// (`niu --version | head -1`; Windows reports os error 232 = ERROR_NO_DATA
+/// rather than EPIPE) aborts the launcher mid-output. Shadow both macros
+/// file-wide with writers that follow the engine's closed-pipe rule
+/// (`is_closed_output_io_error`: BrokenPipe or raw os error 232) — write
+/// what fits, then exit 0 quietly, matching the SIGPIPE termination GNU
+/// exhibits when its stdout reader goes away. `eprint!`/`eprintln!` get the
+/// same treatment minus the exit: a dead stderr must not abort either, but
+/// the launcher's own exit status still belongs to the command that ran.
+fn write_stdout_lossy(text: &str) {
+    let mut stdout = std::io::stdout().lock();
+    match stdout
+        .write_all(text.as_bytes())
+        .and_then(|()| stdout.flush())
+    {
+        Ok(()) => {}
+        Err(error)
+            if error.kind() == std::io::ErrorKind::BrokenPipe
+                || error.raw_os_error() == Some(232) =>
+        {
+            std::process::exit(0)
+        }
+        Err(_) => {}
+    }
+}
+
+fn write_stderr_lossy(text: &str) {
+    let mut stderr = std::io::stderr().lock();
+    let _ = stderr
+        .write_all(text.as_bytes())
+        .and_then(|()| stderr.flush());
+}
+
+macro_rules! print {
+    ($($arg:tt)*) => {
+        crate::write_stdout_lossy(&format!($($arg)*))
+    };
+}
+macro_rules! println {
+    () => {
+        crate::write_stdout_lossy("\n")
+    };
+    ($($arg:tt)*) => {
+        crate::write_stdout_lossy(&format!("{}\n", format_args!($($arg)*)))
+    };
+}
+macro_rules! eprint {
+    ($($arg:tt)*) => {
+        crate::write_stderr_lossy(&format!($($arg)*))
+    };
+}
+macro_rules! eprintln {
+    () => {
+        crate::write_stderr_lossy("\n")
+    };
+    ($($arg:tt)*) => {
+        crate::write_stderr_lossy(&format!("{}\n", format_args!($($arg)*)))
+    };
+}
+
 mod self_update;
 const OFFICIAL_PLUGIN_BUNDLE_REPO: &str = "unixwin/oh-my-niu";
 const PLUGIN_BUNDLE_DOWNLOAD_CACHE: &str = "niubash-plugin-bundles";
