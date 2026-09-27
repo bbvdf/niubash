@@ -1,1 +1,4 @@
 scripts/git-hooks/* text eol=lf
+# External plugin-manager source fixtures are shell trees; CRLF would kill
+# sourcing under the engine (same lesson as the rubash repo's *.sh pin).
+tests/fixtures/sources/** text eol=lf

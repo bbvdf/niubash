@@ -1,5 +1,6 @@
 //! Niubash-native plugin inventory, bundle assets, and plugin CLI helpers.
 pub mod external;
+pub mod sources;
 use crate::completion::external::{CommandDef, FlagDef, SubcommandDef};
 use crate::config::{NativeWidgetBinding, PluginConfig};
 use crate::path_utils::{shell_home_dir, shell_path_to_host_path};
@@ -3271,6 +3272,24 @@ pub fn plugin_theme_catalog() -> Vec<PluginThemeCatalogEntry> {
         });
     }
 
+    // External plugin-manager sources (oh-my-bash loader, §11.3): the
+    // external-first layer sits between user TOML themes and bundle-native
+    // themes — same-name collisions resolve external > bundle-native, and
+    // `native:<name>` reaches the built-ins explicitly.
+    for entry in sources::source_theme_entries() {
+        if seen.insert(entry.name.to_ascii_lowercase()) {
+            entries.push(PluginThemeCatalogEntry {
+                name: entry.name,
+                source: "external_source".to_string(),
+                trust_source: "external_source".to_string(),
+                owner: entry.adapter_display,
+                bundle: None,
+                pack: None,
+                path: Some(entry.path),
+            });
+        }
+    }
+
     let inventory = active_plugin_inventory();
     if let Some(root) = &inventory.path {
         for pack in &inventory.packs {
@@ -3297,6 +3316,9 @@ pub fn plugin_theme_catalog() -> Vec<PluginThemeCatalogEntry> {
     entries
 }
 pub fn plugin_theme(name: &str) -> Option<Theme> {
+    // `native:<name>` skips the external-source layer and reaches the
+    // built-in theme assets explicitly (§11.3 rule 2).
+    let name = sources::strip_native_override(name);
     let inventory = active_plugin_inventory();
     let root = inventory.path.as_ref()?;
     if !inventory.packs.iter().any(|pack| {

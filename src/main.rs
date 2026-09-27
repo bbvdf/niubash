@@ -1266,6 +1266,7 @@ fn run_plugin_command(args: &[String]) -> anyhow::Result<()> {
         "trust" => run_plugin_trust_command(&args[3..]),
         "use" => run_plugin_use_command(&args[3..]),
         "remove" => run_plugin_remove_command(&args[3..]),
+        "source" | "sources" => run_plugin_source_command(&args[3..]),
         "enable" => run_plugin_enable_command(&args[3..]),
         "disable" => run_plugin_disable_command(&args[3..]),
         unknown => anyhow::bail!("unknown plugin subcommand '{}'", unknown),
@@ -1329,6 +1330,418 @@ fn run_plugin_remove_command(args: &[String]) -> anyhow::Result<()> {
         niubash_runtime::text_style::green("Removed"),
         name,
         niubash_runtime::text_style::dim(&path.display().to_string())
+    );
+    Ok(())
+}
+
+/// `niu plugin source <verb>` — external plugin-manager sources
+/// (oh-my-bash loader, bash-it, bpkg) as first-class plugin origins.
+/// Design: docs/planning/oh-my-niu-ecosystem.md §11-§12.
+fn run_plugin_source_command(args: &[String]) -> anyhow::Result<()> {
+    let Some(verb) = args.first() else {
+        print_plugin_source_usage();
+        return Ok(());
+    };
+    match verb.as_str() {
+        "-h" | "--help" => {
+            print_plugin_source_usage();
+            Ok(())
+        }
+        "list" => run_plugin_source_list_command(&args[1..]),
+        "add" => run_plugin_source_add_command(&args[1..]),
+        "trust" => run_plugin_source_trust_command(&args[1..]),
+        "remove" => run_plugin_source_remove_command(&args[1..]),
+        "update" => run_plugin_source_update_command(&args[1..]),
+        "rollback" => run_plugin_source_rollback_command(&args[1..]),
+        "verify" => run_plugin_source_verify_command(&args[1..]),
+        unknown => anyhow::bail!("unknown plugin source subcommand '{}'", unknown),
+    }
+}
+
+fn print_plugin_source_usage() {
+    println!("Usage:  niu plugin source <command>");
+    println!();
+    println!("External plugin-manager sources (oh-my-bash loader, bash-it, bpkg).");
+    println!("Sources install untrusted; assets activate only after trust.");
+    println!();
+    println!("Commands:");
+    println!("  list [--json]           List installed sources and their state");
+    println!("  add <id|url|path> [--ref <ref>] [--checksum <sha256>]");
+    println!("                          Install a source tree (untrusted)");
+    println!("  trust <id>              Review and activate a source's assets");
+    println!("  remove <id>             Uninstall a source tree and its record");
+    println!("  update <id> [--ref <ref>] [--checksum <sha256>]");
+    println!("                          Update a source (previous state kept)");
+    println!("  rollback <id>           Restore the previous source state");
+    println!("  verify <id>             Re-check the source tree checksum");
+}
+
+struct PluginSourceArgs {
+    /// First positional: adapter id, git url, or local path.
+    target: Option<String>,
+    ref_name: Option<String>,
+    checksum: Option<String>,
+    path: Option<String>,
+    url: Option<String>,
+}
+
+fn parse_plugin_source_args(args: &[String]) -> anyhow::Result<PluginSourceArgs> {
+    let mut parsed = PluginSourceArgs {
+        target: None,
+        ref_name: None,
+        checksum: None,
+        path: None,
+        url: None,
+    };
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--ref" {
+            parsed.ref_name = Some(
+                iter.next()
+                    .ok_or_else(|| anyhow::anyhow!("--ref requires a value"))?
+                    .clone(),
+            );
+        } else if let Some(value) = arg.strip_prefix("--ref=") {
+            parsed.ref_name = Some(value.to_string());
+        } else if arg == "--checksum" {
+            parsed.checksum = Some(
+                iter.next()
+                    .ok_or_else(|| anyhow::anyhow!("--checksum requires a value"))?
+                    .clone(),
+            );
+        } else if let Some(value) = arg.strip_prefix("--checksum=") {
+            parsed.checksum = Some(value.to_string());
+        } else if arg == "--path" {
+            parsed.path = Some(
+                iter.next()
+                    .ok_or_else(|| anyhow::anyhow!("--path requires a value"))?
+                    .clone(),
+            );
+        } else if arg == "--url" {
+            parsed.url = Some(
+                iter.next()
+                    .ok_or_else(|| anyhow::anyhow!("--url requires a value"))?
+                    .clone(),
+            );
+        } else if !arg.starts_with('-') {
+            if parsed.target.is_some() {
+                anyhow::bail!("plugin source accepts at most one positional argument");
+            }
+            parsed.target = Some(arg.clone());
+        } else {
+            anyhow::bail!("unknown plugin source option '{}'", arg);
+        }
+    }
+    Ok(parsed)
+}
+
+/// Resolve CLI target/flags into an install request. The first positional
+/// may be an adapter id (origin then comes from --url/--path), or the origin
+/// itself (git url / local directory), with the adapter auto-detected from
+/// the fetched tree's layout.
+fn resolve_source_install_request(args: PluginSourceArgs) -> anyhow::Result<PluginSourceRequest> {
+    let explicit_origin = args.url.clone().or_else(|| args.path.clone());
+    let (adapter, origin) = match (&args.target, &explicit_origin) {
+        (Some(target), Some(origin)) => {
+            // Target names a known adapter kind.
+            let known = niubash_runtime::plugins::sources::adapter_for(target).is_some();
+            if !known {
+                anyhow::bail!(
+                    "unknown source kind '{}'; {}",
+                    target,
+                    supported_sources_hint()
+                );
+            }
+            (Some(target.clone()), origin.clone())
+        }
+        (Some(target), None) => {
+            // The positional is the origin (git url or local directory);
+            // a bare adapter id with no origin is an error.
+            if niubash_runtime::plugins::sources::adapter_for(target).is_some()
+                && !std::path::Path::new(target).exists()
+                && !target.contains('/')
+                && !target.contains('\\')
+                && !target.contains("://")
+            {
+                anyhow::bail!(
+                    "source '{target}' needs an origin: add --url <git-url> or --path <dir>"
+                );
+            }
+            (None, target.clone())
+        }
+        (None, Some(origin)) => (None, origin.clone()),
+        (None, None) => {
+            anyhow::bail!("plugin source add requires <id|url|path> (or --url/--path with an id)")
+        }
+    };
+    Ok(PluginSourceRequest {
+        adapter,
+        origin,
+        ref_name: args.ref_name,
+        expected_checksum: args.checksum,
+    })
+}
+
+struct PluginSourceRequest {
+    adapter: Option<String>,
+    origin: String,
+    ref_name: Option<String>,
+    expected_checksum: Option<String>,
+}
+
+impl PluginSourceRequest {
+    fn to_install_request(&self) -> niubash_runtime::plugins::sources::SourceInstallRequest {
+        niubash_runtime::plugins::sources::SourceInstallRequest {
+            adapter: self.adapter.clone(),
+            origin: self.origin.clone(),
+            ref_name: self.ref_name.clone(),
+            expected_checksum: self.expected_checksum.clone(),
+        }
+    }
+}
+
+fn supported_sources_hint() -> String {
+    let ids: Vec<&str> = niubash_runtime::plugins::sources::builtin_source_adapters()
+        .iter()
+        .map(|adapter| adapter.id())
+        .collect();
+    format!("supported plugin-manager sources: {}", ids.join(", "))
+}
+
+/// Trust-boundary notice printed before fetching third-party shell code
+/// (§12.2 fetch gate). Fetching never executes the fetched code and the
+/// result registers untrusted, so non-interactive runs stay safe.
+fn print_source_trust_boundary(id: &str, request: &PluginSourceRequest) {
+    println!(
+        "{}: fetching third-party shell code",
+        niubash_runtime::text_style::yellow("Trust boundary")
+    );
+    println!("  source:   {}", id);
+    println!("  origin:   {}", request.origin);
+    if let Some(ref_name) = &request.ref_name {
+        println!("  ref:      {}", ref_name);
+    }
+    println!(
+        "  license:  {}",
+        niubash_runtime::plugins::sources::adapter_for(id)
+            .map(|adapter| adapter.license())
+            .unwrap_or("(detected after fetch)")
+    );
+    if let Some(checksum) = &request.expected_checksum {
+        println!("  checksum: {}", checksum);
+    }
+    println!(
+        "  {}",
+        niubash_runtime::text_style::dim(
+            "fetched code is inert until you review and trust it; nothing is sourced yet"
+        )
+    );
+}
+
+fn run_plugin_source_add_command(args: &[String]) -> anyhow::Result<()> {
+    let parsed = parse_plugin_source_args(args)?;
+    let request = resolve_source_install_request(parsed)?;
+    let display_id = request
+        .adapter
+        .clone()
+        .unwrap_or_else(|| "(auto-detect)".to_string());
+    print_source_trust_boundary(&display_id, &request);
+    let record = niubash_runtime::plugins::sources::add_source(request.to_install_request())?;
+    println!(
+        "{} source '{}' ({}) into {}",
+        niubash_runtime::text_style::green("Installed"),
+        record.id,
+        niubash_runtime::text_style::dim(&record.version),
+        niubash_runtime::text_style::dim(&record.path.display().to_string())
+    );
+    println!(
+        "license {} | tree sha256 {}",
+        record.license, record.checksum_sha256
+    );
+    println!("the source is untrusted; review it, then run:");
+    println!("  niu plugin source trust {}", record.id);
+    Ok(())
+}
+
+fn run_plugin_source_list_command(args: &[String]) -> anyhow::Result<()> {
+    let json = args.iter().any(|arg| arg == "--json");
+    let statuses = niubash_runtime::plugins::sources::list_sources();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&statuses)?);
+        return Ok(());
+    }
+    println!(
+        "{}",
+        niubash_runtime::text_style::bold("Niubash plugin sources")
+    );
+    println!(
+        "{}",
+        niubash_runtime::text_style::dim("  (external plugin managers; untrusted until trusted)")
+    );
+    if statuses.is_empty() {
+        println!("(no sources installed; add one with niu plugin source add <id|url|path>)");
+        return Ok(());
+    }
+    for status in statuses {
+        let marker = match status.state.as_str() {
+            "ready" => niubash_runtime::text_style::green("ready"),
+            "untrusted" => niubash_runtime::text_style::yellow("untrusted"),
+            _ => niubash_runtime::text_style::red("degraded (native fallback active)"),
+        };
+        let assets = status
+            .asset_count
+            .map(|count| {
+                format!(
+                    "{} asset{} ({})",
+                    count,
+                    if count == 1 { "" } else { "s" },
+                    status.asset_kinds.join("/")
+                )
+            })
+            .unwrap_or_else(|| "no assets".to_string());
+        println!(
+            "  {} {:<12} {:<10} {} {}",
+            marker,
+            status.record.id,
+            status.record.version,
+            niubash_runtime::text_style::dim(&assets),
+            niubash_runtime::text_style::dim(&status.record.path.display().to_string())
+        );
+    }
+    Ok(())
+}
+
+fn run_plugin_source_trust_command(args: &[String]) -> anyhow::Result<()> {
+    let Some(id) = args.first() else {
+        anyhow::bail!("plugin source trust requires a source id");
+    };
+    // Review summary before flipping the execution gate (§12.2).
+    let statuses = niubash_runtime::plugins::sources::list_sources();
+    let Some(status) = statuses.iter().find(|status| status.record.id == *id) else {
+        anyhow::bail!("unknown source '{}'; run niu plugin source add first", id);
+    };
+    let verify = niubash_runtime::plugins::sources::verify_source(id)?;
+    println!(
+        "{} source '{}' review",
+        niubash_runtime::text_style::bold("Trust"),
+        status.record.id
+    );
+    println!("  origin:   {}", status.record.url);
+    println!("  version:  {}", status.record.version);
+    println!("  license:  {}", status.record.license);
+    println!(
+        "  checksum: {} ({})",
+        status.record.checksum_sha256,
+        if verify.verified {
+            niubash_runtime::text_style::green("verified")
+        } else if verify.degraded {
+            niubash_runtime::text_style::red("tree missing")
+        } else {
+            niubash_runtime::text_style::red("MISMATCH")
+        }
+    );
+    println!("  path:     {}", status.record.path.display());
+    if verify.degraded {
+        anyhow::bail!("cannot trust a degraded source (tree missing)");
+    }
+    let trusted = niubash_runtime::plugins::sources::trust_source(id)?;
+    println!(
+        "{} '{}' is now trusted; its themes/assets join the catalog",
+        niubash_runtime::text_style::green("Trusted:"),
+        trusted.id
+    );
+    println!("restart niu (or reload ~/.niubashrc) for the change to take effect");
+    Ok(())
+}
+
+fn run_plugin_source_remove_command(args: &[String]) -> anyhow::Result<()> {
+    let Some(id) = args.first() else {
+        anyhow::bail!("plugin source remove requires a source id");
+    };
+    let path = niubash_runtime::plugins::sources::remove_source(id)?;
+    println!(
+        "{} source '{}' ({})",
+        niubash_runtime::text_style::green("Removed"),
+        id,
+        niubash_runtime::text_style::dim(&path.display().to_string())
+    );
+    Ok(())
+}
+
+fn run_plugin_source_update_command(args: &[String]) -> anyhow::Result<()> {
+    let parsed = parse_plugin_source_args(args)?;
+    let Some(id) = parsed.target.clone() else {
+        anyhow::bail!("plugin source update requires a source id");
+    };
+    let request = PluginSourceRequest {
+        adapter: None,
+        // Empty origin means "re-fetch the registered origin".
+        origin: parsed
+            .url
+            .clone()
+            .or(parsed.path.clone())
+            .unwrap_or_default(),
+        ref_name: parsed.ref_name,
+        expected_checksum: parsed.checksum,
+    };
+    let summary =
+        niubash_runtime::plugins::sources::update_source(&id, request.to_install_request())?;
+    println!(
+        "{} source '{}' to {}",
+        niubash_runtime::text_style::green("Updated"),
+        summary.id,
+        niubash_runtime::text_style::dim(&summary.version)
+    );
+    println!("tree sha256 {}", summary.checksum_sha256);
+    if summary.previous.is_some() {
+        println!(
+            "{} niu plugin source rollback {}",
+            niubash_runtime::text_style::dim("undo:"),
+            summary.id
+        );
+    }
+    Ok(())
+}
+
+fn run_plugin_source_rollback_command(args: &[String]) -> anyhow::Result<()> {
+    let Some(id) = args.first() else {
+        anyhow::bail!("plugin source rollback requires a source id");
+    };
+    let summary = niubash_runtime::plugins::sources::rollback_source(id)?;
+    println!(
+        "{} source '{}' to {}",
+        niubash_runtime::text_style::green("Rolled back"),
+        summary.id,
+        niubash_runtime::text_style::dim(&summary.version)
+    );
+    Ok(())
+}
+
+fn run_plugin_source_verify_command(args: &[String]) -> anyhow::Result<()> {
+    let Some(id) = args.first() else {
+        anyhow::bail!("plugin source verify requires a source id");
+    };
+    let report = niubash_runtime::plugins::sources::verify_source(id)?;
+    if report.degraded {
+        anyhow::bail!(
+            "source '{}' tree is missing ({})",
+            report.id,
+            report.recorded_checksum
+        );
+    }
+    if !report.verified {
+        anyhow::bail!(
+            "checksum mismatch for source '{}': recorded {}, got {}",
+            report.id,
+            report.recorded_checksum,
+            report.actual_checksum.as_deref().unwrap_or("?")
+        );
+    }
+    println!(
+        "{} source '{}' tree checksum {}",
+        niubash_runtime::text_style::green("Verified"),
+        report.id,
+        report.recorded_checksum
     );
     Ok(())
 }
@@ -1767,6 +2180,14 @@ fn print_plugin_usage() {
     println!("                            Roll back to the previous bundle");
     println!("  install <name>           Install official plugin from active bundle");
     println!("  uninstall <name>         Uninstall official plugin from active bundle");
+    println!("  source list [--json]     List external plugin-manager sources");
+    println!("  source add <id|url|path> [--ref <ref>] [--checksum <sha256>]");
+    println!("                           Install a plugin-manager source (untrusted)");
+    println!("  source trust <id>        Review and activate a source's assets");
+    println!("  source remove <id>       Uninstall a source tree");
+    println!("  source update <id>       Update a source (previous state kept)");
+    println!("  source rollback <id>     Restore the previous source state");
+    println!("  source verify <id>       Re-check the source tree checksum");
 }
 
 /// Parse `--preset <name>` / `--preset=<name>` from `niu setup` arguments.

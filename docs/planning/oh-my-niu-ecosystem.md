@@ -573,3 +573,202 @@ WP-A4 的门控翻转：引擎桶#1（`bash_completion:188`/`ssh.bash:457` 引�
 ## 10. 身份人设披露条款（owner 拍板 2026-09-26 深夜，rubash#154）
 
 默认人设 = MSYS2 兼容（生态分流依赖），但**必须显著披露**：`niu --help` 身份节、doctor 常显当前 persona（含 uname -s/OSTYPE 生效值与切换方法）、README"身份与兼容"小节、仓库根 SKILL.md（AI 消费方同样需要知道）。补全冲突的分层事实（已核实）：引擎裸启动 `complete -p` 为空——外部脚本注册进引擎表后按 GNU 后注册者胜语义天然接管；宿主原生补全为保底层，Tab 管线维持"引擎注册表优先、原生 CommandDef 兜底、`native:<name>` 显式可达"；实现验收须含"宿主原生不反向覆盖引擎注册"的顺序测试。
+
+## 11. 设计附录 A：外部插件管理器作为一等来源（2026-09-27，captain 布置的两个设计缺口之一）
+
+§5.1 只定义了两条资产通道：精选 packs 进官方 bundle，以及 `niu plugin add
+<git-url>` 的外部 **bundle** 通道（要求 `bundle.toml`，`external.rs:115-197`）。
+本附录把外部插件**管理器**——oh-my-bash 自带 loader、bash-it、bpkg——定义为一等
+来源（source）：不经过精选、不要求 bundle.toml、保留管理器原生布局，由 source
+adapter 统一探测/安装/更新/卸载/枚举。
+
+### 11.1 三通道分层（互不替代）
+
+| 通道 | 格式要求 | 信任模型 | 谁的东西 |
+|---|---|---|---|
+| 官方 bundle（oh-my-niu） | `bundle.toml` + `index.toml` 逐字段对账（`mod.rs:2520-2681`） | 编译兜底/安装校验即信 | 官方精选 packs（§5.1） |
+| 外部 bundle（`plugins/external.rs`） | `bundle.toml`（`external.rs:176-183` 强制） | add → trust → use | 第三方 **niubash 格式** bundle |
+| 外部 source（本附录，新 `plugins/sources.rs`） | 管理器原生布局（无 bundle.toml） | add → trust → load | oh-my-bash / bash-it / bpkg **原生树** |
+
+目录上同样三分：source 落在 `~/.niubash/sources/<adapter-id>/`（登记表
+`~/.niubash/sources/registry.toml`；`NIU_PLUGIN_SOURCES_ROOT` 可覆盖，测试/便携
+场景用）。不复用 `~/.niubash/external/`：那条通道的校验链要求 bundle.toml，管理
+器树没有；混用会把两种信任语义和两种卸载语义搅在一起。
+
+### 11.2 Source-adapter 接口
+
+```rust
+pub trait PluginSourceAdapter: Sync + Send {
+    fn id(&self) -> &'static str;            // "oh-my-bash"
+    fn display_name(&self) -> &'static str;
+    fn license(&self) -> &'static str;       // 11.6 许可锚点，进 registry 与 trust 界面
+    fn detect(&self, root: &Path) -> bool;   // 布局指纹，clone 后判定归属
+    fn installed_version(&self, root: &Path) -> String;
+    fn list_assets(&self, root: &Path) -> Vec<SourceAsset>;  // themes/plugins/aliases
+    fn loader_snippet(&self, record: &SourceRecord) -> String; // 带守卫的 rc 片段
+}
+```
+
+- **detect 是布局指纹**，不是文件名黑名单：oh-my-bash = 根下 `oh-my-bash.sh`
+  （corpus `target-ecosys/repos/oh-my-bash` 实测布局：`oh-my-bash.sh` +
+  `themes/<name>/<name>.theme.sh`（82 个全为目录形态）+ `plugins/<name>/
+  <name>.plugin.sh` + `aliases/*.aliases.sh|bash`）；bash-it = `lib/composure.bash`
+  + `aliases/`（WP-S2）；bpkg = `package.json`（WP-S3，仅本地安装）。
+- **install/update/uninstall/list 是模块级协议函数**（`add_source` /
+  `update_source` / `rollback_source` / `remove_source` / `list_sources`），
+  对任何 adapter 共用：git `clone --depth 1 -c core.autocrlf=false`（OMB 无
+  .gitattributes，CRLF 会杀死 source——§9 测量纪律继承）或本地目录**快照复制**
+  → staging → checksum 校验 → promote → 注册 **untrusted**。本地路径源是快照不是
+  引用：源目录事后漂移不影响已装版本，checksum 才有意义。
+- 每个管理器每机一份（source id = adapter id）；要换发行版先 remove 再 add。
+
+### 11.3 冲突规则：外部在前，内置保底（§0 落到 source 层）
+
+1. source 资产名平铺进现有命名空间（theme 名 = 主题目录名，如 `agnoster`）。
+2. 解析优先级沿用 §3.2 链并插入 source 层：
+   `user TOML` > **external source（本附录）** > bundle 原生 > 编译默认；
+   `native:<name>` 前缀跳过 source 层直取内置。
+3. 注入点：`plugin_theme_catalog`（`mod.rs:3251`）在 user 条目之后、bundle 条目
+   之前插入 `source = "external_source"` 条目（dedup 先到先得 → user 永远最高、
+   external 压 bundle，同名时 OMB `agnoster` 赢原生 `agnoster`，与 §3.2 一致）。
+   `plugin_theme`（`mod.rs:3293`）识别并剥掉 `native:` 前缀。
+4. OMB 主题渲染走 bash 兼容 PS1/PROMPT_COMMAND 通道（`prompt.rs:588`，§3.3），
+   **不**转换成 TOML Theme；source 层在 catalog/画廊/loader 提供条目与入口，
+   渲染激活仍受 §3.3 canary 门控（依赖 rubash#148 家族 → 现 #251）。
+5. §5.3 符号冲突检测的未来扩展：source 的 alias 资产集合（`aliases/*.aliases.sh`
+   可静态解析 alias 名）参与两两求交；0.1.0 先只做清单展示不做拦截。
+
+### 11.4 离线/降级行为
+
+- `loader_snippet` 永远带存在性守卫（`if [ -r "${NIU_PLUGIN_SOURCES_ROOT:-…}/
+  oh-my-bash/oh-my-bash.sh" ]`）：目录缺席 → 静默回落原生主题/packs（原则 2），
+  Tab/提示符不因 source 缺席而坏。
+- **untrusted source 不贡献任何资产**：`source_theme_entries()` 只枚举
+  trusted && 目录在位的记录（与 `mod.rs:652` 跳过未信任 bundle 同型）。
+- `niu plugin source list` 的状态机：`untrusted` / `ready` / `degraded
+  (native fallback active)`（登记在册但目录缺失/校验失配）。doctor 生态体检
+  （§7）加一行 source 汇总。
+- 离线安装：`--path <dir>` 本地树安装，零 git 依赖（与 §10 风险 4 的 git 前提
+  处理对齐）。
+
+### 11.5 引擎证据锚（corpus waves 结论，防止"设计先于可行性"）
+
+- **bash-it 与 oh-my-bash 整仓在 rubash 引擎的脚本面加载是干净的**：
+  `D:/repo/rubash/docs/CORPUS-COVERAGE.md` §1（ecosys1–3）：117 插件冒烟
+  88 PASS-IDENTICAL / 28 FAIL-CONSISTENT（宿主框架函数缺失，非引擎问题）/
+  1 环境差异；5 个 no-op 垫片（§5.2 omb-compat）解全部 28 个。
+- **OMB 主题 PS1 渲染 shape 字节级 pin**：rubash
+  `tests/regression/fixtures/eco-omb-theme-ps1.sh` + golden（`.gnu.out`），
+  lib→theme→`${PS1@P}` 全链 byte-green——source 层的加载路径有引擎侧回归保护。
+- **交互面已知缺口**：oh-my-bash `-i` 加载 13/326 函数（rubash#251 OPEN，
+  `eval arr=(glob)` #148 家族在交互 source 路径的残余）。因此交互激活被 §3.3
+  canary 门控分阶段交付；source 的安装/枚举/信任/回滚协议面与脚本面不受阻。
+- 许可：OMB / bash-it 均 MIT（target-ecosys §A）——adapter 克隆进用户目录、
+  niubash 仓库零 vendor，与 bash-completion 的 GPL 处理（§9，仅用户侧获取）
+  互不冲突；`license()` 进 registry 与 trust 界面。
+
+### 11.6 CLI
+
+```
+niu plugin source list [--json]                 # 状态机 + 资产计数
+niu plugin source add <id|url|path> [--ref R] [--checksum <sha256>] [--path <dir>]
+niu plugin source trust <id>                    # review 摘要 + 翻信任位
+niu plugin source remove <id>                   # 删树 + 删记录（信任与否无关）
+niu plugin source update <id> [--ref R] [--checksum <sha256>]
+niu plugin source rollback <id>                 # 回 previous（附录 B 12.4）
+niu plugin source verify <id>                   # tree checksum 复算对账
+```
+
+`add` 第一参数可为 adapter id、git URL 或本地路径；URL/路径先落 staging 再
+detect，识别不出时报错并列出受支持管理器。与既有 `niu plugin add`（外部
+bundle）并存，动词不冲突。
+
+## 12. 设计附录 B：plugin-index@0.1.0 信任与下载协议（2026-09-27）
+
+现状：`PLUGIN_INDEX_SCHEMA = "niubash:plugin-index@0.1.0"`（`mod.rs:75`）只服务
+官方 bundle 的 `index.toml` 对账（schema/bundle/version/bundle_api/min_niubash/
+release{artifact,checksum,checksum_algorithm,checksum_required,signature}/packs
+逐字段，`mod.rs:2520-2681`）；签名策略常量 `unsupported`（`mod.rs:76`）。本附录
+把同一 schema 前缀扩展为**可下载 source 的目录条目 + 信任边界 + 校验 + 缓存/
+回滚**协议。
+
+**层次归属（owner 决策）**：这是 oh-my-niu/niubash 插件层自身的能力，**不是
+wpm**——wpm 是 Windows-only 二进制包管理器（`setup_wizard.rs:724-807` 工具套
+餐通道）。本协议只分发"source 进 shell 的资产"（主题/插件脚本/别名/补全脚
+本），永不装二进制；wpm 永不写 rc source 行。跨层需求（包既带二进制又带插
+件）不在 0.1.0。
+
+### 12.1 Index 条目 schema（TOML）
+
+```toml
+schema = "niubash:plugin-index@0.1.0"
+
+[[entries]]
+name = "oh-my-bash"                    # source 名 = adapter id
+version = "master@8d3f2c1"             # 人类可读 pin 描述
+source-url = "https://github.com/ohmybash/oh-my-bash.git"
+ref = "master"                         # tag/branch/commit
+checksum = "sha256:<hex>"              # 确定性 tree checksum（12.3），必填
+license = "MIT"                        # 必填
+```
+
+约束：`checksum` 非空且算法固定 sha256（沿用 `checksum_required = true` 语义，
+`mod.rs:2612-2613`）；`license` 必填——GPL 资产（bash-completion）**不得**进
+默认 index，只能用户侧直装（§9）；`signature` 0.1.0 仍 `unsupported`，引入
+签名时 bump schema 版本号，不做静默兼容。官方 index 只收录 MIT/宽松许可且
+corpus 冒烟过的管理器（首期仅 oh-my-bash）。
+
+### 12.2 `niu plugin source add` 信任边界（两道闸）
+
+1. **下载闸（fetch gate）**：解析 index 条目或显式 `--url/--path/--ref/
+   --checksum`。CLI 打印信任边界告示（name/version/origin/license/checksum、
+   "第三方 shell 代码"风险行）后执行 fetch。**fetch 不执行任何被下载代码**
+   ——clone/复制到 staging 是纯数据操作，且产物注册为 untrusted，所以在无 TTY
+   的脚本环境下省略交互确认不降低安全性（AGENTS.md 的确定性非交互约束保持）。
+   交互式确认 UI 属于 setup 向导插件节（§5.4 同型引导），后续 WP。
+2. **执行闸（trust gate）**：untrusted source 的资产零激活
+   （11.4）。`niu plugin source trust <id>` 打印 review 摘要（license、路径、
+   资产计数、checksum verify 结果、loader 将 source 什么）后翻信任位；翻位前
+   `source_theme_entries()` 不含它，rc loader 片段不生成。
+
+### 12.3 Checksum：确定性 tree digest
+
+git clone 没有内建树校验和 → 定义 `tree_sha256(root)`：递归枚举（**跳过
+`.git/`**），按 POSIX 相对路径排序，逐文件 `update(path \0 len \0 content)`。
+安装时必算必记（registry `checksum_sha256`）；`niu plugin source verify <id>`
+复算对账（与 bundle lock 的 `checksum_sha256` 对账同型，`mod.rs:2462-` /
+doctor §7"bundle 完整性"行同型）。显式 `--checksum` 提供时在 staging 上强制
+比对，失配 → 删 staging、原安装不动、报错（对齐 archive 安装
+`mod.rs:2342-2354` 的既有语义）。verify 失配 → `niu plugin source list` 状态
+`degraded`，资产退出枚举（原则 2：保底层在岗）。
+
+### 12.4 缓存与回滚
+
+- **缓存 = staging 目录**：`sources/<id>/.staging-*` 生命周期与 bundle update
+  staging 一致（成功 promote 即删、失败即删，`mod.rs:2421-2423`）；不做常驻
+  下载缓存（0.1.0 规模不需要，git 浅克隆本身即"缓存重建"）。
+- **回滚 = registry `previous` 记录**：`update_source` 成功后把旧状态
+  `{ref, version, checksum_sha256}` 写进 `previous`；`niu plugin source
+  rollback <id>` 按 previous.ref 重新 fetch、按 previous.checksum 校验、恢复
+  旧记录（复用 `apply_plugin_bundle_rollback`（`mod.rs:2426-2462`）的 lock
+  previous_path 思路，但 source 是内容寻址而非路径寻址——目录原地替换，无
+  previous_path 可指）。git 源浅克隆无旧对象时直接重 clone previous ref；本地
+  路径源无法重建旧树 → rollback 报错并指引重装。
+- **update 的信任语义**：origin URL 不变 → trusted 保留（checksum 变化经
+  verify/doctor 可见）；origin 变了（换镜像/换发行）→ trusted 重置为 false，
+  重新过执行闸。
+
+### 12.5 工作包拆解
+
+| WP | 内容 | 状态 |
+|---|---|---|
+| WP-S1 | source-adapter 框架 + oh-my-bash adapter + `niu plugin source` 七动词 + 信任/checksum/回滚协议 + 单测 + 二进制级集成冒烟（本附录 + §11 的实现切片） | 本文档同批落地 |
+| WP-S2 | bash-it adapter（detect `lib/composure.bash`；assets `plugins/*.plugin.bash` + `aliases/*.aliases.bash`；loader 走 `bash-it.sh`，垫片复用 §5.2） | 待做 |
+| WP-S3 | bpkg adapter（`package.json` 形态；仅 `--path` 本地安装，下载由 bpkg 本体负责，niu 只接管加载） | 待做 |
+| WP-S4 | federated index（plugin-ecosystem-vs-zsh.md P1）：官方 index 默认 + 用户追加 git/URL index；12.1 schema 多 index 化 + `niu plugin source search` | 待做 |
+
+### 12.6 与 §8 门控表的关系
+
+WP-S1 不依赖任何引擎修复（安装/枚举/信任/回滚全是 Rust 层协议）；source 的
+**交互激活**依赖 rubash#251（13/326 函数，#148 eval-glob 家族残余）与 §3.3
+canary。即：S1 现在可做、现在可测；OMB 主题点亮时点由 #251 决定。
