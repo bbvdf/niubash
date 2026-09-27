@@ -236,6 +236,12 @@ impl PluginRuntimeState {
     pub fn is_enabled(&self, name: &str) -> bool {
         self.enabled.contains(name)
     }
+    /// Replace the enabled set wholesale. Used after the startup rc applies
+    /// its `NIU_PLUGINS` selection; `decisions` are kept so explicit config
+    /// choices still win over defaults on later recomputes.
+    pub fn set_enabled(&mut self, names: impl IntoIterator<Item = String>) {
+        self.enabled = names.into_iter().collect();
+    }
     pub fn has_decision(&self, name: &str) -> bool {
         self.decisions.contains(name)
     }
@@ -3514,7 +3520,7 @@ pub fn active_pack_names(inventory: &PluginInventory) -> BTreeSet<String> {
     active_pack_names_from(inventory, &configured)
 }
 
-fn active_pack_names_from(
+pub(crate) fn active_pack_names_from(
     inventory: &PluginInventory,
     configured: &ConfiguredPlugins,
 ) -> BTreeSet<String> {

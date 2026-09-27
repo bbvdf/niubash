@@ -949,6 +949,26 @@ impl Shell {
         }
         let _ = self.execute_script("unset NIU_REPL_STARTUP");
         self.sync_process_path_from_executor_path();
+
+        // The rc's `NIU_PLUGINS=(...)` line selects packs after
+        // construction-time defaults were applied, and the framework just
+        // loaded those packs' aliases and functions. Re-apply the same
+        // selection to the Rust-side plugin state and pull the newly enabled
+        // packs' completion TOMLs in — without this, rc-enabled packs
+        // silently lack completions (official names are masked by the
+        // compiled fallback; third-party and newly added packs are not).
+        let configured = crate::plugins::configured_plugins();
+        let inventory = crate::plugins::active_plugin_inventory();
+        self.plugins
+            .set_enabled(crate::plugins::active_pack_names_from(
+                &inventory,
+                &configured,
+            ));
+        let defs = crate::plugins::plugin_completion_defs(&self.plugins);
+        if let Ok(mut state) = self.completion_state.lock() {
+            state.refresh_bundle_definitions(defs);
+        }
+
         self.update_completion_state();
         self.sync_prompt_from_plugin_env();
         self.run_greeting_hooks();
