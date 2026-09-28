@@ -1,6 +1,6 @@
 //! Binary-level tests for the non-interactive REPL command surface.
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn niu_binary() -> PathBuf {

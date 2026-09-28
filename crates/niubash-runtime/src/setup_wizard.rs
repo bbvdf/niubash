@@ -1645,6 +1645,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn niu_git_answer_round_trip_gates_the_question() {
         let temp = unique_temp_dir("niu-git-answer");
         assert!(
