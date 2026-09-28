@@ -653,6 +653,14 @@ impl Shell {
     pub fn enter_interactive(&mut self) {
         self.interactive = true;
         self.executor.set_env("__RUBASH_SHELL_NAME", "niu");
+        // `$-` must contain `i` while startup files run: GNU sets
+        // forced_interactive before run_startup_files (shell.c:672; flags.c:174
+        // renders it in `$-`), so rc-level `case $- in *i*)` guards
+        // (oh-my-bash, starship init, nvm) pass inside ~/.niubashrc. The
+        // engine reads this marker in shell_option_flags (prompt_expansion.rs
+        // `'i'` table arm); without it the marker only existed on the rubash
+        // `-i` argv path, which the niubash REPL (no argv flags) never took.
+        self.executor.set_env("__RUBASH_INTERACTIVE", "1");
         // GNU init_interactive (shell.c): interactive shells default
         // expand_aliases on so ~/.niubashrc aliases expand without a
         // user shopt line. Non-interactive entry points never call
@@ -1166,20 +1174,17 @@ impl Shell {
         if self.bash_prompt_command_running {
             return;
         }
-        let Some(command) = self
-            .executor
-            .get_env("PROMPT_COMMAND")
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-        else {
-            return;
-        };
 
         self.bash_prompt_command_running = true;
         ensure_prompt_terminal_env(&mut self.executor);
         self.executor.set_last_exit_code(last_exit_code);
-        let _ = self.execute_script(&command);
+        // The engine owns the GNU semantics (eval.c:305
+        // execute_prompt_command): indexed-array elements in order,
+        // associative arrays refused, scalar string once. The host only
+        // triggers the pre-prompt hook; PROMPT_COMMAND itself may be an
+        // array under bash >= 5.1 (oh-my-bash installs one), which the
+        // engine dispatches without the host re-implementing it.
+        self.executor.execute_prompt_command();
         self.executor.set_last_exit_code(last_exit_code);
         self.bash_prompt_command_running = false;
     }
