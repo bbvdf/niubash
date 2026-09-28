@@ -32,6 +32,10 @@ const WIZARD_ANSWERS_SCHEMA: &str = "niubash:wizard-answers@0.1.0";
 /// `wpm/niugit.json`, the official-index entry). The wizard only ever shows
 /// this command; it runs it solely on an explicit "Install" pick.
 const NIUGIT_WPM_PACKAGE: &str = "niugit";
+/// Windows-only (owner directive): the wpm install form and the `wpm` string
+/// itself must never appear on other platforms — gate the command const and
+/// the whole niu-git machinery at compile time.
+#[cfg(windows)]
 const NIUGIT_INSTALL_COMMAND: &str = "wpm install niugit";
 
 /// Packs the wizard can add to `NIU_PLUGINS` when the user opts into extra
@@ -47,8 +51,15 @@ const COMPLETION_PACK_CANDIDATES: &[(&str, &str)] = &[
 /// the completion-pack candidates.
 const PROBED_TOOLS: &[&str] = &[
     "git", "fzf", "eza", "bat", "starship", "zoxide", "fd", "rg", "dust", "duf", "erd", "direnv",
-    "kubectl", "docker", "npm", "thefuck", "wpm",
+    "kubectl", "docker", "npm", "thefuck",
 ];
+
+/// Windows-only probe additions: wpm exists only on Windows — the name must
+/// never surface (probe lists included) on other platforms.
+#[cfg(windows)]
+const PLATFORM_PROBED_TOOLS: &[&str] = &["wpm"];
+#[cfg(not(windows))]
+const PLATFORM_PROBED_TOOLS: &[&str] = &[];
 
 // ── Wizard language ─────────────────────────────────────────────────────────
 //
@@ -323,10 +334,13 @@ impl EnvProbe {
     fn collect() -> Self {
         let mut tools: BTreeSet<String> = PROBED_TOOLS
             .iter()
+            .chain(PLATFORM_PROBED_TOOLS.iter())
             .filter(|tool| on_path(tool))
             .map(|tool| tool.to_string())
             .collect();
-        // wpm is also usable through `winuxcmd.exe wpm` without a command link.
+        // Windows-only: wpm is also usable through `winuxcmd.exe wpm`
+        // without a command link. The name must never surface elsewhere.
+        #[cfg(windows)]
         if wpm_available() {
             tools.insert("wpm".to_string());
         }
@@ -594,7 +608,7 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
         );
     }
 
-    if io.interactive && !probe.command_links {
+    if cfg!(windows) && io.interactive && !probe.command_links {
         println!();
         println!(
             "  \u{26a0}\u{fe0f}  {}",
@@ -752,43 +766,13 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
     }
 
     // --- Q3: niu-git, offered once (never auto-installed, never nagged) ---
-    let mut niu_git = NiuGitChoice::Skip;
-    if read_niu_git_answer(&home).is_none() {
-        let options = [
-            format!(
-                "{}  {}",
-                pad_display(t.tr("Skip"), 14),
-                t.tr("default — nothing is installed")
-            ),
-            format!(
-                "{}  {}",
-                pad_display(t.tr("Install"), 14),
-                NIUGIT_INSTALL_COMMAND
-            ),
-            format!(
-                "{}  {}",
-                pad_display(t.tr("Don't ask again"), 14),
-                t.tr("remember this and stop offering")
-            ),
-        ];
-        let option_refs: Vec<&str> = options.iter().map(String::as_str).collect();
-        let note = if probe.on_path("git") {
-            t.tr("  \u{2502}  a separate GPLv2 project; your current git keeps working either way")
-        } else {
-            t.tr("  \u{2502}  a separate GPLv2 project — native Windows git without MSYS")
-        };
-        let idx = ask!(io.choice(
-            t.tr("  \u{1f9e9}  niu-git — Windows-native git experience?"),
-            0,
-            &option_refs,
-            note,
-        ));
-        niu_git = match idx {
-            1 => NiuGitChoice::Install,
-            2 => NiuGitChoice::NeverShow,
-            _ => NiuGitChoice::Skip,
-        };
-    }
+    // Windows-only question: the wpm install form exists only on Windows,
+    // and Linux/macOS users already have native git — the topic (and the
+    // `wpm` string itself) must never appear on other platforms.
+    let niu_git = match ask_niu_git(&mut io, &t, &home, &probe) {
+        Some(choice) => choice,
+        None => return Ok(()), // cancelled at the niu-git question
+    };
 
     // --- Summary + explicit Apply gate ---
     let cfg = build_config(&theme_pick, completions_enabled, &completion_candidates);
@@ -928,6 +912,69 @@ enum NiuGitChoice {
     NeverShow,
 }
 
+// --- niu-git ask: Windows-only at compile time (owner directive) ---
+// The wpm install form and every `wpm` string exist only on Windows builds;
+// other platforms get a Skip stub and contain none of it.
+#[cfg(windows)]
+fn ask_niu_git(
+    io: &mut WizardIo,
+    t: &Lang,
+    home: &std::path::Path,
+    probe: &EnvProbe,
+) -> Option<NiuGitChoice> {
+    let mut niu_git = NiuGitChoice::Skip;
+    if read_niu_git_answer(home).is_none() {
+        let options = [
+            format!(
+                "{}  {}",
+                pad_display(t.tr("Skip"), 14),
+                t.tr("default — nothing is installed")
+            ),
+            format!(
+                "{}  {}",
+                pad_display(t.tr("Install"), 14),
+                NIUGIT_INSTALL_COMMAND
+            ),
+            format!(
+                "{}  {}",
+                pad_display(t.tr("Don't ask again"), 14),
+                t.tr("remember this and stop offering")
+            ),
+        ];
+        let option_refs: Vec<&str> = options.iter().map(String::as_str).collect();
+        let note = if probe.on_path("git") {
+            t.tr("  │  a separate GPLv2 project; your current git keeps working either way")
+        } else {
+            t.tr("  │  a separate GPLv2 project — native Windows git without MSYS")
+        };
+        let idx = match io.choice(
+            t.tr("  🧩  niu-git — Windows-native git experience?"),
+            0,
+            &option_refs,
+            note,
+        ) {
+            Some(value) => value,
+            None => return None, // cancelled
+        };
+        niu_git = match idx {
+            1 => NiuGitChoice::Install,
+            2 => NiuGitChoice::NeverShow,
+            _ => NiuGitChoice::Skip,
+        };
+    }
+    Some(niu_git)
+}
+
+#[cfg(not(windows))]
+fn ask_niu_git(
+    _io: &mut WizardIo,
+    _t: &Lang,
+    _home: &std::path::Path,
+    _probe: &EnvProbe,
+) -> Option<NiuGitChoice> {
+    Some(NiuGitChoice::Skip)
+}
+
 fn wizard_answers_path(home: &std::path::Path) -> PathBuf {
     home.join(".niubash").join("wizard-answers.toml")
 }
@@ -974,6 +1021,7 @@ fn write_niu_git_answer(home: &std::path::Path, value: &str) {
 /// Run the niu-git install the user explicitly picked — the only path that
 /// ever invokes wpm here. The "installed" marker is only recorded after a
 /// successful install, so a failed install stays retryable.
+#[cfg(windows)]
 fn install_niu_git(home: &std::path::Path, lang: Lang) {
     let Some(mut wpm) = wpm_command() else {
         println!(
