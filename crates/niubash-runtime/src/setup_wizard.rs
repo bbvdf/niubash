@@ -789,9 +789,18 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
 
     let backup_path = write_rc_and_mark_done(&home, &cfg, lang)?;
 
+    // wpm exists only on Windows (owner directive): the Install branch —
+    // and the call into the wpm-backed installer — compiles only there.
+    // Non-Windows wizard paths never reach NiuGitChoice::Install
+    // (ask_niu_git returns Skip), so only the answer memory remains.
+    #[cfg(windows)]
     if niu_git == NiuGitChoice::Install {
         install_niu_git(&home, lang);
     } else if niu_git == NiuGitChoice::NeverShow {
+        write_niu_git_answer(&home, "never");
+    }
+    #[cfg(not(windows))]
+    if niu_git == NiuGitChoice::NeverShow {
         write_niu_git_answer(&home, "never");
     }
 
@@ -1159,7 +1168,13 @@ fn print_config_summary(
     row(
         "niu-git",
         match niu_git {
+            // The wpm install text is Windows-only (owner directive); on
+            // other platforms the summary shows the same "skipped" the
+            // wizard actually did (ask_niu_git always returns Skip there).
+            #[cfg(windows)]
             NiuGitChoice::Install => NIUGIT_INSTALL_COMMAND.to_string(),
+            #[cfg(not(windows))]
+            NiuGitChoice::Install => t.tr("skipped").to_string(),
             NiuGitChoice::NeverShow => t.tr("don't ask again").to_string(),
             NiuGitChoice::Skip => t.tr("skipped").to_string(),
         },
