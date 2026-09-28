@@ -70,8 +70,6 @@ impl CommandCompleter {
             "source".to_string(),
             "array".to_string(),
             "plugin".to_string(),
-            "theme".to_string(),
-            "oh-my-niu".to_string(),
             "git".to_string(),
             "code".to_string(),
             "code-insiders".to_string(),
@@ -176,8 +174,6 @@ impl CommandCompleter {
             // Niubash UI
             "array".to_string(),
             "plugin".to_string(),
-            "theme".to_string(),
-            "oh-my-niu".to_string(),
             // Text and file tools
             "sed".to_string(),
             "awk".to_string(),
@@ -355,7 +351,7 @@ fn executable_command_name(entry: &std::fs::DirEntry) -> Option<String> {
     // Extensionless files in PATH are skipped because
     // Windows PATH dirs commonly contain LICENSE, README,
     // etc. Extensionless tools like dsh are covered by
-    // oh-my-niu or the common-commands list.
+    // the common-commands list.
     let is_executable = file_name.ends_with(".exe")
         || file_name.ends_with(".bat")
         || file_name.ends_with(".cmd")
@@ -444,9 +440,13 @@ mod tests {
 
     #[test]
     fn command_completion_includes_common_commands_for_partial_input() {
+        let ctx = CompletionContext::new(std::path::PathBuf::from("."), "pw".to_string(), 2);
+        let result = CommandCompleter::complete(&ctx).unwrap().unwrap();
+        assert!(result.completions.contains(&"pwsh".to_string()));
+        // The retired oh-my-niu command must not complete any more (#145).
         let ctx = CompletionContext::new(std::path::PathBuf::from("."), "oh-".to_string(), 3);
         let result = CommandCompleter::complete(&ctx).unwrap().unwrap();
-        assert!(result.completions.contains(&"oh-my-niu".to_string()));
+        assert!(!result.completions.contains(&"oh-my-niu".to_string()));
     }
 
     #[test]

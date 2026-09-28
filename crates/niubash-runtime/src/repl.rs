@@ -1169,11 +1169,7 @@ pub fn run_repl(shell: Shell) -> anyhow::Result<()> {
         print_first_run_hint();
     }
 
-    shell.borrow_mut().restore_last_working_dir_for_repl();
     shell.borrow_mut().run_startup_rc();
-    if let Some(notice) = crate::plugins::take_legacy_bundle_notice() {
-        eprintln!("{}", notice);
-    }
     let no_editing = shell.borrow().no_editing;
     if no_editing {
         return run_repl_without_line_editor(&mut shell.borrow_mut());
@@ -1271,7 +1267,6 @@ pub fn run_repl(shell: Shell) -> anyhow::Result<()> {
             Ok(Signal::CtrlC) => {
                 println!();
                 if crate::ctrl_c::consume_ctrl_c() {
-                    crate::ctrl_c::run_trap_hooks(&mut shell.borrow_mut(), "trapint");
                     flush_repl_output();
                 }
                 pending.clear();

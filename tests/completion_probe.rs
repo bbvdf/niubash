@@ -210,28 +210,6 @@ fn argument_position_does_not_suggest_commands() {
 }
 
 #[test]
-fn installed_bundle_completion_definitions_override_compiled_defaults() {
-    let env = ProbeEnv::new("niubash-completion-bundle-def");
-    let bundle = env.root.join("bundle");
-    write_minimal_completion_bundle(&bundle);
-
-    let suggestions = run_probe(
-        "git --",
-        &env,
-        &[("NIU_PLUGIN_BUNDLE_PATH", native_path(&bundle))],
-    );
-    assert_contains(&suggestions, "--bundle-only");
-    assert_not_contains(&suggestions, "--version");
-
-    let subcommand_suggestions = run_probe(
-        "git bundle-subcommand --",
-        &env,
-        &[("NIU_PLUGIN_BUNDLE_PATH", native_path(&bundle))],
-    );
-    assert_contains(&subcommand_suggestions, "--bundle-subcommand-flag");
-}
-
-#[test]
 fn git_completion_suggests_daily_subcommands_and_flags() {
     let env = ProbeEnv::new("niubash-completion-git-daily");
 
@@ -335,64 +313,6 @@ fn assert_before(values: &[String], earlier: &str, later: &str) {
 
 fn native_path(path: &Path) -> String {
     path.to_string_lossy().to_string()
-}
-
-fn write_minimal_completion_bundle(path: &Path) {
-    std::fs::create_dir_all(path.join("packs").join("git")).unwrap();
-    std::fs::create_dir_all(path.join("completions")).unwrap();
-    std::fs::write(
-        path.join("bundle.toml"),
-        r#"name = "oh-my-niu"
-version = "9.9.9"
-api = "niubash:plugin-bundle@0.1.0"
-min_niubash = "0.8.3"
-[packs]
-default = ["git"]
-available = ["git"]
-[layout]
-packs_dir = "packs"
-completions_dir = "completions"
-"#,
-    )
-    .unwrap();
-    std::fs::write(
-        path.join("packs").join("git").join("plugin.toml"),
-        r#"name = "git"
-bundle = "oh-my-niu"
-version = "9.9.9"
-kind = "builtin"
-api = "niubash:plugin@0.1.0"
-category = "devtools"
-summary = "Installed Git completions"
-default = true
-permissions = ["cwd:read", "process:run:git"]
-required_binaries = ["git"]
-[exports]
-aliases = false
-completions = ["git"]
-prompt_segments = []
-hooks = []
-commands = []
-keybindings = []
-"#,
-    )
-    .unwrap();
-    std::fs::write(
-        path.join("completions").join("git.toml"),
-        r#"command = "git"
-description = "test bundle git"
-[[flags]]
-long = "--bundle-only"
-description = "flag loaded from test bundle"
-[[subcommands]]
-name = "bundle-subcommand"
-description = "subcommand loaded from test bundle"
-[[subcommands.flags]]
-long = "--bundle-subcommand-flag"
-description = "subcommand flag loaded from test bundle"
-"#,
-    )
-    .unwrap();
 }
 
 struct ProbeEnv {

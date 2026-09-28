@@ -7,21 +7,9 @@
 //!   niu script.sh        → execute a script file
 //!   niu --help | -h      → usage
 //!   niu --version        → version (niubash / rubash / winuxcmd)
-//!   niu setup            → re-run the interactive prompt/plugin wizard
-//!   niu plugin list [--json] → list official Niubash plugins
-//!   niu plugin info <name> [--json] → inspect one official plugin
-//!   niu plugin search [query] [--json] → discover official plugins
-//!   niu plugin themes [--json] → list user and bundle themes
-//!   niu plugin bundle status [--json] → inspect official bundle install state
-//!   niu plugin doctor [--json] [--verbose] → diagnose plugin configuration health
-//!   niu plugin review <name> [--json] → review plugin permissions
-//!   niu plugin update oh-my-niu --from <path> → install a bundle release
-//!   niu plugin update oh-my-niu --github-release latest → download/install bundle
-//!   niu plugin rollback oh-my-niu → roll back to the previous bundle
-//!   niu plugin add <url>[@ref] [name] → clone a third-party bundle (untrusted)
-//!   niu plugin trust <name> → trust a third-party bundle
-//!   niu plugin use <name> → activate a trusted third-party bundle
-//!   niu plugin remove <name> → remove a third-party bundle
+//!   niu setup            → re-run the interactive setup wizard
+//!   niu plugin discover → read-only overview of external plugin sources
+//!   niu plugin source <cmd> → manage external plugin-manager sources
 //!   niu --completion-probe "line" [cursor] → print REPL completions
 //!   niu --install-wt-profile → add/update the Windows Terminal profile
 //!   niu --self-update → download and run the latest installer
@@ -95,8 +83,6 @@ macro_rules! eprintln {
 }
 
 mod self_update;
-const OFFICIAL_PLUGIN_BUNDLE_REPO: &str = "unixwin/oh-my-niu";
-const PLUGIN_BUNDLE_DOWNLOAD_CACHE: &str = "niubash-plugin-bundles";
 // GNU variables.c FUNCNEST: 0/unset means no limit, so recursion depth is
 // bounded only by the real stack. Debug frames in the engine's call chain
 // run ~150KB each; 512MiB (reserved, not committed) covers func4.sub's
@@ -1171,23 +1157,13 @@ fn print_usage() {
     println!("  self-update               REPL command: update Niubash and exit this shell");
     println!("  update-niubash            Alias for self-update");
     println!();
-    println!("  plugin list [--json] [--verbose]");
-    println!("                            List plugins (human view; --verbose adds diagnostics)");
-    println!("  plugin info <name> [--json] [--verbose]");
-    println!("                            Inspect one official Niubash plugin");
-    println!("  plugin search [query] [--json]  Discover official plugins");
-    println!("  plugin themes [--json]    List user and bundle themes");
-    println!("  plugin bundle status [--json] [--verbose]");
-    println!("                            Inspect official bundle install state");
-    println!("  plugin update oh-my-niu --from <path>");
-    println!("      [--checksum <sha>|--checksum-file <path>] [--json]");
-    println!("  plugin update oh-my-niu --github-release latest|vX.Y.Z [--json]");
-    println!("                            Install bundle release");
-    println!("  plugin rollback oh-my-niu [--json]  Roll back bundle release");
-    println!("  plugin add <url>[@ref] [name]  Clone a third-party bundle (untrusted)");
-    println!("  plugin trust <name>       Trust a third-party bundle");
-    println!("  plugin use <name>         Activate a trusted third-party bundle");
-    println!("  plugin remove <name>      Remove a third-party bundle");
+    println!("  plugin discover [--verbose]");
+    println!("                            Read-only overview of external plugin sources");
+    println!("  plugin source list [--json]");
+    println!("                            List external plugin-manager sources");
+    println!("  plugin source add <id|url|path> [--ref <ref>] [--checksum <sha256>]");
+    println!("                            Install a plugin-manager source (untrusted)");
+    println!("  plugin source trust <id>  Review and activate a source's assets");
     println!();
     println!("  --completion-probe <line> [cursor]  Debug: print completion candidates");
     println!();
@@ -1219,116 +1195,105 @@ fn run_plugin_command(args: &[String]) -> anyhow::Result<()> {
             print_plugin_usage();
             Ok(())
         }
-        "list" => {
-            let rest = &args[3..];
-            let json = rest.iter().any(|arg| arg == "--json");
-            let verbose = rest.iter().any(|arg| arg == "--verbose");
-            if json {
-                println!("{}", niubash_runtime::plugins::plugin_packs_json()?);
-            } else {
-                println!(
-                    "{}",
-                    niubash_runtime::plugins::plugin_packs_text_verbose(verbose)
-                );
-            }
-            Ok(())
-        }
-        "search" => run_plugin_search_command(&args[3..]),
-        "themes" => run_plugin_themes_command(&args[3..]),
         "discover" => run_plugin_discover_command(&args[3..]),
-        "info" => {
-            let Some(name) = args.get(3) else {
-                anyhow::bail!("plugin info requires a plugin name");
-            };
-            let rest = &args[4..];
-            let json = rest.iter().any(|arg| arg == "--json");
-            let verbose = rest.iter().any(|arg| arg == "--verbose");
-            if json {
-                match niubash_runtime::plugins::plugin_pack_json(name)? {
-                    Some(output) => println!("{}", output),
-                    None => anyhow::bail!("unknown plugin '{}'", name),
-                }
-            } else {
-                match niubash_runtime::plugins::plugin_pack_text_verbose(name, verbose) {
-                    Some(output) => println!("{}", output),
-                    None => anyhow::bail!("unknown plugin '{}'", name),
-                }
-            }
-            Ok(())
-        }
-        "bundle" => run_plugin_bundle_command(&args[3..]),
-        "doctor" => run_plugin_doctor_command(&args[3..]),
-        "review" => run_plugin_review_command(&args[3..]),
-        "update" => run_plugin_update_command(&args[3..]),
-        "rollback" => run_plugin_rollback_command(&args[3..]),
-        "add" => run_plugin_add_command(&args[3..]),
-        "trust" => run_plugin_trust_command(&args[3..]),
-        "use" => run_plugin_use_command(&args[3..]),
-        "remove" => run_plugin_remove_command(&args[3..]),
         "source" | "sources" => run_plugin_source_command(&args[3..]),
-        "enable" => run_plugin_enable_command(&args[3..]),
-        "disable" => run_plugin_disable_command(&args[3..]),
+        // The built-in pack/bundle subcommands retired with the plugin
+        // stack (niubash#145); external plugin-manager sources remain.
+        "list" | "info" | "search" | "themes" | "bundle" | "doctor" | "review" | "update"
+        | "rollback" | "add" | "trust" | "use" | "remove" | "enable" | "disable" => {
+            anyhow::bail!(
+                "plugin '{}' retired with the built-in plugin/theme stack (niubash#145); \
+                 see `niu plugin source --help` for the external ecosystem",
+                subcommand
+            )
+        }
         unknown => anyhow::bail!("unknown plugin subcommand '{}'", unknown),
     }
 }
 
-fn run_plugin_add_command(args: &[String]) -> anyhow::Result<()> {
-    let Some(url) = args.first() else {
-        anyhow::bail!("plugin add requires a git url: niu plugin add <url>[@ref] [name]");
-    };
-    let name = args.get(1).map(String::as_str);
-    let record = niubash_runtime::plugins::external::add_bundle(url, name)?;
+/// `niu plugin discover`: a dry, read-only overview of the external plugin
+/// ecosystem. Shows installed sources (with their ready/untrusted/degraded
+/// state) and the known plugin managers that are *not* installed yet —
+/// without installing, trusting, sourcing, or writing anything. Every
+/// install stays an explicit command the user runs.
+fn run_plugin_discover_command(args: &[String]) -> anyhow::Result<()> {
+    for arg in args {
+        match arg.as_str() {
+            "--verbose" => {}
+            unknown => anyhow::bail!("unknown plugin option '{}'", unknown),
+        }
+    }
     println!(
-        "{} '{}' into {}",
-        niubash_runtime::text_style::green("Cloned"),
-        record.name,
-        niubash_runtime::text_style::dim(&record.path.display().to_string())
+        "{}",
+        niubash_runtime::text_style::bold("Niubash plugin ecosystem")
     );
-    println!("the bundle is untrusted; review it, then run:");
-    println!("  niu plugin trust {}", record.name);
-    println!("  niu plugin use {}", record.name);
-    Ok(())
-}
-
-fn run_plugin_trust_command(args: &[String]) -> anyhow::Result<()> {
-    let Some(name) = args.first() else {
-        anyhow::bail!("plugin trust requires a bundle name");
-    };
-    let record = niubash_runtime::plugins::external::trust_bundle(name)?;
     println!(
-        "{} external bundle '{}' is now trusted",
-        niubash_runtime::text_style::green("Trusted:"),
-        record.name
+        "{}",
+        niubash_runtime::text_style::dim(
+            "  read-only overview — nothing is installed, sourced, or changed"
+        )
     );
-    println!("activate it with: niu plugin use {}", record.name);
-    Ok(())
-}
+    println!();
 
-fn run_plugin_use_command(args: &[String]) -> anyhow::Result<()> {
-    let Some(name) = args.first() else {
-        anyhow::bail!("plugin use requires a bundle name");
-    };
-    let path = niubash_runtime::plugins::activate_external_bundle(name)?;
     println!(
-        "{} external bundle '{}' at {}",
-        niubash_runtime::text_style::green("Active bundle:"),
-        name,
-        niubash_runtime::text_style::dim(&path.display().to_string())
+        "{}",
+        niubash_runtime::text_style::cyan("Plugin sources (external plugin managers)")
     );
-    println!("restart niu to load it; go back with niu plugin rollback");
-    Ok(())
-}
+    let statuses = niubash_runtime::plugins::sources::list_sources();
+    if statuses.is_empty() {
+        println!("  (none installed)");
+    }
+    for status in &statuses {
+        let marker = match status.state.as_str() {
+            "ready" => niubash_runtime::text_style::green("ready"),
+            "untrusted" => niubash_runtime::text_style::yellow("untrusted"),
+            _ => niubash_runtime::text_style::red("degraded"),
+        };
+        let assets = status
+            .asset_count
+            .map(|count| format!(" ({count} assets)"))
+            .unwrap_or_default();
+        println!(
+            "  {} {:<12} {:<12} {}{}",
+            marker, status.record.id, status.record.version, status.record.license, assets
+        );
+    }
+    println!();
 
-fn run_plugin_remove_command(args: &[String]) -> anyhow::Result<()> {
-    let Some(name) = args.first() else {
-        anyhow::bail!("plugin remove requires a bundle name");
-    };
-    let path = niubash_runtime::plugins::external::remove_bundle(name)?;
+    println!("{}", niubash_runtime::text_style::cyan("Available sources"));
+    let mut listed = 0usize;
+    for adapter in niubash_runtime::plugins::sources::builtin_source_adapters() {
+        if statuses
+            .iter()
+            .any(|status| status.record.id == adapter.id())
+        {
+            continue;
+        }
+        let add_hint = match adapter.default_origin() {
+            Some(origin) => format!("niu plugin source add {} --url {}", adapter.id(), origin),
+            None => format!("niu plugin source add {} --path <dir>", adapter.id()),
+        };
+        println!(
+            "  {:<12} {:<9} {}",
+            adapter.display_name(),
+            adapter.license(),
+            niubash_runtime::text_style::dim(&add_hint)
+        );
+        listed += 1;
+    }
+    if listed == 0 {
+        println!(
+            "  {}",
+            niubash_runtime::text_style::dim("(every known manager is already installed)")
+        );
+    }
+    println!();
     println!(
-        "{} external bundle '{}' ({})",
-        niubash_runtime::text_style::green("Removed"),
-        name,
-        niubash_runtime::text_style::dim(&path.display().to_string())
+        "{}",
+        niubash_runtime::text_style::dim(
+            "Themes render through the bash-compatible PS1 channel; the built-in \
+             plugin/theme stack is retired (niubash#145)."
+        )
     );
     Ok(())
 }
@@ -1745,547 +1710,15 @@ fn run_plugin_source_verify_command(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_plugin_enable_command(args: &[String]) -> anyhow::Result<()> {
-    let Some(name) = args.first() else {
-        anyhow::bail!("plugin enable requires a plugin name");
-    };
-    // Validate the pack exists in the active inventory so the user gets a
-    // clear error instead of silently writing a bogus name into ~/.niubashrc.
-    let inventory = niubash_runtime::plugins::active_plugin_inventory();
-    if !inventory
-        .packs
-        .iter()
-        .any(|pack| pack.name.eq_ignore_ascii_case(name))
-    {
-        anyhow::bail!(
-            "unknown plugin '{}'; run `niu plugin list` to see available packs",
-            name
-        );
-    }
-    let path = niubash_runtime::plugins::enable_pack_in_rc(name)?;
-    println!(
-        "{} '{}' in {}",
-        niubash_runtime::text_style::green("Enabled"),
-        name,
-        niubash_runtime::text_style::dim(&path.display().to_string())
-    );
-    println!("restart niu (or reload ~/.niubashrc) for the change to take effect");
-    Ok(())
-}
-
-fn run_plugin_disable_command(args: &[String]) -> anyhow::Result<()> {
-    let Some(name) = args.first() else {
-        anyhow::bail!("plugin disable requires a plugin name");
-    };
-    let inventory = niubash_runtime::plugins::active_plugin_inventory();
-    if !inventory
-        .packs
-        .iter()
-        .any(|pack| pack.name.eq_ignore_ascii_case(name))
-    {
-        anyhow::bail!(
-            "unknown plugin '{}'; run `niu plugin list` to see available packs",
-            name
-        );
-    }
-    let is_default = inventory
-        .packs
-        .iter()
-        .any(|pack| pack.name.eq_ignore_ascii_case(name) && pack.default);
-    let path = niubash_runtime::plugins::disable_pack_in_rc(name, &inventory)?;
-    println!(
-        "{} '{}' in {}",
-        niubash_runtime::text_style::green("Disabled"),
-        name,
-        niubash_runtime::text_style::dim(&path.display().to_string())
-    );
-    if is_default {
-        println!(
-            "{}",
-            niubash_runtime::text_style::dim(
-                "'{}' is on by default; the rc was rewritten with NIU_DISABLE_DEFAULT_PLUGINS=1 \
-                 and the remaining active packs listed in NIU_PLUGINS."
-            )
-        );
-    }
-    println!("restart niu (or reload ~/.niubashrc) for the change to take effect");
-    Ok(())
-}
-
-fn run_plugin_doctor_command(args: &[String]) -> anyhow::Result<()> {
-    let json = args.iter().any(|arg| arg == "--json");
-    let verbose = args.iter().any(|arg| arg == "--verbose");
-    let config = niubash_runtime::config::load();
-    let report = niubash_runtime::plugins::plugin_doctor_report(&config.plugins);
-    if json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        println!(
-            "{}",
-            niubash_runtime::plugins::plugin_doctor_text_verbose(&report, verbose)
-        );
-    }
-    Ok(())
-}
-
-fn run_plugin_review_command(args: &[String]) -> anyhow::Result<()> {
-    let Some(name) = args.get(0) else {
-        anyhow::bail!("plugin review requires a plugin name");
-    };
-    let json = parse_plugin_json_flag(&args[1..])?;
-    let config = niubash_runtime::config::load();
-    let review = niubash_runtime::plugins::plugin_permission_review(name, &config.plugins)?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&review)?);
-    } else {
-        println!(
-            "{}",
-            niubash_runtime::plugins::plugin_permission_review_text(&review)
-        );
-    }
-    Ok(())
-}
-
-fn run_plugin_search_command(args: &[String]) -> anyhow::Result<()> {
-    let (query, json, verbose) = parse_plugin_search_args(args)?;
-    if json {
-        println!(
-            "{}",
-            niubash_runtime::plugins::plugin_search_json(query.as_deref())?
-        );
-    } else {
-        println!(
-            "{}",
-            niubash_runtime::plugins::plugin_search_text(query.as_deref(), verbose)
-        );
-    }
-    Ok(())
-}
-
-fn run_plugin_themes_command(args: &[String]) -> anyhow::Result<()> {
-    let mut json = false;
-    let mut verbose = false;
-    for arg in args {
-        match arg.as_str() {
-            "--json" => json = true,
-            "--verbose" => verbose = true,
-            unknown => anyhow::bail!("unknown plugin option '{}'", unknown),
-        }
-    }
-    if json {
-        println!("{}", niubash_runtime::plugins::plugin_theme_catalog_json()?);
-    } else {
-        println!(
-            "{}",
-            niubash_runtime::plugins::plugin_theme_catalog_text(verbose)
-        );
-    }
-    Ok(())
-}
-
-/// `niu plugin discover`: a dry, read-only overview of the plugin ecosystem.
-/// Shows installed external sources (with their ready/untrusted/degraded
-/// state), the known plugin managers that are *not* installed yet, and the
-/// theme/pack catalogs — without installing, trusting, sourcing, or writing
-/// anything. Every install stays an explicit command the user runs.
-fn run_plugin_discover_command(args: &[String]) -> anyhow::Result<()> {
-    for arg in args {
-        match arg.as_str() {
-            "--verbose" => {}
-            unknown => anyhow::bail!("unknown plugin option '{}'", unknown),
-        }
-    }
-    println!(
-        "{}",
-        niubash_runtime::text_style::bold("Niubash plugin ecosystem")
-    );
-    println!(
-        "{}",
-        niubash_runtime::text_style::dim(
-            "  read-only overview — nothing is installed, sourced, or changed"
-        )
-    );
-    println!();
-
-    println!(
-        "{}",
-        niubash_runtime::text_style::cyan("Plugin sources (external plugin managers)")
-    );
-    let statuses = niubash_runtime::plugins::sources::list_sources();
-    if statuses.is_empty() {
-        println!("  (none installed)");
-    }
-    for status in &statuses {
-        let marker = match status.state.as_str() {
-            "ready" => niubash_runtime::text_style::green("ready"),
-            "untrusted" => niubash_runtime::text_style::yellow("untrusted"),
-            _ => niubash_runtime::text_style::red("degraded"),
-        };
-        let assets = status
-            .asset_count
-            .map(|count| format!(" ({count} assets)"))
-            .unwrap_or_default();
-        println!(
-            "  {} {:<12} {:<12} {}{}",
-            marker, status.record.id, status.record.version, status.record.license, assets
-        );
-    }
-    println!();
-
-    println!("{}", niubash_runtime::text_style::cyan("Available sources"));
-    let mut listed = 0usize;
-    for adapter in niubash_runtime::plugins::sources::builtin_source_adapters() {
-        if statuses
-            .iter()
-            .any(|status| status.record.id == adapter.id())
-        {
-            continue;
-        }
-        let add_hint = match adapter.default_origin() {
-            Some(origin) => format!("niu plugin source add {} --url {}", adapter.id(), origin),
-            None => format!("niu plugin source add {} --path <dir>", adapter.id()),
-        };
-        println!(
-            "  {:<12} {:<9} {}",
-            adapter.display_name(),
-            adapter.license(),
-            niubash_runtime::text_style::dim(&add_hint)
-        );
-        listed += 1;
-    }
-    if listed == 0 {
-        println!(
-            "  {}",
-            niubash_runtime::text_style::dim("(every known manager is already installed)")
-        );
-    }
-    println!();
-
-    let catalog = niubash_runtime::plugins::plugin_theme_catalog();
-    let external = catalog
-        .iter()
-        .filter(|entry| entry.source == "external_source")
-        .count();
-    let builtin = catalog
-        .iter()
-        .filter(|entry| entry.source == "bundle")
-        .count();
-    println!("{}", niubash_runtime::text_style::cyan("Themes"));
-    println!(
-        "  {} external (primary) · {} built-in (fallback) — list: niu plugin themes",
-        external, builtin
-    );
-    println!();
-
-    println!("{}", niubash_runtime::text_style::cyan("Packs"));
-    println!("  bundle packs — list: niu plugin list · toggle: niu plugin enable/disable <name>");
-    println!();
-    println!(
-        "{}",
-        niubash_runtime::text_style::dim(
-            "This command only lists; sources stay untrusted until you review and trust them."
-        )
-    );
-    Ok(())
-}
-
-fn run_plugin_bundle_command(args: &[String]) -> anyhow::Result<()> {
-    let Some(subcommand) = args.get(0) else {
-        anyhow::bail!("plugin bundle requires a subcommand: status");
-    };
-
-    match subcommand.as_str() {
-        "status" => {
-            let rest = &args[1..];
-            let json = rest.iter().any(|arg| arg == "--json");
-            let verbose = rest.iter().any(|arg| arg == "--verbose");
-            if json {
-                println!("{}", niubash_runtime::plugins::plugin_bundle_status_json()?);
-            } else {
-                println!(
-                    "{}",
-                    niubash_runtime::plugins::plugin_bundle_status_text_verbose(verbose)
-                );
-            }
-            Ok(())
-        }
-        unknown => anyhow::bail!("unknown plugin bundle subcommand '{}'", unknown),
-    }
-}
-
-fn run_plugin_update_command(args: &[String]) -> anyhow::Result<()> {
-    let Some(bundle) = args.get(0) else {
-        anyhow::bail!("plugin update requires a bundle name");
-    };
-    let options = parse_plugin_update_options(&args[1..])?;
-    let checksum = match (options.checksum, options.checksum_file) {
-        (Some(_), Some(_)) => anyhow::bail!("use only one of --checksum or --checksum-file"),
-        (Some(checksum), None) => Some(checksum),
-        (None, Some(path)) => Some(read_checksum_file(&path)?),
-        (None, None) => None,
-    };
-    let github_release = options.github_release;
-    let source_path = options.source_path;
-    let (source_path, checksum, downloaded) = match (source_path, github_release) {
-        (Some(_), Some(_)) => anyhow::bail!("use only one of --from or --github-release"),
-        (Some(path), None) => (path, checksum, None),
-        (None, Some(release)) => {
-            if checksum.is_some() {
-                anyhow::bail!(
-                    "--github-release downloads and verifies the release .sha256; do not pass --checksum or --checksum-file"
-                );
-            }
-            let downloaded = download_plugin_bundle_github_release(bundle, &release)?;
-            let checksum = Some(downloaded.checksum.clone());
-            (downloaded.archive_path.clone(), checksum, Some(downloaded))
-        }
-        (None, None) => anyhow::bail!(
-            "plugin update requires --from <bundle-dir-or-zip> or --github-release latest|vX.Y.Z"
-        ),
-    };
-    let summary = niubash_runtime::plugins::apply_plugin_bundle_update_from_path(
-        bundle,
-        &source_path,
-        checksum.as_deref(),
-    )?;
-    if options.json {
-        println!("{}", serde_json::to_string_pretty(&summary)?);
-    } else {
-        if let Some(downloaded) = downloaded {
-            println!(
-                "Downloaded GitHub release {} from {}",
-                downloaded.tag, OFFICIAL_PLUGIN_BUNDLE_REPO
-            );
-            println!("Downloaded archive: {}", downloaded.archive_path.display());
-            println!(
-                "Downloaded checksum: {}",
-                downloaded.checksum_path.display()
-            );
-        }
-        println!(
-            "{} bundle '{}' to {}",
-            niubash_runtime::text_style::green("Updated"),
-            summary.bundle,
-            summary.version
-        );
-        println!(
-            "Installed path: {}",
-            niubash_runtime::text_style::dim(&summary.installed_path.display().to_string())
-        );
-        if let Some(previous_path) = summary.previous_path {
-            println!("Previous path: {}", previous_path.display());
-        }
-        if let Some(checksum) = summary.checksum_sha256 {
-            println!("SHA-256: {}", checksum);
-        }
-        println!("Lock file: {}", summary.lock_path.display());
-    }
-    Ok(())
-}
-fn run_plugin_rollback_command(args: &[String]) -> anyhow::Result<()> {
-    let Some(bundle) = args.get(0) else {
-        anyhow::bail!("plugin rollback requires a bundle name");
-    };
-    let json = parse_plugin_json_flag(&args[1..])?;
-    let summary = niubash_runtime::plugins::apply_plugin_bundle_rollback(bundle)?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&summary)?);
-    } else {
-        println!(
-            "{} bundle '{}' to {}",
-            niubash_runtime::text_style::green("Rolled back"),
-            summary.bundle,
-            summary.version
-        );
-        println!(
-            "Active path: {}",
-            niubash_runtime::text_style::dim(&summary.active_path.display().to_string())
-        );
-        if let Some(previous_path) = summary.previous_path {
-            println!("Previous path: {}", previous_path.display());
-        }
-        println!("Lock file: {}", summary.lock_path.display());
-    }
-    Ok(())
-}
-#[derive(Default)]
-struct PluginUpdateOptions {
-    source_path: Option<PathBuf>,
-    github_release: Option<String>,
-    checksum: Option<String>,
-    checksum_file: Option<PathBuf>,
-    json: bool,
-}
-fn parse_plugin_update_options(args: &[String]) -> anyhow::Result<PluginUpdateOptions> {
-    let mut options = PluginUpdateOptions::default();
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--from" => {
-                i += 1;
-                let Some(path) = args.get(i) else {
-                    anyhow::bail!("--from requires a bundle directory or zip path");
-                };
-                options.source_path = Some(PathBuf::from(path));
-            }
-            "--checksum" => {
-                i += 1;
-                let Some(checksum) = args.get(i) else {
-                    anyhow::bail!("--checksum requires a SHA-256 value");
-                };
-                options.checksum = Some(checksum.clone());
-            }
-            "--checksum-file" => {
-                i += 1;
-                let Some(path) = args.get(i) else {
-                    anyhow::bail!("--checksum-file requires a path");
-                };
-                options.checksum_file = Some(PathBuf::from(path));
-            }
-            "--github-release" => {
-                i += 1;
-                let Some(release) = args.get(i) else {
-                    anyhow::bail!("--github-release requires latest or a vX.Y.Z tag");
-                };
-                options.github_release = Some(release.clone());
-            }
-            "--json" => options.json = true,
-            unknown => anyhow::bail!("unknown plugin update option '{}'", unknown),
-        }
-        i += 1;
-    }
-    Ok(options)
-}
-struct DownloadedPluginBundle {
-    archive_path: PathBuf,
-    checksum_path: PathBuf,
-    checksum: String,
-    tag: String,
-}
-
-fn download_plugin_bundle_github_release(
-    bundle: &str,
-    release: &str,
-) -> anyhow::Result<DownloadedPluginBundle> {
-    if bundle != niubash_runtime::plugins::OFFICIAL_BUNDLE_NAME {
-        anyhow::bail!(
-            "GitHub bundle updates are only supported for {}",
-            niubash_runtime::plugins::OFFICIAL_BUNDLE_NAME
-        );
-    }
-    let tag = resolve_plugin_bundle_release_tag(release)?;
-    let version = tag.trim_start_matches('v');
-    let asset_name = format!("{bundle}-{version}.zip");
-    let checksum_name = format!("{asset_name}.sha256");
-    let archive_path = self_update::download_github_release_asset(
-        OFFICIAL_PLUGIN_BUNDLE_REPO,
-        &tag,
-        &asset_name,
-        PLUGIN_BUNDLE_DOWNLOAD_CACHE,
-    )?;
-    let checksum_path = self_update::download_github_release_asset(
-        OFFICIAL_PLUGIN_BUNDLE_REPO,
-        &tag,
-        &checksum_name,
-        PLUGIN_BUNDLE_DOWNLOAD_CACHE,
-    )?;
-    let checksum = read_checksum_file(&checksum_path)?;
-    Ok(DownloadedPluginBundle {
-        archive_path,
-        checksum_path,
-        checksum,
-        tag,
-    })
-}
-
-fn resolve_plugin_bundle_release_tag(release: &str) -> anyhow::Result<String> {
-    let release = release.trim();
-    if release.eq_ignore_ascii_case("latest") {
-        return self_update::resolve_latest_github_release_tag(OFFICIAL_PLUGIN_BUNDLE_REPO);
-    }
-    normalize_plugin_bundle_release_tag(release)
-}
-
-fn normalize_plugin_bundle_release_tag(release: &str) -> anyhow::Result<String> {
-    let version = release.strip_prefix('v').unwrap_or(release);
-    let parts: Vec<&str> = version.split('.').collect();
-    let valid = parts.len() == 3
-        && parts
-            .iter()
-            .all(|part| !part.is_empty() && part.chars().all(|ch| ch.is_ascii_digit()));
-    if !valid {
-        anyhow::bail!("--github-release must be latest or a semver tag like v1.0.0");
-    }
-    Ok(format!("v{version}"))
-}
-
-fn read_checksum_file(path: &PathBuf) -> anyhow::Result<String> {
-    let text = std::fs::read_to_string(path).map_err(|err| {
-        anyhow::anyhow!("failed to read checksum file {}: {}", path.display(), err)
-    })?;
-    let checksum = text
-        .split_whitespace()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("checksum file {} is empty", path.display()))?;
-    Ok(checksum.to_string())
-}
-
-fn parse_plugin_json_flag(args: &[String]) -> anyhow::Result<bool> {
-    let mut json = false;
-    for arg in args {
-        match arg.as_str() {
-            "--json" => json = true,
-            unknown => anyhow::bail!("unknown plugin option '{}'", unknown),
-        }
-    }
-    Ok(json)
-}
-
-fn parse_plugin_search_args(args: &[String]) -> anyhow::Result<(Option<String>, bool, bool)> {
-    let mut query = None;
-    let mut json = false;
-    let mut verbose = false;
-    for arg in args {
-        match arg.as_str() {
-            "--json" => json = true,
-            "--verbose" => verbose = true,
-            value if value.starts_with("-") => {
-                anyhow::bail!("unknown plugin search option {}", value)
-            }
-            value => {
-                if query.is_some() {
-                    anyhow::bail!("plugin search accepts at most one query");
-                }
-                query = Some(value.to_string());
-            }
-        }
-    }
-    Ok((query, json, verbose))
-}
-
 fn print_plugin_usage() {
     println!("Usage:  niu plugin <command>");
     println!();
+    println!("External plugin ecosystem (the built-in plugin/theme stack retired,");
+    println!("niubash#145): plugin-manager sources install untrusted and activate");
+    println!("only after an explicit trust review.");
+    println!();
     println!("Commands:");
-    println!("  list [--json] [--verbose] List official Niubash plugins (active state)");
-    println!("  info <name> [--json] [--verbose]  Inspect one plugin");
-    println!("  search [query] [--json] [--verbose]  Discover plugins");
-    println!("  discover [--verbose]      Dry ecosystem overview (sources, themes, packs)");
-    println!("  themes [--json] [--verbose]  List user and bundle themes");
-    println!("  enable <name>             Enable a plugin in ~/.niubashrc");
-    println!("  disable <name>            Disable a plugin in ~/.niubashrc");
-    println!("  bundle status [--json]    Inspect official bundle install state");
-    println!("  doctor [--json] [--verbose]  Diagnose plugin configuration health");
-    println!("  review <name> [--json]    Review plugin permissions before enabling");
-    println!("  update oh-my-niu --from <path>");
-    println!("      [--checksum <sha>|--checksum-file <path>] [--json]");
-    println!("                            Install a local bundle directory or zip");
-    println!("  update oh-my-niu --github-release latest|vX.Y.Z [--json]");
-    println!("                            Download, verify, and install GitHub release");
-    println!("  rollback oh-my-niu [--json]");
-    println!("                            Roll back to the previous bundle");
-    println!("  install <name>           Install official plugin from active bundle");
-    println!("  uninstall <name>         Uninstall official plugin from active bundle");
+    println!("  discover [--verbose]      Dry ecosystem overview (read-only)");
     println!("  source list [--json]     List external plugin-manager sources");
     println!("  source add <id|url|path> [--ref <ref>] [--checksum <sha256>]");
     println!("                           Install a plugin-manager source (untrusted)");
@@ -2432,35 +1865,6 @@ fn is_broken_pipe_io_error(error: &std::io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn plugin_update_parses_github_release() {
-        let args = vec![
-            "--github-release".to_string(),
-            "latest".to_string(),
-            "--json".to_string(),
-        ];
-        let options = parse_plugin_update_options(&args).unwrap();
-
-        assert_eq!(options.github_release.as_deref(), Some("latest"));
-        assert!(options.json);
-        assert!(options.source_path.is_none());
-    }
-
-    #[test]
-    fn plugin_release_tag_normalizes_semver() {
-        assert_eq!(
-            normalize_plugin_bundle_release_tag("1.2.3").unwrap(),
-            "v1.2.3"
-        );
-        assert_eq!(
-            normalize_plugin_bundle_release_tag("v1.2.3").unwrap(),
-            "v1.2.3"
-        );
-        assert!(normalize_plugin_bundle_release_tag("stable").is_err());
-        assert!(normalize_plugin_bundle_release_tag("v1.2").is_err());
-        assert!(normalize_plugin_bundle_release_tag("v1.2.3.4").is_err());
-    }
 
     fn dumped_bodies(input: &str) -> Vec<String> {
         let mut strings = Vec::new();

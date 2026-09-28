@@ -114,12 +114,12 @@ fn oh_my_bash_source_add_trust_load_and_fallback_lifecycle() {
         "{}",
         stdout_text(&listed_untrusted)
     );
-    let themes_untrusted = run_niu_with_env(&["plugin", "themes"], &envs);
-    assert_success(&themes_untrusted, "plugin themes untrusted");
+    // The built-in theme catalog retired (niubash#145); the untrusted
+    // state itself is the gate and stays visible in the source listing.
     assert!(
-        !stdout_text(&themes_untrusted).contains("robbyrussell"),
-        "untrusted source must not contribute themes: {}",
-        stdout_text(&themes_untrusted)
+        stdout_text(&listed_untrusted).contains("untrusted"),
+        "untrusted state must be listed: {}",
+        stdout_text(&listed_untrusted)
     );
 
     // Execution gate: trust activates the source's assets in the catalog.
@@ -141,18 +141,15 @@ fn oh_my_bash_source_add_trust_load_and_fallback_lifecycle() {
         stdout_text(&listed_ready)
     );
 
-    // External-first catalog exposure (§11.3): theme entries show up with
-    // the external_source trust marker.
-    let themes = run_niu_with_env(&["plugin", "themes", "--verbose"], &envs);
-    assert_success(&themes, "plugin themes after trust");
-    let themes_out = stdout_text(&themes);
+    // Trusted sources expose their theme assets through the wizard gallery
+    // and the loader snippet; the retired catalog surface is gone.
+    let discover = run_niu_with_env(&["plugin", "discover"], &envs);
+    assert_success(&discover, "plugin discover after trust");
     assert!(
-        themes_out.contains(
-            "- robbyrussell source=external_source owner=oh-my-bash bundle=none pack=none trust_source=external_source"
-        ),
-        "{themes_out}"
+        stdout_text(&discover).contains("oh-my-bash"),
+        "{}",
+        stdout_text(&discover)
     );
-    assert!(themes_out.contains("agnoster"), "{themes_out}");
 
     // Load the vendored theme through the adapter-installed tree under the
     // niubash engine (script face; interactive activation is gated on
@@ -202,15 +199,15 @@ fn oh_my_bash_source_add_trust_load_and_fallback_lifecycle() {
     // the compiled/bundle layers and theme resolution still works.
     let remove = run_niu_with_env(&["plugin", "source", "remove", "oh-my-bash"], &envs);
     assert_success(&remove, "plugin source remove");
-    let themes_after = run_niu_with_env(&["plugin", "themes", "--verbose"], &envs);
-    assert_success(&themes_after, "plugin themes after remove");
+    // The built-in theme catalog retired (niubash#145); the removed source
+    // must simply be gone from the source listing.
+    let sources_after = run_niu_with_env(&["plugin", "source", "list"], &envs);
+    assert_success(&sources_after, "plugin source list after remove");
     assert!(
-        !stdout_text(&themes_after).contains("robbyrussell"),
-        "removed source must stop contributing themes: {}",
-        stdout_text(&themes_after)
+        !stdout_text(&sources_after).contains("oh-my-bash"),
+        "removed source must be gone from the listing: {}",
+        stdout_text(&sources_after)
     );
-    let theme_resolve = run_niu_with_env(&["-c", "printf '%s' \"$NIU_THEME\""], &envs);
-    assert_success(&theme_resolve, "theme resolution after remove");
 
     let _ = fs::remove_dir_all(&temp);
 }
@@ -320,55 +317,6 @@ fn plugin_discover_is_read_only_and_lists_available_managers() {
     let _ = fs::remove_dir_all(&temp);
 }
 
-/// §0 layering in the real listing: external oh-my-bash themes lead, the
-/// built-in bundle themes retire behind the separator with the honest
-/// fallback label, and same-name collisions resolve once (external wins).
-#[test]
-fn plugin_themes_external_first_builtins_after_separator() {
-    let temp = temp_dir("plugin-themes-ordering");
-    let root = temp.join("sources");
-    let bundle = temp.join("bundle");
-    write_theme_bundle(&bundle, &["agnoster", "native-only"]);
-    let envs = [
-        ("NIU_PLUGIN_SOURCES_ROOT", root.clone()),
-        ("NIU_PLUGIN_BUNDLE_PATH", bundle.clone()),
-    ];
-    let fixture = omb_fixture();
-
-    // Untrusted: nothing external shows; built-ins only.
-    run_niu_with_env(
-        &["plugin", "source", "add", &fixture.to_string_lossy()],
-        &envs,
-    );
-    let out = run_niu_with_env(&["plugin", "themes"], &envs);
-    assert_success(&out, "plugin themes untrusted ordering");
-    let text = stdout_text(&out);
-    assert!(!text.contains("robbyrussell"), "{text}");
-    assert!(text.contains("native-only"), "{text}");
-
-    run_niu_with_env(&["plugin", "source", "trust", "oh-my-bash"], &envs);
-    let out = run_niu_with_env(&["plugin", "themes"], &envs);
-    assert_success(&out, "plugin themes ordering");
-    let text = stdout_text(&out);
-    let external_section = text.find("External themes").expect("external section");
-    let robbyrussell = text.find("robbyrussell").expect("external theme row");
-    let separator = text.find("built-in fallback").expect("built-in separator");
-    let native_only = text.find("native-only").expect("built-in theme row");
-    assert!(
-        external_section < robbyrussell && robbyrussell < separator && separator < native_only,
-        "external themes must lead, built-ins must follow the separator:\n{text}"
-    );
-    // The external `agnoster` wins over the bundle's same-name theme and is
-    // listed exactly once.
-    assert_eq!(text.matches("agnoster").count(), 1, "{text}");
-    assert!(
-        text[..separator].contains("agnoster"),
-        "agnoster must sit in the external section:\n{text}"
-    );
-
-    let _ = fs::remove_dir_all(&temp);
-}
-
 /// The non-interactive `niu setup` contract stays deterministic: minimal
 /// preset applied, no wizard-answer markers written without a question.
 #[test]
@@ -384,9 +332,11 @@ fn setup_noninteractive_stays_deterministic_and_records_no_answers() {
     let out = run_niu_with_env(&["setup"], &envs);
     assert_success(&out, "non-interactive setup");
     let rc = fs::read_to_string(home.join(".niubashrc")).expect("rc written");
-    assert!(rc.contains("NIU_THEME='classic'"), "{rc}");
-    assert!(rc.contains("NIU_PLUGINS=(prompt-core git)"), "{rc}");
-    assert!(rc.contains("NIU_DISABLE_DEFAULT_PLUGINS=1"), "{rc}");
+    // Clean rc (niubash#145): the retired stack variables are absent.
+    assert!(!rc.contains("NIU_THEME="), "{rc}");
+    assert!(!rc.contains("NIU_PLUGINS="), "{rc}");
+    assert!(!rc.contains("NIU_DISABLE_DEFAULT_PLUGINS"), "{rc}");
+    assert!(rc.contains("USERPROFILE"), "{rc}");
     assert!(
         home.join(".niubash").join(".setup-done").is_file(),
         "setup-done marker must exist"
@@ -398,63 +348,4 @@ fn setup_noninteractive_stays_deterministic_and_records_no_answers() {
         "wizard answers must not be written without an explicit pick"
     );
     let _ = fs::remove_dir_all(&temp);
-}
-
-/// Minimal oh-my-niu-shaped bundle fixture with native TOML themes (same
-/// shape as tests/plugin_inventory.rs fixtures).
-fn write_theme_bundle(path: &std::path::Path, themes: &[&str]) {
-    fs::create_dir_all(path.join("packs").join("themes")).unwrap();
-    fs::create_dir_all(path.join("themes")).unwrap();
-    fs::write(
-        path.join("bundle.toml"),
-        r#"name = "oh-my-niu"
-version = "9.9.10"
-api = "niubash:plugin-bundle@0.1.0"
-min_niubash = "0.8.3"
-[packs]
-default = ["themes"]
-available = ["themes"]
-[layout]
-packs_dir = "packs"
-themes_dir = "themes"
-"#,
-    )
-    .unwrap();
-    let list = themes
-        .iter()
-        .map(|name| format!("\"{name}\""))
-        .collect::<Vec<_>>()
-        .join(", ");
-    fs::write(
-        path.join("packs").join("themes").join("plugin.toml"),
-        format!(
-            r#"name = "themes"
-bundle = "oh-my-niu"
-version = "9.9.10"
-kind = "builtin"
-api = "niubash:plugin@0.1.0"
-category = "ux"
-summary = "Ordering fixture."
-default = true
-permissions = []
-required_binaries = []
-[exports]
-aliases = false
-completions = []
-prompt_segments = []
-hooks = []
-commands = []
-keybindings = []
-themes = [{list}]
-"#
-        ),
-    )
-    .unwrap();
-    for name in themes {
-        fs::write(
-            path.join("themes").join(format!("{name}.toml")),
-            "[prompt_user]\nfg = \"green\"\n",
-        )
-        .unwrap();
-    }
 }

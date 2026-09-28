@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use std::path::Path;
 
 use crate::prompt_segments::SegmentPromptAdapter;
-use crate::theme::{by_name, Theme};
+use nu_ansi_term::{Color, Style};
 use reedline::{
     Prompt, PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus, PromptViMode,
 };
@@ -42,23 +42,44 @@ impl Default for PromptIndicators {
     }
 }
 
-/// A prompt that renders the configured template with theme-aware ANSI colours.
+/// Fixed prompt colour schema. The built-in theme stack (NIU_THEME lookup,
+/// user TOML themes, bundle themes) is retired with niubash#145; external
+/// themes style themselves through the bash PS1/PROMPT_COMMAND channel.
+#[derive(Clone)]
+struct PromptStyles {
+    user: Style,
+    host: Style,
+    dir: Style,
+    symbol: Style,
+}
+
+impl Default for PromptStyles {
+    fn default() -> Self {
+        Self {
+            user: Style::new().bold().fg(Color::Default),
+            host: Style::new().bold().fg(Color::Default),
+            dir: Style::new().bold().fg(Color::Default),
+            symbol: Style::new().fg(Color::Default),
+        }
+    }
+}
+
+/// A prompt that renders the configured template with ANSI colours.
 #[derive(Clone)]
 pub struct NiubashPrompt {
     template: String,
     right_template: Option<String>,
     indicators: PromptIndicators,
     prompt_symbol: String,
-    theme: Theme,
+    styles: PromptStyles,
 }
 
 impl NiubashPrompt {
-    pub fn new(template: Option<String>, right_template: Option<String>, theme_name: &str) -> Self {
+    pub fn new(template: Option<String>, right_template: Option<String>) -> Self {
         Self::new_with_symbol(
             template,
             right_template,
             PromptIndicators::default(),
-            theme_name,
             "%".to_string(),
         )
     }
@@ -67,22 +88,14 @@ impl NiubashPrompt {
         template: Option<String>,
         right_template: Option<String>,
         indicators: PromptIndicators,
-        theme_name: &str,
     ) -> Self {
-        Self::new_with_symbol(
-            template,
-            right_template,
-            indicators,
-            theme_name,
-            "%".to_string(),
-        )
+        Self::new_with_symbol(template, right_template, indicators, "%".to_string())
     }
 
     pub fn new_with_symbol(
         template: Option<String>,
         right_template: Option<String>,
         indicators: PromptIndicators,
-        theme_name: &str,
         prompt_symbol: String,
     ) -> Self {
         let t = template.unwrap_or_else(|| "{user}@{host} {cwd} %# ".to_string());
@@ -91,12 +104,8 @@ impl NiubashPrompt {
             right_template,
             indicators,
             prompt_symbol,
-            theme: by_name(theme_name),
+            styles: PromptStyles::default(),
         }
-    }
-
-    pub fn set_theme(&mut self, theme_name: &str) {
-        self.theme = by_name(theme_name);
     }
 
     fn render_template(&self, template: &str, status_token: Option<&str>) -> String {
@@ -116,15 +125,11 @@ impl NiubashPrompt {
             .and_then(display_cwd_base)
             .unwrap_or_else(|| cwd.clone());
 
-        let user_s = self.theme.prompt_user.paint(&user).to_string();
-        let host_s = self.theme.prompt_host.paint(&host).to_string();
-        let dir_s = self.theme.prompt_dir.paint(&cwd).to_string();
-        let dir_base_s = self.theme.prompt_dir.paint(&cwd_base).to_string();
-        let sym_s = self
-            .theme
-            .prompt_symbol
-            .paint(&self.prompt_symbol)
-            .to_string();
+        let user_s = self.styles.user.paint(&user).to_string();
+        let host_s = self.styles.host.paint(&host).to_string();
+        let dir_s = self.styles.dir.paint(&cwd).to_string();
+        let dir_base_s = self.styles.dir.paint(&cwd_base).to_string();
+        let sym_s = self.styles.symbol.paint(&self.prompt_symbol).to_string();
         let user_host_s = format!("{user_s}@{host_s}");
 
         let time_str = format_local_time();
@@ -147,11 +152,7 @@ impl NiubashPrompt {
             .replace("{command_execution_time}", &command_execution_time)
             .replace(
                 "%#",
-                &self
-                    .theme
-                    .prompt_symbol
-                    .paint(&self.prompt_symbol)
-                    .to_string(),
+                &self.styles.symbol.paint(&self.prompt_symbol).to_string(),
             )
             .replace("%n", &user)
             .replace("%m", &host)
@@ -408,25 +409,21 @@ mod tests {
 
     #[test]
     fn renders_optional_right_prompt() {
-        let prompt = NiubashPrompt::new(
-            Some("left> ".to_string()),
-            Some("right".to_string()),
-            "default",
-        );
+        let prompt = NiubashPrompt::new(Some("left> ".to_string()), Some("right".to_string()));
 
         assert_eq!(prompt.render_prompt_right(), "right");
     }
 
     #[test]
     fn omits_right_prompt_when_unset() {
-        let prompt = NiubashPrompt::new(Some("left> ".to_string()), None, "default");
+        let prompt = NiubashPrompt::new(Some("left> ".to_string()), None);
 
         assert_eq!(prompt.render_prompt_right(), "");
     }
 
     #[test]
     fn time_tokens_render_system_local_clock() {
-        let prompt = NiubashPrompt::new(Some("{time} {time_24}".to_string()), None, "default");
+        let prompt = NiubashPrompt::new(Some("{time} {time_24}".to_string()), None);
 
         let rendered = prompt.render_prompt_left();
         let expected = format_local_time();
@@ -447,7 +444,7 @@ mod tests {
         let _style = EnvGuard::unset("NIU_PROMPT_CWD_STYLE");
         let _cwd = CwdGuard::enter(&project);
 
-        let prompt = NiubashPrompt::new(Some("{cwd} {cwd_base} %~".to_string()), None, "default");
+        let prompt = NiubashPrompt::new(Some("{cwd} {cwd_base} %~".to_string()), None);
         let rendered = prompt.render_prompt_left();
 
         assert!(rendered.contains("~/repo/project"), "{rendered:?}");
@@ -471,7 +468,7 @@ mod tests {
         let _style = EnvGuard::unset("NIU_PROMPT_CWD_STYLE");
         let _cwd = CwdGuard::enter(&project);
 
-        let prompt = NiubashPrompt::new(Some("{cwd}".to_string()), None, "default");
+        let prompt = NiubashPrompt::new(Some("{cwd}".to_string()), None);
         let rendered = prompt.render_prompt_left();
 
         assert!(rendered.contains("~/repo/project"), "{rendered:?}");
@@ -483,7 +480,7 @@ mod tests {
 
     #[test]
     fn default_indicators_preserve_existing_behavior() {
-        let prompt = NiubashPrompt::new(Some("left> ".to_string()), None, "default");
+        let prompt = NiubashPrompt::new(Some("left> ".to_string()), None);
 
         assert_eq!(prompt.render_prompt_indicator(PromptEditMode::Default), "");
         assert_eq!(prompt.render_prompt_indicator(PromptEditMode::Emacs), "");
@@ -519,7 +516,6 @@ mod tests {
                 history_search: "search:{term}:{status} ".to_string(),
                 history_search_fail: "fail:{term}:{status} ".to_string(),
             },
-            "default",
         );
 
         assert_eq!(
@@ -557,12 +553,12 @@ mod tests {
         // The host no longer renders git status (issue #145): template text
         // mentioning the retired tokens must render as plain braces, and the
         // default template must not contain {git_prompt}.
-        let prompt = NiubashPrompt::new(Some("{git} {git_branch}".to_string()), None, "default");
+        let prompt = NiubashPrompt::new(Some("{git} {git_branch}".to_string()), None);
         let rendered = prompt.render_prompt_left();
         assert!(rendered.contains("{git}"), "{rendered:?}");
         assert!(rendered.contains("{git_branch}"), "{rendered:?}");
 
-        let default = NiubashPrompt::new(None, None, "default");
+        let default = NiubashPrompt::new(None, None);
         let rendered = default.render_prompt_left();
         assert!(!rendered.contains("{git"), "{rendered:?}");
     }

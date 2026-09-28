@@ -305,31 +305,8 @@ fn resolve_latest_release(repo: &str, timeout_ms: i32) -> Result<GitHubRelease> 
     })
 }
 
-pub fn resolve_latest_github_release_tag(repo: &str) -> Result<String> {
-    Ok(resolve_latest_release(repo, HTTP_TIMEOUT_MS)?.tag_name)
-}
-
 pub fn github_release_asset_url(repo: &str, tag: &str, asset_name: &str) -> String {
     format!("https://github.com/{repo}/releases/download/{tag}/{asset_name}")
-}
-
-pub fn download_github_release_asset(
-    repo: &str,
-    tag: &str,
-    asset_name: &str,
-    cache_dir_name: &str,
-) -> Result<PathBuf> {
-    let dir = std::env::temp_dir()
-        .join(cache_dir_name)
-        .join(tag.trim_start_matches('v'));
-    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-    let path = dir.join(safe_asset_name(asset_name));
-    let url = github_release_asset_url(repo, tag, asset_name);
-    let bytes =
-        http_get_bytes(&url).with_context(|| format!("download {asset_name} from {url}"))?;
-    std::fs::write(&path, bytes)
-        .with_context(|| format!("write downloaded release asset {}", path.display()))?;
-    Ok(path)
 }
 
 fn download_asset(repo: &str, tag: &str, asset: &GitHubAsset) -> Result<PathBuf> {

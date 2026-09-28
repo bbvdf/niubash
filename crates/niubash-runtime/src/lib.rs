@@ -83,7 +83,6 @@ pub mod startup_trace;
 pub mod syntax_highlighting;
 pub mod terminal;
 pub mod text_style;
-pub mod theme;
 #[cfg(windows)]
 pub mod windows_terminal;
 pub mod winuxcmd;
@@ -97,8 +96,8 @@ pub(crate) mod test_support {
 
 pub use completion::{CompletionBehavior, CompletionMatchMode, CompletionState, NiubashCompleter};
 pub use config::{
-    AutosuggestConfig, EditorConfig, EditorMode, HistoryConfig, MenuConfig, PluginConfig,
-    PluginPackConfig, ShellConfig, SyntaxHighlightConfig,
+    AutosuggestConfig, EditorConfig, EditorMode, HistoryConfig, MenuConfig, ShellConfig,
+    SyntaxHighlightConfig,
 };
 pub use prompt::PromptBackend;
 pub use prompt::PromptIndicators;
@@ -106,4 +105,3 @@ pub use prompt_segments::{
     SegmentId, SegmentPreset, SegmentPrompt, SegmentPromptAdapter, SegmentPromptConfig,
 };
 pub use shell::Shell;
-pub use theme::Theme;

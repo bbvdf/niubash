@@ -8,46 +8,32 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use reedline::Reedline;
 use rubash::{
-    decode_to_visible_text,
-    executor::{Executor, HostExternalCommandOutput},
-    lexer::tokenize,
-    parser::parse,
-    Ast, Token, TokenKind,
+    decode_to_visible_text, executor::Executor, lexer::tokenize, parser::parse, Ast, Token,
+    TokenKind,
 };
 
 use crate::completion::{CompletionState, NiubashCompleter};
 use crate::config::{
-    load as load_config, AutosuggestConfig, EditorMode, HookConfig, MenuConfig, NativePluginConfig,
+    load as load_config, AutosuggestConfig, EditorMode, HookConfig, MenuConfig,
     NativeWidgetBinding, NativeWidgetConfig, SyntaxHighlightConfig,
 };
 use crate::path_utils::{shell_home_dir, shell_path_to_host_path};
-use crate::plugins::{
-    PluginKind, PluginProcessSpec, PluginRuntimeState, OFFICIAL_BUNDLE_LEGACY_NAMES,
-    OFFICIAL_BUNDLE_NAME,
-};
-use crate::prompt::{BashPrompt, NiubashPrompt, PromptBackend, PromptIndicators};
+use crate::prompt::{BashPrompt, NiubashPrompt, PromptBackend};
 use crate::prompt_segments::{
     SegmentId, SegmentPreset, SegmentPrompt, SegmentPromptAdapter, SegmentPromptConfig,
 };
 
 use crate::winuxcmd;
 
-const DOTENV_MAX_SIZE: u64 = 10 * 1024 * 1024;
 const COMPATIBLE_SHELL_PATH_ENV: &str = "NIU_COMPATIBLE_SHELL_PATH";
-const COMMAND_NOT_FOUND_PROVIDER_NAME: &str = "command-not-found";
 #[allow(dead_code)]
-const COMMAND_NOT_FOUND_PROVIDER_MAX_OUTPUT_BYTES: usize = 16 * 1024;
 #[allow(dead_code)]
-const COMMAND_NOT_FOUND_PROVIDER_MAX_LINES: usize = 32;
 #[allow(dead_code)]
-const COMMAND_NOT_FOUND_PROVIDER_MAX_LINE_BYTES: usize = 512;
 const NIU_RC_FILE: &str = ".niubashrc";
 const NIU_COMPAT_RC_FILE: &str = ".winuxshrc";
 /// Niubash-native non-interactive environment file variable. Takes precedence
@@ -121,17 +107,11 @@ pub struct Shell {
     /// User-declared completion functions parsed from `NIU_COMPDEFS` in the
     /// startup rc: `(command, function)` pairs.
     pub compdefs: Vec<(String, String)>,
-    pub plugins: PluginRuntimeState,
-    pub native_plugins: NativePluginConfig,
     pub hooks: HookConfig,
     pub aliases: HashMap<String, String>,
-    pub zoxide_last_tracked_dir: Option<String>,
-    pub last_working_dir_cache_path: PathBuf,
-    pub last_working_dir_restored: bool,
     pub last_interactive_command: Option<String>,
     pub last_interactive_exit_code: Option<i32>,
     pub line_editor: Option<Reedline>,
-    plugin_prompt_sync: PluginPromptSyncConfig,
     process_stdin_pipeline_bridge: bool,
     bash_prompt_command_running: bool,
     // True once this shell enters the interactive REPL. Easter eggs are
@@ -142,13 +122,6 @@ pub struct Shell {
     pub no_rc: bool,
     // --noprofile: do not run login-profile startup.
     pub no_profile: bool,
-    // Memoized per-runner answers to `declare -F <runner>`. The oh-my-niu
-    // framework defines the niubash_run_*_hooks entry points from the user rc;
-    // when the rc was never sourced (`niu -c`, scripts, piped stdin) or bundle
-    // discovery missed, dispatching them makes rubash pay for a full
-    // PATH/command-link scan for a name that cannot exist. Probed once per
-    // runner with a builtin, then cached.
-    framework_hook_probes: HashMap<String, bool>,
     // --rcfile / --init-file: alternate startup file.
     pub rc_file: Option<PathBuf>,
     // --noediting: disable readline-style line editing in the REPL.
@@ -159,26 +132,6 @@ pub struct StdinCurrentShellChild {
     script_name: String,
     script_path: PathBuf,
     positional_params: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-struct PluginPromptSyncConfig {
-    enabled: bool,
-    indicators: PromptIndicators,
-    theme_name: String,
-    prompt_symbol: String,
-}
-
-impl PluginPromptSyncConfig {
-    #[cfg(test)]
-    fn disabled() -> Self {
-        Self {
-            enabled: false,
-            indicators: PromptIndicators::default(),
-            theme_name: "default".to_string(),
-            prompt_symbol: "%".to_string(),
-        }
-    }
 }
 
 impl Shell {
@@ -308,13 +261,8 @@ impl Shell {
         }
         executor.set_env("NIU_PROMPT_SYMBOL", &config.shell.prompt_symbol);
         sync_executor_path_from_process_path(&mut executor);
-        let plugin_state = crate::plugins::effective_plugin_state(&config.plugins);
-        let host_plugin_state = plugin_state.clone();
-        executor.set_host_external_command_handler(move |words, env| {
-            execute_niubash_host_external_command(words, env, &host_plugin_state)
-        });
 
-        crate::startup_trace::tick("executor env + host handler");
+        crate::startup_trace::tick("executor env ready");
 
         // 5. Apply managed aliases so explicit machine state remains
         // authoritative when names collide.
@@ -327,75 +275,16 @@ impl Shell {
             }
         }
 
-        // P4: the builtin alias packs (git/docker/kubectl/npm conveniences)
-        // are NOT applied here. They must not leak into non-interactive
-        // runs, where GNU bash scripts would observe them through
-        // BASH_ALIASES (assoc.tests). enter_interactive() installs them on
-        // the REPL path only. User-INSTALLED plugin bundles do apply here:
-        // they are explicit user state, like config aliases.
-        for pack_name in ["git", "docker", "kubectl", "npm"] {
-            if !plugin_state.is_enabled(pack_name) {
-                continue;
-            }
-            let Some(pack_aliases) = crate::plugins::installed_bundle_aliases(pack_name) else {
-                continue;
-            };
-            for (name, value) in pack_aliases {
-                if aliases.contains_key(&name) {
-                    continue;
-                }
-                if apply_alias(&mut executor, &name, &value) {
-                    aliases.insert(name, value);
-                }
-            }
-        }
-
         crate::startup_trace::tick("aliases");
 
-        // 6. Prompt + theme. Choose backend based on `prompt_style`:
-        //    "segments"  -> new p10k-style segment engine
-        //    "template"  -> legacy template engine (default, backward-compatible)
-        let prompts_plugin_disabled =
-            plugin_state.has_decision("prompts") && !plugin_state.is_enabled("prompts");
-        let prompt_style = if prompts_plugin_disabled {
-            "template"
-        } else {
-            config.shell.prompt_style.as_deref().unwrap_or("template")
-        };
-        let native_prompt_configured = config.shell.prompt_format.is_some()
-            || config.shell.right_prompt_format.is_some()
-            || config.shell.prompt_style.is_some()
-            || config.shell.segment_preset.is_some()
-            || config.shell.left_prompt_elements.is_some()
-            || config.shell.right_prompt_elements.is_some();
-        let plugin_prompt_sync = PluginPromptSyncConfig {
-            enabled: plugin_state.is_enabled("prompt-core") && !native_prompt_configured,
-            indicators: config.shell.prompt_indicators.clone(),
-            theme_name: config.theme_name.clone(),
-            prompt_symbol: config.shell.prompt_symbol.clone(),
-        };
+        // 6. Prompt + theme. The template engine is the default backend;
+        // the segment engine stays available for explicit configs.
+        let prompt_style = config.shell.prompt_style.as_deref().unwrap_or("template");
         let prompt: PromptBackend = if prompt_style == "segments" {
             let preset_name = config.shell.segment_preset.as_deref().unwrap_or("classic");
             let preset = SegmentPreset::from_name(preset_name).unwrap_or(SegmentPreset::Classic);
             let mut seg_config =
                 SegmentPromptConfig::from_preset(preset, &config.shell.prompt_symbol);
-            if let Some(bundle_preset) = crate::plugins::plugin_prompt_preset(preset_name) {
-                let left_elements: Vec<SegmentId> = bundle_preset
-                    .left_elements
-                    .iter()
-                    .filter_map(|segment| SegmentId::from_name(segment))
-                    .collect();
-                if !left_elements.is_empty() {
-                    seg_config.left_elements = left_elements;
-                }
-                seg_config.right_elements = bundle_preset
-                    .right_elements
-                    .iter()
-                    .filter_map(|segment| SegmentId::from_name(segment))
-                    .collect();
-                seg_config.separator = bundle_preset.separator;
-            }
-            seg_config.theme_name = config.theme_name.clone();
             if let Some(ref left) = config.shell.left_prompt_elements {
                 seg_config.left_elements = left
                     .iter()
@@ -416,7 +305,6 @@ impl Shell {
                 prompt_format,
                 right_prompt_format,
                 config.shell.prompt_indicators.clone(),
-                &config.theme_name,
                 config.shell.prompt_symbol.clone(),
             );
             PromptBackend::Template(template_prompt)
@@ -428,7 +316,6 @@ impl Shell {
         normalize_executor_home_env(&mut executor, &home_dir);
         ensure_windows_profile_env(&mut executor, &home_dir);
         ensure_prompt_terminal_env(&mut executor);
-        set_default_niubash_framework_env(&mut executor, &home_dir);
         let history_path = config
             .history
             .path
@@ -448,7 +335,6 @@ impl Shell {
         })?;
         executor.set_history_provider(Rc::new(RefCell::new(history_provider)));
         crate::startup_trace::tick("history provider");
-        let last_working_dir_cache_path = default_last_working_dir_cache_path(&home_dir);
 
         // 8. Completion state.
         let mut initial_completion_state = CompletionState::new(
@@ -456,35 +342,16 @@ impl Shell {
         );
         initial_completion_state.behavior = config.completion_behavior;
         let completion_state = Arc::new(Mutex::new(initial_completion_state));
-        let bundle_completion_defs = crate::plugins::plugin_completion_defs(&plugin_state);
 
         crate::startup_trace::tick("completion state");
 
         // 9. Load completion dirs from config (inline, not in thread).
         {
             let mut s = completion_state.lock().unwrap();
-            s.load_completion_dirs_with_bundle_and_definitions(
-                &config.completion_dirs,
-                bundle_completion_defs,
-                Vec::new(),
-            );
+            s.load_completion_dirs(&config.completion_dirs);
         }
 
-        let mut native_widgets = config.native_widgets.clone();
-        if plugin_state.has_decision("keybindings") && !plugin_state.is_enabled("keybindings") {
-            native_widgets.enabled = false;
-            native_widgets.presets.clear();
-        }
-        // Bundle-declared keybindings are gated by the `keybindings` pack
-        // decision (the manifest control plane), not by the native-widget
-        // feature flag: disabling the pack removes the bindings entirely.
-        let native_widget_bindings = if plugin_state.has_decision("keybindings")
-            && !plugin_state.is_enabled("keybindings")
-        {
-            Vec::new()
-        } else {
-            crate::plugins::plugin_native_widget_bindings(&plugin_state)
-        };
+        let native_widgets = config.native_widgets.clone();
 
         let mut shell = Self {
             executor,
@@ -501,30 +368,23 @@ impl Shell {
             autosuggest: config.autosuggest.with_env_overrides(),
             syntax_highlighting: config.syntax_highlighting.with_env_overrides(),
             native_widgets,
-            native_widget_bindings,
+            native_widget_bindings: Vec::new(),
             user_widget_bindings: Vec::new(),
             compdefs: Vec::new(),
-            plugins: plugin_state,
-            native_plugins: config.native_plugins,
             hooks: config.hooks,
             aliases,
-            zoxide_last_tracked_dir: None,
-            last_working_dir_cache_path,
-            last_working_dir_restored: false,
             last_interactive_command: None,
             last_interactive_exit_code: None,
             line_editor: None,
-            plugin_prompt_sync,
             process_stdin_pipeline_bridge: false,
             bash_prompt_command_running: false,
             interactive: false,
             no_rc: false,
             no_profile: false,
-            framework_hook_probes: HashMap::new(),
             rc_file: None,
             no_editing: false,
         };
-        crate::startup_trace::tick("bundle completion + keybindings");
+        crate::startup_trace::tick("completion + widgets");
         shell.sync_executor_pwd_from_process_cwd();
         shell.update_completion_state();
         crate::startup_trace::tick("Shell::new done");
@@ -655,27 +515,6 @@ impl Shell {
         // so HISTFILE cannot create a second, competing history stream.
         self.executor.set_shell_option("history", false);
         self.executor.unset_env("HISTFILE");
-        // P4: install the builtin alias packs here (interactive only). GNU
-        // alias tables in a script run must stay product-clean, and
-        // BASH_ALIASES must not observe the git/docker/kubectl/npm
-        // conveniences outside the REPL.
-        let plugin_state = self.plugins.clone();
-        for pack_name in ["git", "docker", "kubectl", "npm"] {
-            if !plugin_state.is_enabled(pack_name) {
-                continue;
-            }
-            let Some(pack_aliases) = crate::plugins::plugin_aliases(pack_name) else {
-                continue;
-            };
-            for (name, value) in pack_aliases {
-                if self.aliases.contains_key(&name) {
-                    continue;
-                }
-                if apply_alias(&mut self.executor, &name, &value) {
-                    self.aliases.insert(name, value);
-                }
-            }
-        }
     }
 
     /// Route a one-command AST to an easter egg when this shell is
@@ -724,42 +563,8 @@ impl Shell {
         normalize_winuxcmd_slash_drive_args(&mut ast);
 
         let mut printed_command_not_found_hints = false;
-        let code = if self.native_plugin_enabled("zoxide")
-            && ast.commands.len() == 1
-            && ast.commands[0]
-                .words
-                .first()
-                .is_some_and(|command| command == "z")
-        {
-            self.execute_native_zoxide(&decoded_words(&ast.commands[0].words[1..]))?
-        } else if self.native_plugin_enabled("thefuck")
-            && ast.commands.len() == 1
-            && ast.commands[0]
-                .words
-                .first()
-                .is_some_and(|command| command == "fuck")
-        {
-            self.execute_native_thefuck(&decoded_words(&ast.commands[0].words[1..]))?
-        } else if self.native_selector_enabled()
-            && ast.commands.len() == 1
-            && ast.commands[0]
-                .words
-                .first()
-                .is_some_and(|command| command == "cdf" || command == "fzf-cd")
-        {
-            self.execute_native_fzf_cd(&decoded_words(&ast.commands[0].words[1..]))?
-        } else if self.native_plugin_enabled("last-working-dir")
-            && ast.commands.len() == 1
-            && ast.commands[0]
-                .words
-                .first()
-                .is_some_and(|command| command == "lwd")
-        {
-            self.execute_native_last_working_dir()?
-        } else if let Some(exit) = self.easter_egg_exit(&ast.commands) {
+        let code = if let Some(exit) = self.easter_egg_exit(&ast.commands) {
             exit
-        } else if let Some(code) = self.execute_process_plugin_simple_ast(&ast)? {
-            code
         } else if let Some(execution) = self.execute_host_synced_simple_ast(&ast) {
             match execution {
                 Ok(code) => code,
@@ -768,13 +573,8 @@ impl Shell {
                 Err(rubash::executor::ExecuteError::ExpansionFailure(code)) => code,
                 Err(rubash::executor::ExecuteError::FatalFunctionError(code)) => code,
                 Err(rubash::executor::ExecuteError::CommandNotFound(cmd)) => {
-                    if self.command_not_found_plugin_enabled() {
-                        let args = command_not_found_args(&ast, &cmd);
-                        self.print_native_command_not_found(&cmd, &args);
-                    } else {
-                        eprintln!("niubash: {}: command not found", cmd);
-                        self.print_command_not_found_hints(&cmd);
-                    }
+                    eprintln!("niubash: {}: command not found", cmd);
+                    self.print_command_not_found_hints(&cmd);
                     printed_command_not_found_hints = true;
                     127
                 }
@@ -793,13 +593,8 @@ impl Shell {
                 Err(rubash::executor::ExecuteError::ExpansionFailure(code)) => code,
                 Err(rubash::executor::ExecuteError::FatalFunctionError(code)) => code,
                 Err(rubash::executor::ExecuteError::CommandNotFound(cmd)) => {
-                    if self.command_not_found_plugin_enabled() {
-                        let args = command_not_found_args(&ast, &cmd);
-                        self.print_native_command_not_found(&cmd, &args);
-                    } else {
-                        eprintln!("niubash: {}: command not found", cmd);
-                        self.print_command_not_found_hints(&cmd);
-                    }
+                    eprintln!("niubash: {}: command not found", cmd);
+                    self.print_command_not_found_hints(&cmd);
                     printed_command_not_found_hints = true;
                     127
                 }
@@ -854,42 +649,13 @@ impl Shell {
         Ok(code)
     }
 
-    /// Restore the last working directory once for interactive REPL startup.
-    ///
-    /// This mirrors common last-working-dir guards: only jump when the
-    /// shell starts in the normal home directory, so terminals opened directly
-    /// inside a project are left alone.
-    pub fn restore_last_working_dir_for_repl(&mut self) {
-        if self.last_working_dir_restored || !self.native_plugin_enabled("last-working-dir") {
-            return;
-        }
-        self.last_working_dir_restored = true;
-
-        let Some(old_pwd) = self.executor.get_env("PWD").map(str::to_owned) else {
-            return;
-        };
-        let home_pwd = host_path_to_shell_path(&self.home_dir.to_string_lossy());
-        if !same_shell_dir(&old_pwd, &home_pwd) {
-            return;
-        }
-
-        if self.execute_native_last_working_dir().ok() != Some(0) {
-            return;
-        }
-
-        let Some(new_pwd) = self.executor.get_env("PWD").map(str::to_owned) else {
-            return;
-        };
-        self.run_chpwd_hooks_if_changed(&old_pwd, &new_pwd);
-        self.update_completion_state();
-    }
-
     /// Source the user's REPL startup file once before the first prompt.
     ///
-    /// `~/.niubashrc` is the primary interactive entry point. If it exists,
-    /// source plugins are expected to be loaded from that file through the
-    /// framework entry point. A pre-rename `~/.winuxshrc` is migrated once
-    /// into `~/.niubashrc` (original file kept).
+    /// `~/.niubashrc` is the primary interactive entry point. A pre-rename
+    /// `~/.winuxshrc` is migrated once into `~/.niubashrc` (original file
+    /// kept). The rc is ordinary shell code: the built-in plugin/theme
+    /// stack is retired (niubash#145), so NIU_PLUGINS / NIU_THEME lines in
+    /// an old rc are inert assignments the host no longer reads.
     pub fn run_startup_rc(&mut self) {
         normalize_executor_home_env(&mut self.executor, &self.home_dir);
         ensure_windows_profile_env(&mut self.executor, &self.home_dir);
@@ -901,26 +667,14 @@ impl Shell {
             migrate_legacy_winuxsh_rc(&self.home_dir);
         }
         if self.no_rc {
-            self.run_process_plugin_hooks("startup", &[]);
-            self.sync_prompt_from_plugin_env();
             return;
         }
-        let rc_path = self.startup_rc_path();
-        let primary_rc = rc_path.as_ref().is_some_and(|path| {
-            path.file_name().and_then(|name| name.to_str()) == Some(NIU_RC_FILE)
-        });
-        if !primary_rc {
-            self.run_source_plugin_startup_scripts();
+        let Some(path) = self.startup_rc_path() else {
+            return;
+        };
+        if !path.is_file() {
+            return;
         }
-        self.run_process_plugin_hooks("startup", &[]);
-        let Some(path) = rc_path else {
-            self.sync_prompt_from_plugin_env();
-            return;
-        };
-        let Ok(_script) = std::fs::read_to_string(&path) else {
-            self.sync_prompt_from_plugin_env();
-            return;
-        };
 
         self.executor.set_env("NIU_REPL_STARTUP", "1");
         match self.source_file_into_current_shell(&path) {
@@ -934,27 +688,7 @@ impl Shell {
         let _ = self.execute_script("unset NIU_REPL_STARTUP");
         self.sync_process_path_from_executor_path();
 
-        // The rc's `NIU_PLUGINS=(...)` line selects packs after
-        // construction-time defaults were applied, and the framework just
-        // loaded those packs' aliases and functions. Re-apply the same
-        // selection to the Rust-side plugin state and pull the newly enabled
-        // packs' completion TOMLs in — without this, rc-enabled packs
-        // silently lack completions (official names are masked by the
-        // compiled fallback; third-party and newly added packs are not).
-        let configured = crate::plugins::configured_plugins();
-        let inventory = crate::plugins::active_plugin_inventory();
-        self.plugins
-            .set_enabled(crate::plugins::active_pack_names_from(
-                &inventory,
-                &configured,
-            ));
-        let defs = crate::plugins::plugin_completion_defs(&self.plugins);
-        if let Ok(mut state) = self.completion_state.lock() {
-            state.refresh_bundle_definitions(defs);
-        }
-
         self.update_completion_state();
-        self.sync_prompt_from_plugin_env();
         self.run_greeting_hooks();
     }
 
@@ -1032,101 +766,6 @@ impl Shell {
         None
     }
 
-    fn uses_primary_startup_rc(&self) -> bool {
-        self.startup_rc_path().as_ref().is_some_and(|path| {
-            path.file_name().and_then(|name| name.to_str()) == Some(NIU_RC_FILE)
-        })
-    }
-
-    /// Whether the oh-my-niu framework runner is actually defined in this
-    /// shell. Probed once with the `declare -F` builtin and memoized per
-    /// runner so repeated hook invocations stay free.
-    fn framework_hook_defined(&mut self, runner: &str) -> bool {
-        if let Some(known) = self.framework_hook_probes.get(runner) {
-            return *known;
-        }
-        let script = format!("declare -F {runner} >/dev/null 2>&1");
-        let previous_exit_code = self.executor.last_exit_code();
-        let defined = self
-            .execute_script(&script)
-            .map(|code| code == 0)
-            .unwrap_or(false);
-        // The probe must not leak into $?: the caller's last_exit_code feeds
-        // NIU_LAST_EXIT_CODE for the hook that dispatched this probe.
-        self.executor.set_last_exit_code(previous_exit_code);
-        self.framework_hook_probes
-            .insert(runner.to_string(), defined);
-        defined
-    }
-
-    fn run_framework_hook_runner(&mut self, runner: &str, context: &[(&str, String)]) {
-        // The framework entry points only exist once the user rc has been
-        // sourced. Dispatching them earlier makes rubash fall through to a
-        // full PATH/command-link scan for a name that cannot exist, which is
-        // the dominant fixed cost of `niu -c` and of any rc-less REPL start.
-        if !self.framework_hook_defined(runner) {
-            return;
-        }
-        for (name, value) in context {
-            self.executor.set_env(name, value);
-        }
-        // The prompt machinery must survive hostile user options: a `set -eu`
-        // from .niubashrc or an interactive session used to make every hook
-        // runner print `NIU_*_HOOKS: unbound variable` spam and abort
-        // mid-runner (framework scripts such as oh-my-niu reference optional
-        // NIU_* hook lists unguarded; GNU bash's PROMPT_COMMAND has the same
-        // fragility, which is why starship and bash-preexec guard with
-        // ${VAR:-}). Snapshot the option state, force nounset/errexit off for
-        // host-owned hook execution, then restore exactly what the user had.
-        let _ = self.execute_script(&format!(
-            "__NIU_HOOK_OPTS_=\"$-\"\nset +eu\n{runner} 2>/dev/null || true\ncase \"$__NIU_HOOK_OPTS_\" in *e*) set -e ;; *) set +e ;; esac\ncase \"$__NIU_HOOK_OPTS_\" in *u*) set -u ;; *) set +u ;; esac\nunset __NIU_HOOK_OPTS_"
-        ));
-        if !context.is_empty() {
-            let names = context
-                .iter()
-                .map(|(name, _)| *name)
-                .collect::<Vec<_>>()
-                .join(" ");
-            let _ = self.execute_script(&format!("unset {names}"));
-        }
-    }
-
-    fn sync_prompt_from_plugin_env(&mut self) {
-        if !self.plugin_prompt_sync.enabled {
-            return;
-        }
-        if self.bash_prompt_env_active() {
-            return;
-        }
-
-        let left_template = self.executor.get_env("NIU_PROMPT_LEFT").map(str::to_owned);
-        let right_template = self.executor.get_env("NIU_PROMPT_RIGHT").map(str::to_owned);
-        if left_template.is_none() && right_template.is_none() {
-            return;
-        }
-
-        let theme_name = self
-            .executor
-            .get_env("NIU_ACTIVE_THEME")
-            .or_else(|| self.executor.get_env("NIU_THEME"))
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or(&self.plugin_prompt_sync.theme_name);
-        let prompt_symbol = self
-            .executor
-            .get_env("NIU_PROMPT_SYMBOL")
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or(&self.plugin_prompt_sync.prompt_symbol);
-
-        let prompt = NiubashPrompt::new_with_symbol(
-            left_template,
-            right_template,
-            self.plugin_prompt_sync.indicators.clone(),
-            theme_name,
-            prompt_symbol.to_string(),
-        );
-        self.prompt = PromptBackend::Template(prompt);
-    }
-
     fn bash_prompt_env_active(&self) -> bool {
         self.executor
             .get_env("PROMPT_COMMAND")
@@ -1186,95 +825,6 @@ impl Shell {
         self.executor.set_last_exit_code(last_exit_code);
     }
 
-    fn run_source_plugin_startup_scripts(&mut self) {
-        let context = [("NIU_REPL_PLUGIN_STARTUP", "1".to_string())];
-        self.run_source_plugin_scripts_for_hook("startup", &context);
-    }
-
-    /// Source-pack dispatch re-sources each plugin entry file on every hook
-    /// event, so the file's top-level `niubash_add_*_hook` registration calls
-    /// run each time. Those functions come from the bundle's `lib/hooks.niu`,
-    /// which is normally pulled in by `oh-my-niu.niu` — in rc-less or custom
-    /// shells that entry point never ran and every dispatch spammed
-    /// "command not found" (and registered hooks could never run anyway).
-    /// Load the registry once per shell; fall back to the same no-op stubs
-    /// oh-my-niu.niu installs for bundles that ship no hooks lib.
-    fn ensure_source_plugin_hook_registry(&mut self, bundle_root: &Path) {
-        if self.framework_hook_defined("niubash_add_precmd_hook") {
-            return;
-        }
-        let hooks_lib = bundle_root.join("lib").join("hooks.niu");
-        let loaded = hooks_lib.is_file()
-            && self
-                .source_file_into_current_shell(&hooks_lib)
-                .map(|code| code == 0)
-                .unwrap_or(false);
-        if !loaded {
-            let _ = self.execute_script(
-                "for __niu_h in startup precmd preexec postcmd chpwd period \
-                 zshaddhistory zshexit greeting title trapdebug traperr trapint \
-                 trapwinch trapusr1 trapusr2 trappipe trapterm trapchld trapzerr; do \
-                 eval \"niubash_add_${__niu_h}_hook() { :; }; \
-                 niubash_run_${__niu_h}_hooks() { :; }\"; done; unset __niu_h",
-            );
-        }
-        self.framework_hook_probes
-            .insert("niubash_add_precmd_hook".to_string(), true);
-    }
-
-    fn run_source_plugin_scripts_for_hook(&mut self, hook_name: &str, context: &[(&str, String)]) {
-        let sources = crate::plugins::source_plugin_scripts_for_hook(&self.plugins, hook_name);
-        if let Some(first) = sources.first() {
-            self.ensure_source_plugin_hook_registry(&first.bundle_root.clone());
-        }
-        for source in sources {
-            let plugin_dir = source
-                .path
-                .parent()
-                .map(|path| host_path_to_shell_path(&path.to_string_lossy()))
-                .unwrap_or_default();
-            let bundle_root = host_path_to_shell_path(&source.bundle_root.to_string_lossy());
-            let plugin_source = host_path_to_shell_path(&source.path.to_string_lossy());
-            for (name, value) in context {
-                self.executor.set_env(name, value);
-            }
-            self.executor.set_env("NIUBASH", &bundle_root);
-            self.executor.set_env("NIU_PLUGIN_BUNDLE_DIR", &bundle_root);
-            self.executor.set_env("NIU_PLUGIN_NAME", &source.pack);
-            self.executor.set_env("NIU_PLUGIN_DIR", &plugin_dir);
-            self.executor.set_env("NIU_PLUGIN_SOURCE", &plugin_source);
-            self.executor.set_env("NIU_PLUGIN_HOOK", hook_name);
-            match self.source_file_into_current_shell(&source.path) {
-                Ok(code) => {
-                    if code != 0 {
-                        log::warn!(
-                            "source plugin '{}' hook '{}' exited with status {}",
-                            source.pack,
-                            hook_name,
-                            code
-                        );
-                    }
-                }
-                Err(err) => log::warn!(
-                    "source plugin '{}' hook '{}' failed from {}: {}",
-                    source.pack,
-                    hook_name,
-                    source.path.display(),
-                    err
-                ),
-            }
-            let mut unset_names = vec![
-                "NIU_PLUGIN_NAME".to_string(),
-                "NIU_PLUGIN_DIR".to_string(),
-                "NIU_PLUGIN_SOURCE".to_string(),
-                "NIU_PLUGIN_HOOK".to_string(),
-            ];
-            unset_names.extend(context.iter().map(|(name, _)| (*name).to_string()));
-            let _ = self.execute_script(&format!("unset {}", unset_names.join(" ")));
-        }
-        self.update_completion_state();
-    }
-
     fn source_file_into_current_shell(&mut self, path: &Path) -> anyhow::Result<i32> {
         let shell_path = host_path_to_shell_path(&path.to_string_lossy());
         self.execute_script(&format!(". {}", shell_quote(&shell_path)))
@@ -1283,22 +833,14 @@ impl Shell {
     /// Run native hooks before rendering the next prompt.
     pub fn run_precmd_hooks(&mut self) {
         let last_exit_code = self.executor.last_exit_code();
-        self.run_native_precmd_plugins();
         let hooks = self.hooks.precmd.clone();
         let last_exit_code_string = last_exit_code.to_string();
         // Set in process env so segment prompt can read it via std::env::var.
         std::env::set_var("NIU_LAST_EXIT_CODE", &last_exit_code_string);
         let context = [("NIU_LAST_EXIT_CODE", last_exit_code_string)];
-        if self.uses_primary_startup_rc() {
-            self.run_framework_hook_runner("niubash_run_precmd_hooks", &context);
-        } else {
-            self.run_source_plugin_scripts_for_hook("precmd", &context);
-        }
-        self.run_process_plugin_hooks("precmd", &context);
         self.run_hook_scripts(&hooks, &context);
         self.run_bash_prompt_command(last_exit_code);
         self.sync_bash_prompt_from_env();
-        self.sync_prompt_from_plugin_env();
         let title = self.resolve_title_value();
         self.run_title_hooks(&title);
     }
@@ -1461,15 +1003,8 @@ impl Shell {
         if command.is_empty() {
             return;
         }
-        self.run_native_preexec_plugins(command);
         let hooks = self.hooks.preexec.clone();
         let context = [("NIU_PREEXEC_COMMAND", command.to_string())];
-        if self.uses_primary_startup_rc() {
-            self.run_framework_hook_runner("niubash_run_preexec_hooks", &context);
-        } else {
-            self.run_source_plugin_scripts_for_hook("preexec", &context);
-        }
-        self.run_process_plugin_hooks("preexec", &context);
         self.run_hook_scripts(&hooks, &context);
         self.run_bash_ps0_preexec();
     }
@@ -1479,18 +1014,11 @@ impl Shell {
         if same_shell_dir(old_pwd, new_pwd) {
             return;
         }
-        self.run_native_chpwd_plugins();
         let hooks = self.hooks.chpwd.clone();
         let context = [
             ("NIU_OLDPWD", old_pwd.to_string()),
             ("NIU_PWD", new_pwd.to_string()),
         ];
-        if self.uses_primary_startup_rc() {
-            self.run_framework_hook_runner("niubash_run_chpwd_hooks", &context);
-        } else {
-            self.run_source_plugin_scripts_for_hook("chpwd", &context);
-        }
-        self.run_process_plugin_hooks("chpwd", &context);
         self.run_hook_scripts(&hooks, &context);
     }
 
@@ -1499,12 +1027,6 @@ impl Shell {
         let hooks = self.hooks.postcmd.clone();
         let exit_code_string = exit_code.to_string();
         let context = [("NIU_LAST_EXIT_CODE", exit_code_string)];
-        if self.uses_primary_startup_rc() {
-            self.run_framework_hook_runner("niubash_run_postcmd_hooks", &context);
-        } else {
-            self.run_source_plugin_scripts_for_hook("postcmd", &context);
-        }
-        self.run_process_plugin_hooks("postcmd", &context);
         self.run_hook_scripts(&hooks, &context);
     }
 
@@ -1512,36 +1034,18 @@ impl Shell {
     pub fn run_zshaddhistory_hooks(&mut self, command: &str) {
         let hooks = self.hooks.zshaddhistory.clone();
         let context = [("NIU_HISTORY_COMMAND", command.to_string())];
-        if self.uses_primary_startup_rc() {
-            self.run_framework_hook_runner("niubash_run_zshaddhistory_hooks", &context);
-        } else {
-            self.run_source_plugin_scripts_for_hook("zshaddhistory", &context);
-        }
-        self.run_process_plugin_hooks("zshaddhistory", &context);
         self.run_hook_scripts(&hooks, &context);
     }
 
     /// Run zshexit hooks when shell exits.
     pub fn run_zshexit_hooks(&mut self) {
         let hooks = self.hooks.zshexit.clone();
-        if self.uses_primary_startup_rc() {
-            self.run_framework_hook_runner("niubash_run_zshexit_hooks", &[]);
-        } else {
-            self.run_source_plugin_scripts_for_hook("zshexit", &[]);
-        }
-        self.run_process_plugin_hooks("zshexit", &[]);
         self.run_hook_scripts(&hooks, &[]);
     }
 
     /// Run greeting hooks at startup.
     pub fn run_greeting_hooks(&mut self) {
         let hooks = self.hooks.greeting.clone();
-        if self.uses_primary_startup_rc() {
-            self.run_framework_hook_runner("niubash_run_greeting_hooks", &[]);
-        } else {
-            self.run_source_plugin_scripts_for_hook("greeting", &[]);
-        }
-        self.run_process_plugin_hooks("greeting", &[]);
         self.run_hook_scripts(&hooks, &[]);
     }
 
@@ -1549,649 +1053,7 @@ impl Shell {
     pub fn run_title_hooks(&mut self, title: &str) {
         let hooks = self.hooks.title.clone();
         let context = [("NIU_TITLE", title.to_string())];
-        if self.uses_primary_startup_rc() {
-            self.run_framework_hook_runner("niubash_run_title_hooks", &context);
-        } else {
-            self.run_source_plugin_scripts_for_hook("title", &context);
-        }
-        self.run_process_plugin_hooks("title", &context);
         self.run_hook_scripts(&hooks, &context);
-    }
-
-    /// Run trapdebug hooks.
-    pub fn run_trapdebug_hooks(&mut self) {
-        if self.uses_primary_startup_rc() {
-            self.run_framework_hook_runner("niubash_run_trapdebug_hooks", &[]);
-        }
-    }
-
-    /// Run traperr hooks.
-    pub fn run_traperr_hooks(&mut self) {
-        if self.uses_primary_startup_rc() {
-            self.run_framework_hook_runner("niubash_run_traperr_hooks", &[]);
-        }
-    }
-
-    /// Run trapint hooks.
-    pub fn run_trapint_hooks(&mut self) {
-        if self.uses_primary_startup_rc() {
-            self.run_framework_hook_runner("niubash_run_trapint_hooks", &[]);
-        }
-    }
-
-    /// Run trapwinch hooks.
-    pub fn run_trapwinch_hooks(&mut self) {
-        if self.uses_primary_startup_rc() {
-            self.run_framework_hook_runner("niubash_run_trapwinch_hooks", &[]);
-        }
-    }
-
-    /// Run trapusr1 hooks.
-    pub fn run_trapusr1_hooks(&mut self) {
-        if self.uses_primary_startup_rc() {
-            self.run_framework_hook_runner("niubash_run_trapusr1_hooks", &[]);
-        }
-    }
-
-    /// Run trapusr2 hooks.
-    pub fn run_trapusr2_hooks(&mut self) {
-        if self.uses_primary_startup_rc() {
-            self.run_framework_hook_runner("niubash_run_trapusr2_hooks", &[]);
-        }
-    }
-
-    /// Run trappipe hooks.
-    pub fn run_trappipe_hooks(&mut self) {
-        if self.uses_primary_startup_rc() {
-            self.run_framework_hook_runner("niubash_run_trappipe_hooks", &[]);
-        }
-    }
-
-    /// Run trapterm hooks.
-    pub fn run_trapterm_hooks(&mut self) {
-        if self.uses_primary_startup_rc() {
-            self.run_framework_hook_runner("niubash_run_trapterm_hooks", &[]);
-        }
-    }
-
-    /// Run trapchld hooks.
-    pub fn run_trapchld_hooks(&mut self) {
-        if self.uses_primary_startup_rc() {
-            self.run_framework_hook_runner("niubash_run_trapchld_hooks", &[]);
-        }
-    }
-
-    fn run_native_precmd_plugins(&mut self) {
-        if self.native_plugin_enabled("direnv") {
-            self.apply_direnv_export();
-        }
-        if self.native_plugin_enabled("dotenv") {
-            self.apply_dotenv_current_dir();
-        }
-        if self.native_plugin_enabled("zoxide") {
-            self.track_zoxide_current_dir();
-        }
-    }
-
-    fn run_native_preexec_plugins(&mut self, command: &str) {
-        if self.native_plugin_enabled("alias-finder") {
-            for suggestion in self.native_alias_finder_matches(command) {
-                println!("{}", suggestion);
-            }
-        }
-    }
-
-    fn run_native_chpwd_plugins(&mut self) {
-        if self.native_plugin_enabled("direnv") {
-            self.apply_direnv_export();
-        }
-        if self.native_plugin_enabled("dotenv") {
-            self.apply_dotenv_current_dir();
-        }
-        if self.native_plugin_enabled("zoxide") {
-            self.track_zoxide_current_dir();
-        }
-        if self.native_plugin_enabled("last-working-dir") {
-            self.save_last_working_dir_current_dir();
-        }
-    }
-
-    fn native_plugin_enabled(&self, preset: &str) -> bool {
-        if self.plugins.has_decision(preset) {
-            return self.plugins.is_enabled(preset);
-        }
-
-        self.native_plugins.enabled
-            && self
-                .native_plugins
-                .presets
-                .iter()
-                .any(|candidate| candidate.eq_ignore_ascii_case(preset))
-    }
-
-    fn execute_process_plugin_simple_ast(&mut self, ast: &Ast) -> anyhow::Result<Option<i32>> {
-        if ast.commands.len() != 1 {
-            return Ok(None);
-        }
-        let command = &ast.commands[0];
-        if command.words.is_empty()
-            || !command.assignments.is_empty()
-            || !command.compound_assignments.is_empty()
-            || !command.array_element_assignments.is_empty()
-            || !command.process_substitutions.is_empty()
-            || !command.command_substitutions.is_empty()
-            || !command.arithmetic_expansions.is_empty()
-            || !command.parameter_expansions.is_empty()
-            || !command.brace_expansions.is_empty()
-            || !command.extglob_patterns.is_empty()
-            || !command.pathname_patterns.is_empty()
-            || !command.redirects.is_empty()
-            || command.redirect_in.is_some()
-            || command.redirect_out.is_some()
-            || command.append.is_some()
-            || command.redirect_err.is_some()
-            || command.redirect_err_append.is_some()
-            || command.heredoc.is_some()
-            || command.here_string.is_some()
-            || command.pipe.is_some()
-            || command.background
-            || command.and_or.is_some()
-            || command.inverted
-            || command.pipeline_command.is_some()
-            || command.and_or_list.is_some()
-            || command.time_command.is_some()
-            || command.background_command.is_some()
-            || command.inverted_command.is_some()
-            || command.subshell
-            || command.subshell_end
-            || command.for_command.is_some()
-            || command.arithmetic_command.is_some()
-            || command.if_command.is_some()
-            || command.loop_command.is_some()
-            || command.conditional_command.is_some()
-            || command.subshell_command.is_some()
-            || command.case_command.is_some()
-            || command.select_command.is_some()
-            || command.function_command.is_some()
-            || command.brace_group.is_some()
-            || command.coproc_command.is_some()
-        {
-            return Ok(None);
-        }
-
-        let command_name = &command.words[0];
-        let Some((pack_name, process)) = self.process_plugin_for_command(command_name) else {
-            return Ok(None);
-        };
-        let code = self.run_process_plugin_command(
-            &pack_name,
-            &process,
-            &decoded_words(&command.words[1..]),
-        )?;
-        Ok(Some(code))
-    }
-
-    fn process_plugin_for_command(
-        &self,
-        command_name: &str,
-    ) -> Option<(String, PluginProcessSpec)> {
-        crate::plugins::active_plugin_inventory()
-            .packs
-            .into_iter()
-            .find_map(|pack| {
-                if pack.kind != PluginKind::Process || !self.plugins.is_enabled(&pack.name) {
-                    return None;
-                }
-                if !pack
-                    .exports
-                    .commands
-                    .iter()
-                    .any(|exported| exported == command_name)
-                {
-                    return None;
-                }
-                pack.process.map(|process| (pack.name, process))
-            })
-    }
-
-    fn process_plugin_for_provider(
-        &self,
-        provider_name: &str,
-    ) -> Option<(String, PluginProcessSpec, Vec<String>)> {
-        process_plugin_for_provider_from_state(provider_name, &self.plugins)
-    }
-
-    fn process_plugins_for_hook(&self, hook_name: &str) -> Vec<(String, PluginProcessSpec)> {
-        crate::plugins::active_plugin_inventory()
-            .packs
-            .into_iter()
-            .filter_map(|pack| {
-                if pack.kind != PluginKind::Process || !self.plugins.is_enabled(&pack.name) {
-                    return None;
-                }
-                if !pack
-                    .exports
-                    .hooks
-                    .iter()
-                    .any(|exported| exported == hook_name)
-                {
-                    return None;
-                }
-                pack.process.map(|process| (pack.name, process))
-            })
-            .collect()
-    }
-
-    fn run_process_plugin_hooks(&mut self, hook_name: &str, context: &[(&str, String)]) {
-        let hook_args = vec!["--hook".to_string(), hook_name.to_string()];
-        for (pack_name, process) in self.process_plugins_for_hook(hook_name) {
-            match self.run_process_plugin_invocation(
-                &pack_name,
-                &process,
-                &hook_args,
-                Some(hook_name),
-                context,
-            ) {
-                Ok(0) => {}
-                Ok(code) => log::warn!(
-                    "process hook '{}' from plugin '{}' exited with status {}",
-                    hook_name,
-                    pack_name,
-                    code
-                ),
-                Err(err) => log::warn!(
-                    "process hook '{}' from plugin '{}' failed: {}",
-                    hook_name,
-                    pack_name,
-                    err
-                ),
-            }
-        }
-    }
-
-    fn run_process_plugin_command(
-        &mut self,
-        pack_name: &str,
-        process: &PluginProcessSpec,
-        user_args: &[String],
-    ) -> anyhow::Result<i32> {
-        self.run_process_plugin_invocation(pack_name, process, user_args, None, &[])
-    }
-
-    fn run_process_plugin_invocation(
-        &mut self,
-        pack_name: &str,
-        process: &PluginProcessSpec,
-        extra_args: &[String],
-        hook_name: Option<&str>,
-        context: &[(&str, String)],
-    ) -> anyhow::Result<i32> {
-        let output = self.run_process_plugin_invocation_capture(
-            pack_name, process, extra_args, hook_name, context, true,
-        )?;
-        if !output.stdout.is_empty() {
-            let _ = std::io::stdout().write_all(&output.stdout);
-        }
-        if !output.stderr.is_empty() {
-            let _ = std::io::stderr().write_all(&output.stderr);
-        }
-        Ok(output.status)
-    }
-
-    fn run_process_plugin_invocation_capture(
-        &mut self,
-        pack_name: &str,
-        process: &PluginProcessSpec,
-        extra_args: &[String],
-        hook_name: Option<&str>,
-        context: &[(&str, String)],
-        report_errors: bool,
-    ) -> anyhow::Result<ProcessPluginInvocationOutput> {
-        self.sync_process_cwd_from_executor_pwd();
-        self.sync_process_path_from_executor_path();
-        let env = std::env::vars().collect::<HashMap<_, _>>();
-        run_process_plugin_invocation_capture_with_env(
-            pack_name,
-            process,
-            extra_args,
-            hook_name,
-            context,
-            report_errors,
-            &env,
-        )
-    }
-    fn native_selector_enabled(&self) -> bool {
-        self.native_plugin_enabled("fzf")
-    }
-
-    fn apply_direnv_export(&mut self) {
-        let command_path =
-            resolve_native_command_path("direnv").unwrap_or_else(|| PathBuf::from("direnv"));
-        let output = match Command::new(command_path)
-            .args(["export", "bash"])
-            .stderr(Stdio::null())
-            .output()
-        {
-            Ok(output) => output,
-            Err(err) => {
-                log::debug!("native direnv preset skipped: {}", err);
-                return;
-            }
-        };
-
-        if !output.status.success() {
-            log::debug!("native direnv preset returned {}", output.status);
-            return;
-        }
-
-        let script = String::from_utf8_lossy(&output.stdout);
-        self.apply_direnv_export_script(&script);
-    }
-
-    fn apply_direnv_export_script(&mut self, script: &str) {
-        if script.trim().is_empty() {
-            return;
-        }
-        if let Err(err) = self.execute_script(script) {
-            log::warn!("native direnv preset failed to apply export: {}", err);
-        }
-    }
-
-    fn apply_dotenv_current_dir(&mut self) {
-        let Some(pwd) = self.executor.get_env("PWD").map(str::to_owned) else {
-            return;
-        };
-        let dotenv_path = self.executor.resolve_shell_path(&pwd).join(".env");
-        let Ok(metadata) = std::fs::metadata(&dotenv_path) else {
-            return;
-        };
-        if !metadata.is_file() {
-            return;
-        }
-        if metadata.len() > DOTENV_MAX_SIZE {
-            log::debug!(
-                "native dotenv preset skipped oversized file {}",
-                dotenv_path.display()
-            );
-            return;
-        }
-        let Ok(content) = std::fs::read_to_string(&dotenv_path) else {
-            log::debug!(
-                "native dotenv preset could not read {}",
-                dotenv_path.display()
-            );
-            return;
-        };
-
-        for (key, value) in parse_dotenv_assignments(&content) {
-            self.executor.set_env(&key, &value);
-        }
-    }
-
-    fn track_zoxide_current_dir(&mut self) {
-        let Some(pwd) = self.executor.get_env("PWD").map(str::to_owned) else {
-            return;
-        };
-        if self
-            .zoxide_last_tracked_dir
-            .as_deref()
-            .is_some_and(|last| same_shell_dir(last, &pwd))
-        {
-            return;
-        }
-
-        let host_pwd = self.executor.resolve_shell_path(&pwd);
-        let host_pwd_display = host_pwd.to_string_lossy().replace('\\', "/");
-        let command_path =
-            resolve_native_command_path("zoxide").unwrap_or_else(|| PathBuf::from("zoxide"));
-        let status = Command::new(command_path)
-            .arg("add")
-            .arg(&host_pwd_display)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-
-        match status {
-            Ok(status) if status.success() => {
-                self.zoxide_last_tracked_dir = Some(pwd);
-            }
-            Ok(status) => {
-                log::debug!("native zoxide preset returned {}", status);
-            }
-            Err(err) => {
-                log::debug!("native zoxide preset skipped: {}", err);
-            }
-        }
-    }
-
-    fn execute_native_zoxide(&mut self, args: &[String]) -> anyhow::Result<i32> {
-        let command_path =
-            resolve_native_command_path("zoxide").unwrap_or_else(|| PathBuf::from("zoxide"));
-        let output = match Command::new(command_path)
-            .arg("query")
-            .args(args)
-            .stderr(Stdio::null())
-            .output()
-        {
-            Ok(output) => output,
-            Err(err) => {
-                log::debug!("native zoxide query skipped: {}", err);
-                return Ok(127);
-            }
-        };
-
-        if !output.status.success() {
-            return Ok(output.status.code().unwrap_or(1));
-        }
-
-        let target = String::from_utf8_lossy(&output.stdout);
-        let target = target.trim_matches(['\r', '\n']);
-        if target.is_empty() {
-            return Ok(1);
-        }
-
-        let target = host_path_to_shell_path(target);
-        self.execute_line(&format!("cd {}", shell_quote(&target)))
-    }
-
-    fn execute_native_thefuck(&mut self, args: &[String]) -> anyhow::Result<i32> {
-        let correction_args = if args.is_empty() {
-            let Some(command) = self.last_interactive_command.as_ref() else {
-                return Ok(1);
-            };
-            vec![command.clone()]
-        } else {
-            args.to_vec()
-        };
-
-        let command_path =
-            resolve_native_command_path("thefuck").unwrap_or_else(|| PathBuf::from("thefuck"));
-        let output = match Command::new(command_path)
-            .args(&correction_args)
-            .env("THEFUCK_REQUIRE_CONFIRMATION", "0")
-            .stderr(Stdio::null())
-            .output()
-        {
-            Ok(output) => output,
-            Err(err) => {
-                log::debug!("native thefuck preset skipped: {}", err);
-                return Ok(127);
-            }
-        };
-
-        if !output.status.success() {
-            return Ok(output.status.code().unwrap_or(1));
-        }
-
-        let correction = String::from_utf8_lossy(&output.stdout);
-        let Some(correction) = correction
-            .lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())
-        else {
-            return Ok(1);
-        };
-
-        self.execute_line(correction)
-    }
-
-    fn execute_native_fzf_cd(&mut self, args: &[String]) -> anyhow::Result<i32> {
-        let Some(pwd) = self.executor.get_env("PWD").map(str::to_owned) else {
-            return Ok(1);
-        };
-        let base = args.first().map(String::as_str).unwrap_or(".");
-        let host_base =
-            resolve_shell_path_argument_with_env(&pwd, base, &self.executor.env_vars_snapshot());
-        let candidates = directory_selector_candidates(&host_base);
-        if candidates.is_empty() {
-            return Ok(1);
-        }
-
-        let Some(selected) = run_native_fzf_selector(&candidates) else {
-            return Ok(1);
-        };
-        let selected = host_path_to_shell_path_with_root(&selected, self.shell_root.as_deref());
-        self.execute_line(&format!("cd {}", shell_quote(&selected)))
-    }
-
-    fn execute_native_last_working_dir(&mut self) -> anyhow::Result<i32> {
-        let Some(target) = self.read_last_working_dir_target() else {
-            return Ok(1);
-        };
-        self.execute_line(&format!("cd {}", shell_quote(&target)))
-    }
-
-    fn read_last_working_dir_target(&self) -> Option<String> {
-        let content = std::fs::read_to_string(&self.last_working_dir_cache_path).ok()?;
-        let target = content.trim_matches(['\r', '\n']).trim();
-        if target.is_empty() {
-            return None;
-        }
-        Some(host_path_to_shell_path(target))
-    }
-
-    fn save_last_working_dir_current_dir(&self) {
-        let Some(pwd) = self.executor.get_env("PWD") else {
-            return;
-        };
-        let Some(parent) = self.last_working_dir_cache_path.parent() else {
-            return;
-        };
-        if let Err(err) = std::fs::create_dir_all(parent) {
-            log::debug!(
-                "native last-working-dir preset could not create cache dir: {}",
-                err
-            );
-            return;
-        }
-        if let Err(err) = std::fs::write(&self.last_working_dir_cache_path, format!("{pwd}\n")) {
-            log::debug!(
-                "native last-working-dir preset could not write cache: {}",
-                err
-            );
-        }
-    }
-
-    fn command_not_found_plugin_enabled(&self) -> bool {
-        self.native_plugin_enabled(COMMAND_NOT_FOUND_PROVIDER_NAME)
-            || self
-                .process_plugin_for_provider(COMMAND_NOT_FOUND_PROVIDER_NAME)
-                .is_some()
-    }
-
-    fn print_native_command_not_found(&mut self, command: &str, args: &[String]) {
-        let provider_output = self.command_not_found_provider_output(command, args);
-        for line in command_not_found_lines_with_provider(
-            command,
-            true,
-            |candidate| resolve_native_command_path(candidate).is_some(),
-            provider_output,
-        ) {
-            eprintln!("{}", line);
-        }
-    }
-
-    fn command_not_found_provider_output(
-        &mut self,
-        command: &str,
-        args: &[String],
-    ) -> CommandNotFoundProviderOutput {
-        let Some((pack_name, process, permissions)) =
-            self.process_plugin_for_provider(COMMAND_NOT_FOUND_PROVIDER_NAME)
-        else {
-            return CommandNotFoundProviderOutput::Empty;
-        };
-        let cwd = if permissions
-            .iter()
-            .any(|permission| permission == "cwd:read")
-        {
-            self.executor.get_env("PWD").map(str::to_string)
-        } else {
-            None
-        };
-        let request =
-            command_not_found_provider_request(command, args, cwd.as_deref(), |candidate| {
-                resolve_native_command_path(candidate).is_some()
-            });
-        let mut provider_args = vec![
-            "--provider".to_string(),
-            COMMAND_NOT_FOUND_PROVIDER_NAME.to_string(),
-            "--command".to_string(),
-            request.command.clone(),
-        ];
-        for arg in &request.args {
-            provider_args.push("--arg".to_string());
-            provider_args.push(arg.clone());
-        }
-        if let Some(cwd) = &request.cwd {
-            provider_args.push("--cwd".to_string());
-            provider_args.push(cwd.clone());
-        }
-        for helper in &request.package_search_helpers {
-            provider_args.push("--helper".to_string());
-            provider_args.push(helper.clone());
-        }
-        let helper_list = request.package_search_helpers.join(";");
-        let context = vec![
-            (
-                "NIU_PROCESS_PLUGIN_PROVIDER",
-                COMMAND_NOT_FOUND_PROVIDER_NAME.to_string(),
-            ),
-            ("NIU_COMMAND_NOT_FOUND_COMMAND", request.command.clone()),
-            ("NIU_COMMAND_NOT_FOUND_HELPERS", helper_list),
-        ];
-        let output = match self.run_process_plugin_invocation_capture(
-            &pack_name,
-            &process,
-            &provider_args,
-            None,
-            &context,
-            false,
-        ) {
-            Ok(output) => output,
-            Err(err) => {
-                log::debug!(
-                    "command-not-found provider '{}' invocation failed: {}",
-                    pack_name,
-                    err
-                );
-                return CommandNotFoundProviderOutput::Failed(err.to_string());
-            }
-        };
-        if !output.stderr.is_empty() {
-            log::debug!(
-                "command-not-found provider '{}' wrote stderr: {}",
-                pack_name,
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        if output.status != 0 {
-            return CommandNotFoundProviderOutput::Failed(format!(
-                "provider process exited with {}",
-                output.status
-            ));
-        }
-        parse_command_not_found_provider_output(&output.stdout)
     }
 
     fn print_command_not_found_hints_if_missing(&self, ast: &Ast) {
@@ -2207,38 +1069,11 @@ impl Shell {
     }
 
     fn print_command_not_found_hints(&self, command: &str) {
-        for line in native_command_not_found_hint_lines(
-            command,
-            self.native_plugin_enabled("command-not-found"),
-            |candidate| resolve_native_command_path(candidate).is_some(),
-        ) {
+        for line in native_command_not_found_hint_lines(command, |candidate| {
+            resolve_native_command_path(candidate).is_some()
+        }) {
             eprintln!("{}", line);
         }
-    }
-
-    fn native_alias_finder_matches(&self, command: &str) -> Vec<String> {
-        let command = normalize_alias_finder_command(command);
-        if command.is_empty() {
-            return Vec::new();
-        }
-
-        let mut matches: Vec<_> = self
-            .aliases
-            .iter()
-            .filter_map(|(name, value)| {
-                if normalize_alias_finder_command(value) == command && name != &command {
-                    Some(format!(
-                        "niubash: alias available: {}={}",
-                        name,
-                        shell_quote(value)
-                    ))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        matches.sort();
-        matches
     }
 
     fn sync_alias_mirror_from_executor(&mut self) {
@@ -2461,8 +1296,6 @@ impl Shell {
 
         let execution = if let Some(exit) = self.easter_egg_exit(&ast.commands) {
             Ok(exit)
-        } else if let Some(code) = self.execute_process_plugin_simple_ast(&ast)? {
-            Ok(code)
         } else {
             self.execute_host_synced_simple_ast(&ast)
                 .unwrap_or_else(|| match self.executor.execute_ast(&ast) {
@@ -2478,12 +1311,7 @@ impl Shell {
             Err(rubash::executor::ExecuteError::ExpansionFailure(code)) => code,
             Err(rubash::executor::ExecuteError::FatalFunctionError(code)) => code,
             Err(rubash::executor::ExecuteError::CommandNotFound(cmd)) => {
-                if self.command_not_found_plugin_enabled() {
-                    let args = command_not_found_args(&ast, &cmd);
-                    self.print_native_command_not_found(&cmd, &args);
-                } else {
-                    eprintln!("niubash: {}: command not found", cmd);
-                }
+                eprintln!("niubash: {}: command not found", cmd);
                 127
             }
             Err(e) => {
@@ -2794,217 +1622,6 @@ fn process_stdin_pipeline_bridge_stage(ast: &mut Ast) -> Option<&mut rubash::par
             | "wc.exe"
     )
     .then_some(first)
-}
-
-fn execute_niubash_host_external_command(
-    words: &[String],
-    env: &HashMap<String, String>,
-    plugins: &PluginRuntimeState,
-) -> Option<HostExternalCommandOutput> {
-    let [command, args @ ..] = words else {
-        return None;
-    };
-
-    if resolve_native_command_path_with_env(command, env).is_some() {
-        return None;
-    }
-
-    // P1 spawn takeover: the engine invokes this handler BEFORE its own
-    // find_user_command PATH scan (external_inner.rs execute_external_inner).
-    // When the engine can still resolve the name (POSIX absolute forms like
-    // /bin/cat, shell-PATH entries backed by the shell root, or
-    // dispatcher-owned WinuxCmd commands), we must fall through so the
-    // engine performs the spawn; emitting the 127 surface here would shadow
-    // a command the engine can run (GNU findcmd.c: search_for_command
-    // decides not-found, not a host pre-filter).
-    if engine_can_resolve_external(command, env) {
-        return None;
-    }
-
-    command_not_found_host_external_output(command, args, env, plugins)
-}
-
-/// Mirror of the engine's `find_user_command` (executor/path.rs) admission
-/// test, built only from public rubash APIs. Conservative: returns true when
-/// uncertain so the engine keeps the final word.
-fn engine_can_resolve_external(command: &str, env: &HashMap<String, String>) -> bool {
-    // Path-containing names go through the engine's absolute-resolution path
-    // (shell_path_to_windows + WinuxCmd absolute mapping); it owns the
-    // verdict, so never preempt.
-    if command.contains('/') || command.contains('\\') {
-        return true;
-    }
-
-    // Bare names: scan the shell PATH with the engine's own entry mapping.
-    if let Some(path) = env.get("PATH") {
-        for entry in split_shell_path_list(path) {
-            for dir in Executor::resolve_shell_path_process_entries_from_env(&entry, env) {
-                let base = dir.join(command);
-                if base.is_file() {
-                    return true;
-                }
-                for ext in executable_extension_candidates(env) {
-                    if base.with_extension(&ext).is_file() {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-
-    // The engine may resolve bare names through the single WinuxCmd
-    // dispatcher executable (find_winuxcmd_dispatcher + winuxcmd_has_command);
-    // dispatcher-owned names must fall through to it.
-    winuxcmd_dispatcher_commands().contains(&command.to_string())
-        // ...or through its emulated external-file builtins
-        // (executor/external_file_builtins.rs), which run before
-        // find_user_command in execute_external_inner.
-        || matches!(
-            command,
-            "pwd" | "printf" | "mkdir" | "touch" | "chmod" | "cp" | "rm" | "rmdir" | "cat"
-                | "sed" | "mkfifo" | "tty"
-        )
-}
-
-/// Executable extensions the engine probes (path.rs executable_extensions):
-/// PATHEXT first, then the default Windows set plus ps1.
-fn executable_extension_candidates(env: &HashMap<String, String>) -> Vec<String> {
-    let pathext_from_env = std::env::var("PATHEXT").ok();
-    let mut exts: Vec<String> = env
-        .get("PATHEXT")
-        .or(pathext_from_env.as_ref())
-        .map(|value| {
-            value
-                .split(';')
-                .filter_map(|ext| ext.trim().trim_start_matches('.').split_whitespace().next())
-                .filter(|ext| !ext.is_empty())
-                .map(|ext| format!(".{}", ext.to_ascii_lowercase()))
-                .collect()
-        })
-        .unwrap_or_default();
-    for ext in [".exe", ".com", ".bat", ".cmd", ".ps1"] {
-        if !exts
-            .iter()
-            .any(|candidate| candidate.eq_ignore_ascii_case(ext))
-        {
-            exts.push(ext.to_string());
-        }
-    }
-    exts
-}
-
-/// Dispatcher-owned command names, resolved once per process.
-fn winuxcmd_dispatcher_commands() -> &'static Vec<String> {
-    static COMMANDS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    COMMANDS.get_or_init(crate::winuxcmd::list_commands)
-}
-
-fn command_not_found_host_external_output(
-    command: &str,
-    args: &[String],
-    env: &HashMap<String, String>,
-    plugins: &PluginRuntimeState,
-) -> Option<HostExternalCommandOutput> {
-    let provider_output =
-        command_not_found_process_provider_output_for_env(command, args, env, plugins);
-    if provider_output.is_none() && !plugins.is_enabled(COMMAND_NOT_FOUND_PROVIDER_NAME) {
-        return None;
-    }
-    let provider_output = provider_output.unwrap_or(CommandNotFoundProviderOutput::Empty);
-    let stderr = command_not_found_lines_with_provider(
-        command,
-        true,
-        |candidate| resolve_native_command_path_with_env(candidate, env).is_some(),
-        provider_output,
-    )
-    .join("\n")
-        + "\n";
-    Some(HostExternalCommandOutput {
-        stdout: Vec::new(),
-        stderr: stderr.into_bytes(),
-        status: 127,
-    })
-}
-
-fn command_not_found_process_provider_output_for_env(
-    command: &str,
-    args: &[String],
-    env: &HashMap<String, String>,
-    plugins: &PluginRuntimeState,
-) -> Option<CommandNotFoundProviderOutput> {
-    let (pack_name, process, permissions) =
-        process_plugin_for_provider_from_state(COMMAND_NOT_FOUND_PROVIDER_NAME, plugins)?;
-    let cwd = if permissions
-        .iter()
-        .any(|permission| permission == "cwd:read")
-    {
-        env.get("PWD").cloned()
-    } else {
-        None
-    };
-    let request = command_not_found_provider_request(command, args, cwd.as_deref(), |candidate| {
-        resolve_native_command_path_with_env(candidate, env).is_some()
-    });
-    let mut provider_args = vec![
-        "--provider".to_string(),
-        COMMAND_NOT_FOUND_PROVIDER_NAME.to_string(),
-        "--command".to_string(),
-        request.command.clone(),
-    ];
-    for arg in &request.args {
-        provider_args.push("--arg".to_string());
-        provider_args.push(arg.clone());
-    }
-    if let Some(cwd) = &request.cwd {
-        provider_args.push("--cwd".to_string());
-        provider_args.push(cwd.clone());
-    }
-    for helper in &request.package_search_helpers {
-        provider_args.push("--helper".to_string());
-        provider_args.push(helper.clone());
-    }
-    let helper_list = request.package_search_helpers.join(";");
-    let context = vec![
-        (
-            "NIU_PROCESS_PLUGIN_PROVIDER",
-            COMMAND_NOT_FOUND_PROVIDER_NAME.to_string(),
-        ),
-        ("NIU_COMMAND_NOT_FOUND_COMMAND", request.command.clone()),
-        ("NIU_COMMAND_NOT_FOUND_HELPERS", helper_list),
-    ];
-    let output = match run_process_plugin_invocation_capture_with_env(
-        &pack_name,
-        &process,
-        &provider_args,
-        None,
-        &context,
-        false,
-        env,
-    ) {
-        Ok(output) => output,
-        Err(err) => {
-            log::debug!(
-                "command-not-found provider '{}' invocation failed: {}",
-                pack_name,
-                err
-            );
-            return Some(CommandNotFoundProviderOutput::Failed(err.to_string()));
-        }
-    };
-    if !output.stderr.is_empty() {
-        log::debug!(
-            "command-not-found provider '{}' wrote stderr: {}",
-            pack_name,
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    if output.status != 0 {
-        return Some(CommandNotFoundProviderOutput::Failed(format!(
-            "provider process exited with {}",
-            output.status
-        )));
-    }
-    Some(parse_command_not_found_provider_output(&output.stdout))
 }
 
 #[cfg(test)]
@@ -3574,10 +2191,6 @@ fn normalize_shell_dir_for_compare(value: &str) -> String {
     }
 }
 
-fn normalize_alias_finder_command(value: &str) -> String {
-    value.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 fn normalize_native_windows_path_literals(input: &str) -> String {
     if !cfg!(windows) {
         return input.to_string();
@@ -3679,25 +2292,6 @@ fn single_command_word(ast: &Ast) -> Option<&str> {
     ast.commands[0].words.first().map(String::as_str)
 }
 
-fn command_not_found_args(ast: &Ast, command: &str) -> Vec<String> {
-    if ast.commands.len() != 1 {
-        return Vec::new();
-    }
-    let words = ast.commands[0].words.as_slice();
-    match words {
-        [first, args @ ..] if decode_to_visible_text(first) == command => decoded_words(args),
-        _ => Vec::new(),
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CommandNotFoundProviderRequest {
-    command: String,
-    args: Vec<String>,
-    cwd: Option<String>,
-    package_search_helpers: Vec<String>,
-}
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CommandNotFoundProviderOutput {
@@ -3705,109 +2299,7 @@ enum CommandNotFoundProviderOutput {
     Empty,
     Failed(String),
 }
-#[allow(dead_code)]
-fn command_not_found_provider_request<F>(
-    command: &str,
-    args: &[String],
-    cwd: Option<&str>,
-    mut command_exists: F,
-) -> CommandNotFoundProviderRequest
-where
-    F: FnMut(&str) -> bool,
-{
-    let package_search_helpers = ["winget", "scoop", "choco"]
-        .into_iter()
-        .filter(|candidate| command_exists(candidate))
-        .map(str::to_string)
-        .collect();
-    CommandNotFoundProviderRequest {
-        command: command.to_string(),
-        args: args.to_vec(),
-        cwd: cwd.map(str::to_string),
-        package_search_helpers,
-    }
-}
-#[allow(dead_code)]
-fn parse_command_not_found_provider_output(bytes: &[u8]) -> CommandNotFoundProviderOutput {
-    if bytes.len() > COMMAND_NOT_FOUND_PROVIDER_MAX_OUTPUT_BYTES {
-        return CommandNotFoundProviderOutput::Failed(format!(
-            "provider output exceeded {} bytes",
-            COMMAND_NOT_FOUND_PROVIDER_MAX_OUTPUT_BYTES
-        ));
-    }
-    let Ok(text) = std::str::from_utf8(bytes) else {
-        return CommandNotFoundProviderOutput::Failed("provider output was not UTF-8".to_string());
-    };
-    let mut lines = Vec::new();
-    for raw_line in text.lines() {
-        let line = raw_line.trim_end_matches(char::from(13));
-        if line.trim().is_empty() {
-            continue;
-        }
-        if line.len() > COMMAND_NOT_FOUND_PROVIDER_MAX_LINE_BYTES {
-            return CommandNotFoundProviderOutput::Failed(format!(
-                "provider output line exceeded {} bytes",
-                COMMAND_NOT_FOUND_PROVIDER_MAX_LINE_BYTES
-            ));
-        }
-        lines.push(line.to_string());
-        if lines.len() > COMMAND_NOT_FOUND_PROVIDER_MAX_LINES {
-            return CommandNotFoundProviderOutput::Failed(format!(
-                "provider output exceeded {} lines",
-                COMMAND_NOT_FOUND_PROVIDER_MAX_LINES
-            ));
-        }
-    }
-    if lines.is_empty() {
-        CommandNotFoundProviderOutput::Empty
-    } else {
-        CommandNotFoundProviderOutput::Suggestions(lines)
-    }
-}
-#[allow(dead_code)]
-fn native_command_not_found_lines<F>(
-    command: &str,
-    include_package_search: bool,
-    mut command_exists: F,
-) -> Vec<String>
-where
-    F: FnMut(&str) -> bool,
-{
-    command_not_found_lines_with_provider(
-        command,
-        include_package_search,
-        &mut command_exists,
-        CommandNotFoundProviderOutput::Empty,
-    )
-}
-fn command_not_found_lines_with_provider<F>(
-    command: &str,
-    include_package_search: bool,
-    mut command_exists: F,
-    provider_output: CommandNotFoundProviderOutput,
-) -> Vec<String>
-where
-    F: FnMut(&str) -> bool,
-{
-    let mut lines = vec![format!("niubash: {}: command not found", command)];
-    if let CommandNotFoundProviderOutput::Suggestions(suggestions) = provider_output {
-        if !suggestions.is_empty() {
-            lines.extend(suggestions);
-            return lines;
-        }
-    }
-    lines.extend(native_command_not_found_hint_lines(
-        command,
-        include_package_search,
-        &mut command_exists,
-    ));
-    lines
-}
-fn native_command_not_found_hint_lines<F>(
-    command: &str,
-    include_package_search: bool,
-    mut command_exists: F,
-) -> Vec<String>
+fn native_command_not_found_hint_lines<F>(command: &str, mut command_exists: F) -> Vec<String>
 where
     F: FnMut(&str) -> bool,
 {
@@ -3825,13 +2317,13 @@ where
     }
 
     let mut hints = Vec::new();
-    if include_package_search && command_exists("winget") {
+    if command_exists("winget") {
         hints.push(format!("  winget search --name {}", search));
     }
-    if include_package_search && command_exists("scoop") {
+    if command_exists("scoop") {
         hints.push(format!("  scoop search {}", search));
     }
-    if include_package_search && command_exists("choco") {
+    if command_exists("choco") {
         hints.push(format!("  choco search {}", search));
     }
 
@@ -3933,122 +2425,6 @@ fn is_broken_pipe_io_error(error: &std::io::Error) -> bool {
     error.kind() == std::io::ErrorKind::BrokenPipe || error.raw_os_error() == Some(232)
 }
 
-fn parse_dotenv_assignments(content: &str) -> Vec<(String, String)> {
-    let mut assignments = Vec::new();
-    for raw_line in content.lines() {
-        let mut line = raw_line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("export") {
-            if rest.chars().next().is_some_and(char::is_whitespace) {
-                line = rest.trim_start();
-            }
-        }
-
-        let Some((key, raw_value)) = line.split_once('=') else {
-            continue;
-        };
-        let key = key.trim();
-        if !is_safe_dotenv_key(key) || is_forbidden_dotenv_key(key) {
-            continue;
-        }
-
-        let Some(value) = parse_dotenv_value(raw_value.trim()) else {
-            continue;
-        };
-        assignments.push((key.to_string(), value));
-    }
-    assignments
-}
-
-fn parse_dotenv_value(value: &str) -> Option<String> {
-    if value.contains("$(") || value.contains('`') {
-        return None;
-    }
-    if value.starts_with('"') || value.starts_with('\'') {
-        return parse_quoted_dotenv_value(value);
-    }
-    let value = strip_unquoted_dotenv_comment(value).trim();
-    if value.contains(';') {
-        return None;
-    }
-    Some(value.to_string())
-}
-
-fn parse_quoted_dotenv_value(value: &str) -> Option<String> {
-    let quote = value.chars().next()?;
-    let mut escaped = false;
-    let mut out = String::new();
-    for ch in value[quote.len_utf8()..].chars() {
-        if escaped {
-            out.push(match ch {
-                'n' if quote == '"' => '\n',
-                'r' if quote == '"' => '\r',
-                't' if quote == '"' => '\t',
-                other => other,
-            });
-            escaped = false;
-            continue;
-        }
-        if quote == '"' && ch == '\\' {
-            escaped = true;
-            continue;
-        }
-        if ch == quote {
-            return Some(out);
-        }
-        out.push(ch);
-    }
-    None
-}
-
-fn strip_unquoted_dotenv_comment(value: &str) -> &str {
-    let bytes = value.as_bytes();
-    for index in 0..bytes.len() {
-        if bytes[index] == b'#' && (index == 0 || bytes[index - 1].is_ascii_whitespace()) {
-            return &value[..index];
-        }
-    }
-    value
-}
-
-fn is_safe_dotenv_key(key: &str) -> bool {
-    let mut chars = key.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    (first == '_' || first.is_ascii_alphabetic())
-        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-}
-
-fn is_forbidden_dotenv_key(key: &str) -> bool {
-    matches!(
-        key.to_ascii_uppercase().as_str(),
-        "BASH_ENV"
-            | "DYLD_INSERT_LIBRARIES"
-            | "EDITOR"
-            | "ENV"
-            | "GIT_CONFIG_GLOBAL"
-            | "GIT_DIR"
-            | "GIT_EDITOR"
-            | "GIT_EXEC_PATH"
-            | "GIT_EXTERNAL_DIFF"
-            | "GIT_PAGER"
-            | "GIT_SSH"
-            | "GIT_SSH_COMMAND"
-            | "GIT_SSL_NO_VERIFY"
-            | "GIT_TEMPLATE_DIR"
-            | "LD_LIBRARY_PATH"
-            | "LD_PRELOAD"
-            | "NODE_OPTIONS"
-            | "PAGER"
-            | "PATH"
-            | "VISUAL"
-            | "ZSH"
-    )
-}
-
 fn normalize_executor_home_env(executor: &mut Executor, home_dir: &Path) {
     let home = host_path_to_shell_path(&home_dir.to_string_lossy());
     let current = executor.get_env("HOME").unwrap_or_default();
@@ -4112,86 +2488,6 @@ fn windows_drive_and_home_path(path: &str) -> Option<(String, String)> {
     let drive = path[..2].to_string();
     let rest = path[2..].trim_start_matches(['\\', '/']);
     Some((drive, format!("\\{}", rest.replace('/', "\\"))))
-}
-
-fn set_default_niubash_framework_env(executor: &mut Executor, home_dir: &Path) {
-    let configured_app_bundle = executor
-        .get_env("NIU_APP_BUNDLE_PATH")
-        .map(str::to_owned)
-        .map(|value| PathBuf::from(shell_path_to_host_path(&value)))
-        .filter(|path| is_niubash_framework_dir(path));
-    let discovered_app_bundle = app_bundled_niubash_framework_dir();
-    let app_bundle = configured_app_bundle.or(discovered_app_bundle.clone());
-
-    if executor.get_env("NIU_APP_BUNDLE_PATH").is_none() {
-        if let Some(path) = discovered_app_bundle {
-            executor.set_env(
-                "NIU_APP_BUNDLE_PATH",
-                &host_path_to_shell_path(&path.to_string_lossy()),
-            );
-        }
-    }
-
-    if executor.get_env("NIUBASH").is_none() {
-        if let Some(path) = first_valid_niubash_framework_dir(home_dir, app_bundle.as_deref()) {
-            if !framework_dir_has_new_entry(&path) {
-                // Resolved to a pre-rename bundle layout; surface a one-time
-                // migration notice in the interactive REPL.
-                crate::plugins::record_legacy_bundle_notice(path.clone());
-            }
-            executor.set_env("NIUBASH", &host_path_to_shell_path(&path.to_string_lossy()));
-        }
-    }
-}
-
-fn app_bundled_niubash_framework_dir() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let parent = exe.parent()?;
-    [OFFICIAL_BUNDLE_NAME, OFFICIAL_BUNDLE_LEGACY_NAMES[0]]
-        .iter()
-        .map(|name| parent.join("bundles").join(name))
-        .find(|path| is_niubash_framework_dir(path))
-}
-
-fn first_valid_niubash_framework_dir(
-    home_dir: &Path,
-    app_bundle: Option<&Path>,
-) -> Option<PathBuf> {
-    // New-name install locations first, then the pre-rename
-    // `oh-my-winuxsh` locations so existing setups keep working.
-    let mut candidates = vec![
-        home_dir.join(".oh-my-niu"),
-        home_dir.join(".niubash").join("oh-my-niu"),
-        home_dir.join(".oh-my-winuxsh"),
-        home_dir.join(".niubash").join("oh-my-winuxsh"),
-    ];
-    for name in [OFFICIAL_BUNDLE_NAME, OFFICIAL_BUNDLE_LEGACY_NAMES[0]] {
-        let version_root = home_dir.join(".niubash").join("bundles").join(name);
-        if let Ok(entries) = std::fs::read_dir(&version_root) {
-            let mut versions = entries
-                .filter_map(Result::ok)
-                .map(|entry| entry.path())
-                .filter(|path| path.is_dir())
-                .collect::<Vec<_>>();
-            versions.sort();
-            candidates.extend(versions);
-        }
-    }
-    if let Some(path) = app_bundle {
-        candidates.push(path.to_path_buf());
-    }
-    candidates
-        .into_iter()
-        .find(|path| is_niubash_framework_dir(path))
-}
-
-/// Whether the directory carries a current-name bundle entry point.
-fn framework_dir_has_new_entry(path: &Path) -> bool {
-    path.join("oh-my-niu.niu").is_file() || path.join("oh-my-niu.winux").is_file()
-}
-
-fn is_niubash_framework_dir(path: &Path) -> bool {
-    framework_dir_has_new_entry(path) || path.join("oh-my-winuxsh.winux").is_file()
 }
 
 fn compatible_shell_path_from_env() -> Option<PathBuf> {
@@ -4277,34 +2573,13 @@ fn is_slash_drive_path(value: &str) -> bool {
         && (bytes.len() == 2 || bytes.get(2) == Some(&b'/'))
 }
 
-fn default_last_working_dir_cache_path(home_dir: &Path) -> PathBuf {
-    let mut file_name = "last-working-dir".to_string();
-    if let Ok(ssh_user) = std::env::var("SSH_USER") {
-        let suffix = sanitize_cache_file_suffix(ssh_user.trim());
-        if !suffix.is_empty() {
-            file_name.push('.');
-            file_name.push_str(&suffix);
-        }
-    }
-    home_dir.join(".niubash").join("cache").join(file_name)
-}
-
-fn sanitize_cache_file_suffix(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| match ch {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
-            ch if ch.is_control() => '_',
-            ch => ch,
-        })
-        .collect()
-}
-
+#[cfg(test)]
 #[cfg(test)]
 fn resolve_shell_path_argument(pwd: &str, arg: &str) -> PathBuf {
     resolve_shell_path_argument_with_env(pwd, arg, &HashMap::new())
 }
 
+#[cfg(test)]
 fn resolve_shell_path_argument_with_env(
     pwd: &str,
     arg: &str,
@@ -4323,6 +2598,7 @@ fn resolve_shell_path_argument_with_env(
     Executor::resolve_shell_path_from_env(pwd, env).join(candidate)
 }
 
+#[cfg(test)]
 fn resolve_current_user_tilde_path(arg: &str) -> Option<PathBuf> {
     let rest = if arg == "~" {
         ""
@@ -4338,63 +2614,7 @@ fn resolve_current_user_tilde_path(arg: &str) -> Option<PathBuf> {
     }
 }
 
-fn directory_selector_candidates(host_base: &std::path::Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(host_base) else {
-        return Vec::new();
-    };
-
-    let mut candidates = Vec::new();
-    for entry in entries.flatten() {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if !file_type.is_dir() {
-            continue;
-        }
-        if entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| name.starts_with('.'))
-        {
-            continue;
-        }
-        let path = entry.path();
-        candidates.push(host_path_to_shell_path(&path.to_string_lossy()));
-    }
-    candidates.sort();
-    candidates
-}
-
-fn run_native_fzf_selector(candidates: &[String]) -> Option<String> {
-    let command_path = resolve_native_command_path("fzf").unwrap_or_else(|| PathBuf::from("fzf"));
-    let mut child = Command::new(command_path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .ok()?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        for candidate in candidates {
-            if writeln!(stdin, "{}", candidate).is_err() {
-                break;
-            }
-        }
-    }
-
-    let output = child.wait_with_output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
-    let selected = String::from_utf8_lossy(&output.stdout);
-    selected
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(str::to_string)
-}
-
+#[cfg(test)]
 fn is_windows_drive_path(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() >= 3 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic()
@@ -4427,218 +2647,8 @@ fn is_alias_name(value: &str) -> bool {
     chars.all(|ch| ch == '_' || ch == '-' || ch == '!' || ch.is_ascii_alphanumeric())
 }
 
-struct ProcessPluginInvocationOutput {
-    status: i32,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-}
-
-impl ProcessPluginInvocationOutput {
-    fn status(status: i32) -> Self {
-        Self {
-            status,
-            stdout: Vec::new(),
-            stderr: Vec::new(),
-        }
-    }
-}
-
-fn process_plugin_for_provider_from_state(
-    provider_name: &str,
-    plugins: &PluginRuntimeState,
-) -> Option<(String, PluginProcessSpec, Vec<String>)> {
-    crate::plugins::active_plugin_inventory()
-        .packs
-        .into_iter()
-        .find_map(|pack| {
-            if pack.kind != PluginKind::Process || !plugins.is_enabled(&pack.name) {
-                return None;
-            }
-            if !pack
-                .exports
-                .providers
-                .iter()
-                .any(|exported| exported == provider_name)
-            {
-                return None;
-            }
-            pack.process
-                .map(|process| (pack.name, process, pack.permissions))
-        })
-}
-
-fn run_process_plugin_invocation_capture_with_env(
-    pack_name: &str,
-    process: &PluginProcessSpec,
-    extra_args: &[String],
-    hook_name: Option<&str>,
-    context: &[(&str, String)],
-    report_errors: bool,
-    env: &HashMap<String, String>,
-) -> anyhow::Result<ProcessPluginInvocationOutput> {
-    let stdout_path = process_plugin_temp_path(&process.command, "stdout");
-    let stderr_path = process_plugin_temp_path(&process.command, "stderr");
-    let stdout = std::fs::File::create(&stdout_path)?;
-    let stderr = std::fs::File::create(&stderr_path)?;
-    let command_path = resolve_native_command_path_with_env(&process.command, env)
-        .unwrap_or_else(|| PathBuf::from(&process.command));
-
-    let mut command = Command::new(command_path);
-    apply_shell_env_to_process_command(&mut command, env);
-    if let Some(cwd) = process_working_dir_from_shell_env(env) {
-        command.current_dir(cwd);
-    }
-    command
-        .args(&process.args)
-        .args(extra_args)
-        .env("NIU_PROCESS_PLUGIN_PACK", pack_name)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr));
-    if let Some(hook_name) = hook_name {
-        command.env("NIU_PROCESS_PLUGIN_HOOK", hook_name);
-    }
-    for (name, value) in context {
-        command.env(name, value);
-    }
-
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(err) => {
-            let _ = std::fs::remove_file(&stdout_path);
-            let _ = std::fs::remove_file(&stderr_path);
-            if report_errors {
-                eprintln!(
-                    "niubash: process plugin '{}' failed to run '{}': {}",
-                    pack_name, process.command, err
-                );
-            } else {
-                log::debug!(
-                    "process plugin provider '{}' failed to run '{}': {}",
-                    pack_name,
-                    process.command,
-                    err
-                );
-            }
-            return Ok(ProcessPluginInvocationOutput::status(127));
-        }
-    };
-
-    let timeout = Duration::from_millis(process.timeout_millis.max(1));
-    let started = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {
-                if started.elapsed() >= timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = std::fs::remove_file(&stdout_path);
-                    let _ = std::fs::remove_file(&stderr_path);
-                    if report_errors {
-                        eprintln!(
-                            "niubash: process plugin '{}' command '{}' timed out after {}ms",
-                            pack_name, process.command, process.timeout_millis
-                        );
-                    } else {
-                        log::debug!(
-                            "process plugin provider '{}' command '{}' timed out after {}ms",
-                            pack_name,
-                            process.command,
-                            process.timeout_millis
-                        );
-                    }
-                    return Ok(ProcessPluginInvocationOutput::status(124));
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(err) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = std::fs::remove_file(&stdout_path);
-                let _ = std::fs::remove_file(&stderr_path);
-                if report_errors {
-                    eprintln!(
-                        "niubash: process plugin '{}' failed while waiting for '{}': {}",
-                        pack_name, process.command, err
-                    );
-                } else {
-                    log::debug!(
-                        "process plugin provider '{}' failed while waiting for '{}': {}",
-                        pack_name,
-                        process.command,
-                        err
-                    );
-                }
-                return Ok(ProcessPluginInvocationOutput::status(1));
-            }
-        }
-    };
-
-    let stdout = std::fs::read(&stdout_path).unwrap_or_default();
-    let stderr = std::fs::read(&stderr_path).unwrap_or_default();
-    let _ = std::fs::remove_file(&stdout_path);
-    let _ = std::fs::remove_file(&stderr_path);
-    Ok(ProcessPluginInvocationOutput {
-        status: status.code().unwrap_or(1),
-        stdout,
-        stderr,
-    })
-}
-
-fn apply_shell_env_to_process_command(command: &mut Command, env: &HashMap<String, String>) {
-    for (name, value) in env {
-        if name.eq_ignore_ascii_case("PATH") {
-            command.env(name, process_path_from_shell_path_list(value, Some(env)));
-        } else {
-            command.env(name, value);
-        }
-    }
-}
-
-fn process_working_dir_from_shell_env(env: &HashMap<String, String>) -> Option<PathBuf> {
-    let pwd = env.get("PWD")?;
-    let cwd = Executor::resolve_shell_path_from_env(pwd, env);
-    cwd.is_dir().then_some(cwd)
-}
-
-fn process_plugin_temp_path(command: &str, stream: &str) -> PathBuf {
-    let safe_command: String = command
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    std::env::temp_dir().join(format!(
-        "niubash-process-plugin-{}-{}-{}-{}",
-        safe_command,
-        stream,
-        std::process::id(),
-        nanos
-    ))
-}
-
 fn resolve_native_command_path(command: &str) -> Option<PathBuf> {
     resolve_native_command_path_with_path(command, std::env::var_os("PATH")?)
-}
-
-fn resolve_native_command_path_with_env(
-    command: &str,
-    env: &HashMap<String, String>,
-) -> Option<PathBuf> {
-    let path = env
-        .get("PATH")
-        .map(|path| process_path_from_shell_path_list(path, Some(env)))
-        .or_else(|| std::env::var("PATH").ok())?;
-    resolve_native_command_path_with_path(command, path)
 }
 
 fn resolve_native_command_path_with_path(
@@ -4815,42 +2825,6 @@ mod tests {
     }
 
     #[test]
-    fn native_lifecycle_hooks_run_for_interactive_commands() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
-        let _cwd_guard = CwdGuard::capture();
-        let temp = unique_temp_dir("niubash-native-hooks");
-        let next_dir = temp.join("next");
-        std::fs::create_dir_all(&next_dir).unwrap();
-        let next_arg = shell_quote(&shell_display_path(&next_dir));
-
-        let mut shell = test_shell(HookConfig {
-            precmd: vec!["HOOK_PRECMD=\"precmd:$NIU_LAST_EXIT_CODE\"".to_string()],
-            preexec: vec!["HOOK_PREEXEC=\"preexec:$NIU_PREEXEC_COMMAND\"".to_string()],
-            chpwd: vec!["HOOK_CHPWD=\"chpwd:$NIU_OLDPWD->$NIU_PWD\"".to_string()],
-            ..Default::default()
-        });
-
-        shell.run_precmd_hooks();
-        shell
-            .execute_interactive_line(&format!("cd {}", next_arg))
-            .unwrap();
-
-        assert_eq!(shell.executor.get_env("HOOK_PRECMD"), Some("precmd:0"));
-        let preexec = shell.executor.get_env("HOOK_PREEXEC").unwrap_or_default();
-        assert!(preexec.starts_with("preexec:cd "), "{preexec}");
-        let chpwd = shell.executor.get_env("HOOK_CHPWD").unwrap_or_default();
-        assert!(chpwd.starts_with("chpwd:"), "{chpwd}");
-        assert!(chpwd.contains("->"), "{chpwd}");
-        assert!(shell.executor.get_env("NIU_LAST_EXIT_CODE").is_none());
-        assert!(shell.executor.get_env("NIU_REPL_STARTUP").is_none());
-        assert!(shell.executor.get_env("NIU_PREEXEC_COMMAND").is_none());
-        assert!(shell.executor.get_env("NIU_OLDPWD").is_none());
-        assert!(shell.executor.get_env("NIU_PWD").is_none());
-
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
     fn precmd_invokes_title_hooks_with_env_title() {
         let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
         let _cwd_guard = CwdGuard::capture();
@@ -4903,73 +2877,17 @@ mod tests {
     }
 
     #[test]
-    fn process_plugin_hooks_run_for_interactive_lifecycle_events() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
-        let _cwd_guard = CwdGuard::capture();
-        let temp = unique_temp_dir("niubash-process-hooks");
-        let bundle = temp.join("bundle");
-        let bin = temp.join("bin");
-        let home = temp.join("home");
-        let next_dir = temp.join("next");
-        let log_path = temp.join("process-hook.log");
-        std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&next_dir).unwrap();
-        write_process_hook_test_bundle(
-            &bundle,
-            "9.9.8",
-            &["startup", "precmd", "preexec", "chpwd"],
-            1000,
-        );
-        write_fake_process_hook(&bin, 0, false);
-
-        let _bundle_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_PATH", &bundle);
-        let _root_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_ROOT", &temp.join("root"));
-        let _lock_guard = EnvVarGuard::set("NIU_PLUGIN_LOCK", &temp.join("plugin-lock.toml"));
-        let _log_guard = EnvVarGuard::set("NIU_PROCESS_HOOK_LOG", &log_path);
-        let old_path = prepend_path_for_test(&bin);
-
-        let mut shell = Shell::new().unwrap();
-        shell.home_dir = home;
-        shell.run_startup_rc();
-        shell.run_precmd_hooks();
-        shell
-            .execute_interactive_line(&format!(
-                "cd {}",
-                shell_quote(&shell_display_path(&next_dir))
-            ))
-            .unwrap();
-
-        restore_path_for_test(old_path);
-        let log = std::fs::read_to_string(&log_path).unwrap();
-        assert!(log.contains("hook=startup"), "{log}");
-        assert!(log.contains("hook=precmd"), "{log}");
-        assert!(log.contains("hook=preexec"), "{log}");
-        assert!(log.contains("hook=chpwd"), "{log}");
-        assert!(log.contains("args=--format json --hook precmd"), "{log}");
-        assert!(log.contains("last=0"), "{log}");
-        assert!(log.contains("cmd=cd "), "{log}");
-
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
     fn compat_winuxshrc_is_migrated_and_sourced() {
         let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
         let _cwd_guard = CwdGuard::capture();
-        let temp = unique_temp_dir("niubash-source-plugin-startup");
-        let bundle = temp.join("bundle");
+        let temp = unique_temp_dir("niubash-compat-rc-migration");
         let home = temp.join("home");
         std::fs::create_dir_all(&home).unwrap();
-        write_source_plugin_test_bundle(&bundle, "9.9.8");
         std::fs::write(
             home.join(NIU_COMPAT_RC_FILE),
             "export NIU_COMPAT_RC_LOADED=1\nalias source_alias='echo user-override'\n",
         )
         .unwrap();
-
-        let _bundle_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_PATH", &bundle);
-        let _root_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_ROOT", &temp.join("root"));
-        let _lock_guard = EnvVarGuard::set("NIU_PLUGIN_LOCK", &temp.join("plugin-lock.toml"));
 
         let mut shell = Shell::new().unwrap();
         shell.home_dir = home.clone();
@@ -4989,74 +2907,6 @@ mod tests {
     }
 
     #[test]
-    fn framework_source_plugin_receives_bundle_root() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
-        let _cwd_guard = CwdGuard::capture();
-        let temp = unique_temp_dir("niubash-framework-source-plugin-root");
-        let bundle = temp.join("bundle");
-        let home = temp.join("home");
-        std::fs::create_dir_all(&home).unwrap();
-        write_framework_source_plugin_test_bundle(&bundle, "9.9.12");
-
-        let _bundle_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_PATH", &bundle);
-        let _root_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_ROOT", &temp.join("root"));
-        let _lock_guard = EnvVarGuard::set("NIU_PLUGIN_LOCK", &temp.join("plugin-lock.toml"));
-
-        let mut shell = Shell::new().unwrap();
-        shell.home_dir = home;
-        shell.run_startup_rc();
-
-        let expected_root = host_path_to_shell_path(&bundle.to_string_lossy());
-        assert_eq!(
-            shell.executor.get_env("FRAMEWORK_ROOT_VALUE"),
-            Some("from-bundle-lib")
-        );
-        assert_eq!(
-            shell.executor.get_env("FRAMEWORK_NIUBASH"),
-            Some(expected_root.as_str())
-        );
-        assert_eq!(
-            shell.executor.get_env("FRAMEWORK_BUNDLE_DIR"),
-            Some(expected_root.as_str())
-        );
-
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
-    fn prompt_core_theme_templates_drive_default_host_prompt() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
-        let _cwd_guard = CwdGuard::capture();
-        let temp = unique_temp_dir("niubash-framework-plugin-prompt-sync");
-        let bundle = temp.join("bundle");
-        let home = temp.join("home");
-        std::fs::create_dir_all(&home).unwrap();
-        write_framework_source_plugin_test_bundle(&bundle, "9.9.14");
-
-        let _bundle_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_PATH", &bundle);
-        let _root_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_ROOT", &temp.join("root"));
-        let _lock_guard = EnvVarGuard::set("NIU_PLUGIN_LOCK", &temp.join("plugin-lock.toml"));
-
-        let mut shell = Shell::new().unwrap();
-        shell.home_dir = home;
-        shell.run_startup_rc();
-
-        let rendered = reedline::Prompt::render_prompt_left(&shell.prompt).into_owned();
-        assert_eq!(
-            shell.executor.get_env("NIU_PROMPT_LEFT"),
-            Some("PLUGIN:{git}{prompt_char} ")
-        );
-        assert!(rendered.contains("PLUGIN:"), "{rendered:?}");
-        // The host no longer substitutes git status into templates (#145):
-        // `{git}` stays literal and NIU_PROMPT_GIT is inert host-side.
-        assert!(rendered.contains("{git}"), "{rendered:?}");
-        assert!(!rendered.contains("SNAPSHOT:"), "{rendered:?}");
-        assert!(rendered.contains('%'), "{rendered:?}");
-
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
     fn standard_prompt_does_not_expose_private_use_markers() {
         let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
         let _cwd_guard = CwdGuard::capture();
@@ -5070,64 +2920,6 @@ mod tests {
                 .any(|ch| (0xE000..=0xE0FF).contains(&(ch as u32))),
             "prompt contains a raw-byte marker: {rendered:?}"
         );
-    }
-
-    #[test]
-    fn source_plugin_scripts_run_for_interactive_lifecycle_hooks() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
-        let _cwd_guard = CwdGuard::capture();
-        let temp = unique_temp_dir("niubash-source-plugin-lifecycle");
-        let bundle = temp.join("bundle");
-        let home = temp.join("home");
-        let next_dir = temp.join("next");
-        std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&next_dir).unwrap();
-        write_source_plugin_test_bundle_with_hooks(
-            &bundle,
-            "9.9.9",
-            &["startup", "precmd", "preexec", "chpwd"],
-        );
-
-        let _bundle_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_PATH", &bundle);
-        let _root_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_ROOT", &temp.join("root"));
-        let _lock_guard = EnvVarGuard::set("NIU_PLUGIN_LOCK", &temp.join("plugin-lock.toml"));
-
-        let mut shell = Shell::new().unwrap();
-        shell.home_dir = home;
-        shell.run_startup_rc();
-        shell.run_precmd_hooks();
-        shell
-            .execute_interactive_line(&format!(
-                "cd {}",
-                shell_quote(&shell_display_path(&next_dir))
-            ))
-            .unwrap();
-
-        assert_eq!(
-            shell.executor.get_env("SOURCE_PLUGIN_VALUE"),
-            Some("source-test:1")
-        );
-        assert_eq!(
-            shell.executor.get_env("SOURCE_PLUGIN_PRECMD"),
-            Some("source-test:0")
-        );
-        let preexec = shell
-            .executor
-            .get_env("SOURCE_PLUGIN_PREEXEC")
-            .unwrap_or_default();
-        assert!(preexec.starts_with("source-test:cd "), "{preexec}");
-        let chpwd = shell
-            .executor
-            .get_env("SOURCE_PLUGIN_CHPWD")
-            .unwrap_or_default();
-        assert!(chpwd.starts_with("source-test:"), "{chpwd}");
-        assert!(chpwd.contains("->"), "{chpwd}");
-        assert!(shell.executor.get_env("NIU_PLUGIN_HOOK").is_none());
-        assert!(shell.executor.get_env("NIU_PREEXEC_COMMAND").is_none());
-        assert!(shell.executor.get_env("NIU_OLDPWD").is_none());
-        assert!(shell.executor.get_env("NIU_PWD").is_none());
-
-        let _ = std::fs::remove_dir_all(temp);
     }
 
     #[test]
@@ -5402,39 +3194,12 @@ export WINUXSH_OLD_PREFIX=kept-as-niu
         let _ = std::fs::remove_dir_all(temp);
     }
     #[test]
-    fn niubashrc_is_the_source_plugin_entrypoint_when_present() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
-        let _cwd_guard = CwdGuard::capture();
-        let temp = unique_temp_dir("niubash-primary-rc-plugin-entrypoint");
-        let bundle = temp.join("bundle");
-        let home = temp.join("home");
-        std::fs::create_dir_all(&home).unwrap();
-        write_framework_source_plugin_test_bundle(&bundle, "9.9.17");
-        std::fs::write(home.join(NIU_RC_FILE), "export NIU_RC_ENTRYPOINT=primary\n").unwrap();
-
-        let _bundle_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_PATH", &bundle);
-        let _root_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_ROOT", &temp.join("root"));
-        let _lock_guard = EnvVarGuard::set("NIU_PLUGIN_LOCK", &temp.join("plugin-lock.toml"));
-
-        let mut shell = Shell::new().unwrap();
-        shell.home_dir = home;
-        shell.run_startup_rc();
-
-        assert_eq!(shell.executor.get_env("NIU_RC_ENTRYPOINT"), Some("primary"));
-        assert_eq!(shell.executor.get_env("FRAMEWORK_ROOT_VALUE"), None);
-
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
     fn user_bindkeys_load_from_rc_and_widgets_round_trip() {
         let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
         let _cwd_guard = CwdGuard::capture();
         let temp = unique_temp_dir("niubash-user-widget-bindkeys");
-        let bundle = temp.join("bundle");
         let home = temp.join("home");
         std::fs::create_dir_all(&home).unwrap();
-        write_framework_source_plugin_test_bundle(&bundle, "9.9.19");
         std::fs::write(
             home.join(NIU_RC_FILE),
             r#"
@@ -5447,10 +3212,6 @@ niu_fzf_file() {
 "#,
         )
         .unwrap();
-
-        let _bundle_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_PATH", &bundle);
-        let _root_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_ROOT", &temp.join("root"));
-        let _lock_guard = EnvVarGuard::set("NIU_PLUGIN_LOCK", &temp.join("plugin-lock.toml"));
 
         let mut shell = Shell::new().unwrap();
         shell.home_dir = home;
@@ -5479,10 +3240,8 @@ niu_fzf_file() {
         let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
         let _cwd_guard = CwdGuard::capture();
         let temp = unique_temp_dir("niubash-user-compdefs");
-        let bundle = temp.join("bundle");
         let home = temp.join("home");
         std::fs::create_dir_all(&home).unwrap();
-        write_framework_source_plugin_test_bundle(&bundle, "9.9.20");
         std::fs::write(
             home.join(NIU_RC_FILE),
             r#"
@@ -5494,10 +3253,6 @@ niu_git_comp() {
 "#,
         )
         .unwrap();
-
-        let _bundle_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_PATH", &bundle);
-        let _root_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_ROOT", &temp.join("root"));
-        let _lock_guard = EnvVarGuard::set("NIU_PLUGIN_LOCK", &temp.join("plugin-lock.toml"));
 
         let mut shell = Shell::new().unwrap();
         shell.home_dir = home;
@@ -5515,104 +3270,6 @@ niu_git_comp() {
         assert_eq!(candidates[0].1, None);
         assert_eq!(shell.executor.get_env("NIU_COMP_RESULT"), None);
         assert_eq!(shell.executor.get_env("NIU_COMP_WORDS"), None);
-
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
-    fn niubashrc_framework_hooks_replace_host_source_lifecycle_hooks() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
-        let _cwd_guard = CwdGuard::capture();
-        let temp = unique_temp_dir("niubash-primary-rc-framework-hooks");
-        let bundle = temp.join("bundle");
-        let home = temp.join("home");
-        std::fs::create_dir_all(&home).unwrap();
-        write_framework_source_plugin_test_bundle(&bundle, "9.9.18");
-        std::fs::write(
-            home.join(NIU_RC_FILE),
-            r#"
-niubash_run_precmd_hooks() {
-  export NIU_FRAMEWORK_PRECMD="$NIU_LAST_EXIT_CODE"
-}
-niubash_run_preexec_hooks() {
-  export NIU_FRAMEWORK_PREEXEC="$NIU_PREEXEC_COMMAND"
-}
-niubash_run_chpwd_hooks() {
-  export NIU_FRAMEWORK_CHPWD="$NIU_OLDPWD->$NIU_PWD"
-}
-"#,
-        )
-        .unwrap();
-
-        let _bundle_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_PATH", &bundle);
-        let _root_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_ROOT", &temp.join("root"));
-        let _lock_guard = EnvVarGuard::set("NIU_PLUGIN_LOCK", &temp.join("plugin-lock.toml"));
-
-        let mut shell = Shell::new().unwrap();
-        shell.home_dir = home;
-        shell.run_startup_rc();
-        shell.run_precmd_hooks();
-        shell.run_preexec_hooks("echo hello");
-        shell.run_chpwd_hooks_if_changed("C:/old", "C:/new");
-
-        assert_eq!(shell.executor.get_env("NIU_FRAMEWORK_PRECMD"), Some("0"));
-        assert_eq!(
-            shell.executor.get_env("NIU_FRAMEWORK_PREEXEC"),
-            Some("echo hello")
-        );
-        assert_eq!(
-            shell.executor.get_env("NIU_FRAMEWORK_CHPWD"),
-            Some("C:/old->C:/new")
-        );
-        assert_eq!(shell.executor.get_env("FRAMEWORK_ROOT_VALUE"), None);
-        assert_eq!(shell.executor.get_env("FRAMEWORK_ROOT_VALUE"), None);
-
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
-    fn framework_hook_runner_survives_user_set_eu() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
-        let _cwd_guard = CwdGuard::capture();
-        let temp = unique_temp_dir("niubash-hook-runner-set-eu");
-        let bundle = temp.join("bundle");
-        let home = temp.join("home");
-        std::fs::create_dir_all(&home).unwrap();
-        write_framework_source_plugin_test_bundle(&bundle, "9.9.19");
-        std::fs::write(
-            home.join(NIU_RC_FILE),
-            r#"
-niubash_run_precmd_hooks() {
-  eval "$NIU_UNSET_HOOK_LIST"
-  export NIU_HOOK_RAN=ok
-}
-"#,
-        )
-        .unwrap();
-
-        let _bundle_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_PATH", &bundle);
-        let _root_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_ROOT", &temp.join("root"));
-        let _lock_guard = EnvVarGuard::set("NIU_PLUGIN_LOCK", &temp.join("plugin-lock.toml"));
-
-        let mut shell = Shell::new().unwrap();
-        shell.home_dir = home;
-        shell.run_startup_rc();
-        // Hostile user options: the unguarded $NIU_UNSET_HOOK_LIST expansion
-        // in the runner used to abort the hook under `set -u` before the
-        // export, and every prompt cycle printed unbound-variable spam.
-        shell.execute_script("set -eu").unwrap();
-        shell.run_precmd_hooks();
-
-        assert_eq!(shell.executor.get_env("NIU_HOOK_RAN"), Some("ok"));
-        // The user's option state is restored after the hook runner.
-        shell.execute_script("NIU_SAVED_FLAGS_=$-").unwrap();
-        let flags = shell
-            .executor
-            .get_env("NIU_SAVED_FLAGS_")
-            .unwrap_or_default();
-        assert!(flags.contains('e'), "errexit restored: {flags}");
-        assert!(flags.contains('u'), "nounset restored: {flags}");
-        assert_eq!(shell.executor.get_env("__NIU_HOOK_OPTS_"), None);
 
         let _ = std::fs::remove_dir_all(temp);
     }
@@ -5651,37 +3308,8 @@ niubash_run_precmd_hooks() {
     }
 
     #[test]
-    fn native_direnv_export_script_applies_to_executor_env() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
-        let _cwd_guard = CwdGuard::capture();
-        let mut shell = test_shell(HookConfig::default());
-
-        shell.apply_direnv_export_script("export DIRENV_TEST_VALUE=active\n");
-
-        assert_eq!(shell.executor.get_env("DIRENV_TEST_VALUE"), Some("active"));
-    }
-
-    #[test]
-    fn native_alias_finder_matches_known_alias_values() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
-        let _cwd_guard = CwdGuard::capture();
-        let mut shell = test_shell(HookConfig::default());
-        shell.native_plugins.enabled = true;
-        shell.native_plugins.presets = vec!["alias-finder".to_string()];
-        shell
-            .aliases
-            .insert("gst".to_string(), "git status".to_string());
-
-        assert_eq!(
-            shell.native_alias_finder_matches(" git   status "),
-            vec!["niubash: alias available: gst='git status'"]
-        );
-        assert!(shell.native_alias_finder_matches("git diff").is_empty());
-    }
-
-    #[test]
     fn native_command_not_found_lines_include_available_windows_package_managers() {
-        let lines = native_command_not_found_lines("rg", true, |command| {
+        let lines = native_command_not_found_hint_lines("rg", |command| {
             matches!(command, "winget" | "scoop")
         });
 
@@ -5695,87 +3323,17 @@ niubash_run_precmd_hooks() {
 
     #[test]
     fn native_command_not_found_hint_lines_include_wpm_without_search() {
-        let lines = native_command_not_found_hint_lines("awk", false, |_| true);
+        let lines = native_command_not_found_hint_lines("awk", |_| false);
 
         assert_eq!(lines, vec!["niubash: try 'wpm install awk' to add awk"]);
     }
 
     #[test]
     fn native_command_not_found_lines_skip_package_hints_for_paths() {
-        let lines = native_command_not_found_lines("./missing", true, |_| true);
+        let lines = native_command_not_found_hint_lines("./missing", |_| true);
 
-        assert_eq!(lines, vec!["niubash: ./missing: command not found"]);
+        assert!(lines.is_empty(), "{lines:?}");
     }
-    #[test]
-    fn command_not_found_provider_request_captures_context() {
-        let request = command_not_found_provider_request(
-            "rg",
-            &["--files".to_string()],
-            Some("C:/work/project"),
-            |command| matches!(command, "winget" | "choco"),
-        );
-        assert_eq!(request.command, "rg");
-        assert_eq!(request.args, vec!["--files".to_string()]);
-        assert_eq!(request.cwd.as_deref(), Some("C:/work/project"));
-        assert_eq!(
-            request.package_search_helpers,
-            vec!["winget".to_string(), "choco".to_string()]
-        );
-    }
-    #[test]
-    fn command_not_found_provider_suggestions_replace_native_hints() {
-        let provider_output = parse_command_not_found_provider_output(
-            b"niubash: provider suggests install ripgrep\n  custom search rg\n",
-        );
-        let lines = command_not_found_lines_with_provider("rg", true, |_| true, provider_output);
-        assert_eq!(lines[0], "niubash: rg: command not found");
-        assert_eq!(
-            lines[1..],
-            [
-                "niubash: provider suggests install ripgrep".to_string(),
-                "  custom search rg".to_string(),
-            ]
-        );
-        assert!(!lines
-            .iter()
-            .any(|line| line.contains("wpm install ripgrep")));
-    }
-    #[test]
-    fn command_not_found_provider_empty_output_falls_back_to_native_hints() {
-        let provider_output = parse_command_not_found_provider_output(b"\n\r\n");
-        assert_eq!(provider_output, CommandNotFoundProviderOutput::Empty);
-        let lines = command_not_found_lines_with_provider("awk", false, |_| false, provider_output);
-        assert_eq!(lines[0], "niubash: awk: command not found");
-        assert!(lines.iter().any(|line| line.contains("wpm install awk")));
-    }
-    #[test]
-    fn command_not_found_provider_failure_falls_back_to_native_hints() {
-        let lines = command_not_found_lines_with_provider(
-            "rg",
-            true,
-            |command| command == "winget",
-            CommandNotFoundProviderOutput::Failed("timeout".to_string()),
-        );
-        assert_eq!(lines[0], "niubash: rg: command not found");
-        assert!(lines
-            .iter()
-            .any(|line| line.contains("wpm install ripgrep")));
-        assert!(lines.iter().any(|line| line.contains("winget search")));
-    }
-    #[test]
-    fn command_not_found_provider_invalid_output_falls_back_to_native_hints() {
-        let provider_output = parse_command_not_found_provider_output(&[0xff, 0xfe]);
-        assert!(matches!(
-            provider_output,
-            CommandNotFoundProviderOutput::Failed(_)
-        ));
-        let lines = command_not_found_lines_with_provider("rg", false, |_| false, provider_output);
-        assert_eq!(lines[0], "niubash: rg: command not found");
-        assert!(lines
-            .iter()
-            .any(|line| line.contains("wpm install ripgrep")));
-    }
-
     #[test]
     fn alias_mirror_tracks_successful_interactive_alias_commands() {
         let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
@@ -5789,13 +3347,9 @@ niubash_run_precmd_hooks() {
             shell.aliases.get("gst").map(String::as_str),
             Some("git status")
         );
-        assert_eq!(
-            shell.native_alias_finder_matches("git status"),
-            vec!["niubash: alias available: gst='git status'"]
-        );
 
         shell.execute_interactive_line("unalias gst").unwrap();
-        assert!(shell.native_alias_finder_matches("git status").is_empty());
+        assert!(shell.aliases.get("gst").is_none());
     }
 
     #[test]
@@ -5865,76 +3419,6 @@ niubash_run_precmd_hooks() {
                 "/home/me/project"
             );
         }
-    }
-
-    #[test]
-    fn niubash_framework_discovery_prefers_user_dirs_before_app_bundle() {
-        let temp = unique_temp_dir("niubash-framework-discovery");
-        let home = temp.join("home");
-        let home_dot = home.join(".oh-my-niu");
-        let home_config = home.join(".niubash").join("oh-my-niu");
-        let home_version = home
-            .join(".niubash")
-            .join("bundles")
-            .join(OFFICIAL_BUNDLE_NAME)
-            .join("1.0.0");
-        let app_bundle = temp.join("app").join("bundles").join(OFFICIAL_BUNDLE_NAME);
-
-        for path in [&home_dot, &home_config, &home_version, &app_bundle] {
-            std::fs::create_dir_all(path).unwrap();
-            std::fs::write(path.join("oh-my-niu.niu"), "").unwrap();
-        }
-
-        assert_eq!(
-            first_valid_niubash_framework_dir(&home, Some(&app_bundle)).as_deref(),
-            Some(home_dot.as_path())
-        );
-        std::fs::remove_file(home_dot.join("oh-my-niu.niu")).unwrap();
-        assert_eq!(
-            first_valid_niubash_framework_dir(&home, Some(&app_bundle)).as_deref(),
-            Some(home_config.as_path())
-        );
-        std::fs::remove_file(home_config.join("oh-my-niu.niu")).unwrap();
-        assert_eq!(
-            first_valid_niubash_framework_dir(&home, Some(&app_bundle)).as_deref(),
-            Some(home_version.as_path())
-        );
-        std::fs::remove_file(home_version.join("oh-my-niu.niu")).unwrap();
-        assert_eq!(
-            first_valid_niubash_framework_dir(&home, Some(&app_bundle)).as_deref(),
-            Some(app_bundle.as_path())
-        );
-
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
-    fn niubash_framework_discovery_falls_back_to_pre_rename_bundle_layout() {
-        let temp = unique_temp_dir("niubash-framework-discovery-legacy");
-        let home = temp.join("home");
-        let legacy_dot = home.join(".oh-my-winuxsh");
-        let legacy_version = home
-            .join(".niubash")
-            .join("bundles")
-            .join(OFFICIAL_BUNDLE_LEGACY_NAMES[0])
-            .join("1.0.0");
-
-        std::fs::create_dir_all(&legacy_dot).unwrap();
-        std::fs::write(legacy_dot.join("oh-my-winuxsh.winux"), "").unwrap();
-        assert_eq!(
-            first_valid_niubash_framework_dir(&home, None).as_deref(),
-            Some(legacy_dot.as_path())
-        );
-
-        std::fs::create_dir_all(&legacy_version).unwrap();
-        std::fs::write(legacy_version.join("oh-my-winuxsh.winux"), "").unwrap();
-        std::fs::remove_file(legacy_dot.join("oh-my-winuxsh.winux")).unwrap();
-        assert_eq!(
-            first_valid_niubash_framework_dir(&home, None).as_deref(),
-            Some(legacy_version.as_path())
-        );
-
-        let _ = std::fs::remove_dir_all(temp);
     }
 
     #[test]
@@ -6485,50 +3969,6 @@ niubash_run_precmd_hooks() {
     }
 
     #[test]
-    fn host_external_cp_without_path_defers_to_command_not_found_surface() {
-        let env = HashMap::from([
-            ("PWD".to_string(), ".".to_string()),
-            ("PATH".to_string(), "".to_string()),
-        ]);
-        let output = execute_niubash_host_external_command(
-            &["cp".to_string(), "--version".to_string()],
-            &env,
-            &PluginRuntimeState::default(),
-        );
-        assert!(
-            output.is_none(),
-            "missing cp should be handled by normal command-not-found flow"
-        );
-    }
-
-    #[test]
-    fn host_external_cp_defers_to_path_command_when_available() {
-        if !cfg!(windows) {
-            return;
-        }
-
-        let temp = unique_temp_dir("niubash-cp-path-wins");
-        std::fs::create_dir_all(&temp).unwrap();
-        std::fs::write(temp.join("cp.cmd"), "@echo off\r\necho external-cp\r\n").unwrap();
-        let env = HashMap::from([
-            ("PWD".to_string(), ".".to_string()),
-            ("PATH".to_string(), host_display_path(&temp)),
-        ]);
-
-        let output = execute_niubash_host_external_command(
-            &["cp".to_string(), "--version".to_string()],
-            &env,
-            &PluginRuntimeState::default(),
-        );
-
-        assert!(
-            output.is_none(),
-            "PATH cp should be allowed to execute normally"
-        );
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
     fn file_helpers_stay_on_path_resolution_surface() {
         if !cfg!(windows) {
             return;
@@ -6733,283 +4173,6 @@ niubash_run_precmd_hooks() {
     }
 
     #[test]
-    fn native_dotenv_precmd_applies_safe_assignments() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
-        let _cwd_guard = CwdGuard::capture();
-        let temp = unique_temp_dir("niubash-native-dotenv-precmd");
-        std::fs::create_dir_all(&temp).unwrap();
-        std::fs::write(
-            temp.join(".env"),
-            r#"
-SAFE_VALUE=alpha
-export QUOTED_VALUE="hello world"
-SINGLE_VALUE='single value'
-COMMENTED_VALUE=ok # comment
-PATH=bad
-NODE_OPTIONS=--require bad
-BAD-KEY=bad
-EXPAND_VALUE=$(whoami)
-BACKTICK_VALUE=`whoami`
-"#,
-        )
-        .unwrap();
-
-        let mut shell = test_shell(HookConfig::default());
-        shell.native_plugins.enabled = true;
-        shell.native_plugins.presets = vec!["dotenv".to_string()];
-        shell.executor.set_env("PWD", &shell_display_path(&temp));
-        shell.run_precmd_hooks();
-
-        assert_eq!(shell.executor.get_env("SAFE_VALUE"), Some("alpha"));
-        assert_eq!(shell.executor.get_env("QUOTED_VALUE"), Some("hello world"));
-        assert_eq!(shell.executor.get_env("SINGLE_VALUE"), Some("single value"));
-        assert_eq!(shell.executor.get_env("COMMENTED_VALUE"), Some("ok"));
-        assert!(shell.executor.get_env("BAD-KEY").is_none());
-        assert!(shell.executor.get_env("EXPAND_VALUE").is_none());
-        assert!(shell.executor.get_env("BACKTICK_VALUE").is_none());
-        assert_ne!(shell.executor.get_env("PATH"), Some("bad"));
-        assert_ne!(
-            shell.executor.get_env("NODE_OPTIONS"),
-            Some("--require bad")
-        );
-
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
-    fn native_dotenv_chpwd_applies_project_env() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
-        let _cwd_guard = CwdGuard::capture();
-        let temp = unique_temp_dir("niubash-native-dotenv-chpwd");
-        let project = temp.join("project");
-        std::fs::create_dir_all(&project).unwrap();
-        std::fs::write(project.join(".env"), "PROJECT_ENV=loaded\n").unwrap();
-
-        let mut shell = test_shell(HookConfig::default());
-        shell.native_plugins.enabled = true;
-        shell.native_plugins.presets = vec!["dotenv".to_string()];
-        let project_shell_path = shell_display_path(&project);
-        shell
-            .execute_interactive_line(&format!("cd {}", shell_quote(&project_shell_path)))
-            .unwrap();
-
-        assert_eq!(shell.executor.get_env("PROJECT_ENV"), Some("loaded"));
-
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
-    fn native_zoxide_command_changes_directory_and_tracks_pwd() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
-        let _cwd_guard = CwdGuard::capture();
-        let temp = unique_temp_dir("niubash-native-zoxide");
-        let bin = temp.join("bin");
-        let target = temp.join("target");
-        let log = temp.join("zoxide-add.txt");
-        std::fs::create_dir_all(&bin).unwrap();
-        std::fs::create_dir_all(&target).unwrap();
-
-        let target_path = host_display_path(&target);
-        let target_shell_path = shell_display_path(&target);
-        let log_path = host_display_path(&log);
-        write_fake_zoxide(&bin, &target_path, &log_path);
-        let old_path = prepend_path_for_test(&bin);
-
-        let mut shell = test_shell(HookConfig::default());
-        shell.native_plugins.enabled = true;
-        shell.native_plugins.presets = vec!["zoxide".to_string()];
-
-        shell.execute_line("z project").unwrap();
-        let pwd = shell.executor.get_env("PWD").unwrap_or_default();
-        assert!(
-            same_shell_dir(&pwd, &target_shell_path),
-            "{pwd} != {target_shell_path}"
-        );
-
-        shell.run_precmd_hooks();
-        let tracked = std::fs::read_to_string(&log).unwrap();
-        assert_eq!(
-            tracked.trim(),
-            shell_path_to_host_path(shell.executor.get_env("PWD").unwrap_or_default())
-        );
-
-        restore_path_for_test(old_path);
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
-    fn native_thefuck_command_corrects_previous_interactive_command() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
-        let _cwd_guard = CwdGuard::capture();
-        let temp = unique_temp_dir("niubash-native-thefuck");
-        let bin = temp.join("bin");
-        let target = temp.join("target");
-        let log = temp.join("thefuck-args.txt");
-        std::fs::create_dir_all(&bin).unwrap();
-        std::fs::create_dir_all(&target).unwrap();
-
-        let target_shell_path = shell_display_path(&target);
-        let correction = format!("cd {}", shell_quote(&target_shell_path));
-        let log_path = host_display_path(&log);
-        write_fake_thefuck(&bin, &correction, &log_path);
-        let old_path = prepend_path_for_test(&bin);
-
-        let mut shell = test_shell(HookConfig::default());
-        shell.native_plugins.enabled = true;
-        shell.native_plugins.presets = vec!["thefuck".to_string()];
-
-        assert_eq!(shell.execute_interactive_line("badcmd").unwrap(), 127);
-        assert_eq!(shell.last_interactive_command.as_deref(), Some("badcmd"));
-        assert_eq!(shell.last_interactive_exit_code, Some(127));
-
-        assert_eq!(shell.execute_interactive_line("fuck").unwrap(), 0);
-        let pwd = shell.executor.get_env("PWD").unwrap_or_default();
-        assert!(
-            same_shell_dir(&pwd, &target_shell_path),
-            "{pwd} != {target_shell_path}"
-        );
-        let invoked_with = std::fs::read_to_string(&log).unwrap();
-        assert!(invoked_with.contains("badcmd"), "{invoked_with}");
-        assert_eq!(shell.last_interactive_command.as_deref(), Some("badcmd"));
-
-        restore_path_for_test(old_path);
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
-    fn native_fzf_cd_command_changes_directory_to_selected_path() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
-        let _cwd_guard = CwdGuard::capture();
-        let temp = unique_temp_dir("niubash-native-fzf-cd");
-        let bin = temp.join("bin");
-        let parent = temp.join("parent");
-        let target = parent.join("target");
-        std::fs::create_dir_all(&bin).unwrap();
-        std::fs::create_dir_all(&target).unwrap();
-        std::fs::create_dir_all(parent.join("sibling")).unwrap();
-
-        let target_shell_path = shell_display_path(&target);
-        write_fake_fzf(&bin, &target_shell_path);
-        let old_path = prepend_path_for_test(&bin);
-
-        let mut shell = test_shell(HookConfig::default());
-        shell.native_plugins.enabled = true;
-        shell.native_plugins.presets = vec!["fzf".to_string()];
-
-        let parent_shell_path = shell_display_path(&parent);
-        assert_eq!(
-            shell
-                .execute_line(&format!("cdf {}", shell_quote(&parent_shell_path)))
-                .unwrap(),
-            0
-        );
-        let pwd = shell.executor.get_env("PWD").unwrap_or_default();
-        assert!(
-            same_shell_dir(&pwd, &target_shell_path),
-            "{pwd} != {target_shell_path}"
-        );
-
-        restore_path_for_test(old_path);
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
-    fn native_last_working_dir_command_and_repl_restore_use_cache() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
-        let _cwd_guard = CwdGuard::capture();
-        let temp = unique_temp_dir("niubash-native-last-working-dir");
-        let home = temp.join("home");
-        let target = temp.join("target");
-        let other = temp.join("other");
-        std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&target).unwrap();
-        std::fs::create_dir_all(&other).unwrap();
-
-        let cache_path = temp.join("cache").join("last-working-dir");
-        std::fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
-        let target_shell_path = shell_display_path(&target);
-        std::fs::write(&cache_path, format!("{target_shell_path}\n")).unwrap();
-
-        let mut shell = test_shell(HookConfig::default());
-        shell.home_dir = home.clone();
-        shell.last_working_dir_cache_path = cache_path.clone();
-        shell.native_plugins.enabled = true;
-        shell.native_plugins.presets = vec!["last-working-dir".to_string()];
-        shell
-            .execute_line(&format!("cd {}", shell_quote(&shell_display_path(&other))))
-            .unwrap();
-
-        assert_eq!(shell.execute_line("lwd").unwrap(), 0);
-        let pwd = shell.executor.get_env("PWD").unwrap_or_default();
-        assert!(
-            same_shell_dir(&pwd, &target_shell_path),
-            "{pwd} != {target_shell_path}"
-        );
-
-        let home_shell_path = shell_display_path(&home);
-        let mut restore_shell = test_shell(HookConfig::default());
-        restore_shell.home_dir = home.clone();
-        restore_shell.last_working_dir_cache_path = cache_path.clone();
-        restore_shell.native_plugins.enabled = true;
-        restore_shell.native_plugins.presets = vec!["last-working-dir".to_string()];
-        restore_shell
-            .execute_line(&format!("cd {}", shell_quote(&home_shell_path)))
-            .unwrap();
-        restore_shell.restore_last_working_dir_for_repl();
-        let restored_pwd = restore_shell.executor.get_env("PWD").unwrap_or_default();
-        assert!(
-            same_shell_dir(&restored_pwd, &target_shell_path),
-            "{restored_pwd} != {target_shell_path}"
-        );
-
-        let other_shell_path = shell_display_path(&other);
-        let mut no_restore_shell = test_shell(HookConfig::default());
-        no_restore_shell.home_dir = home;
-        no_restore_shell.last_working_dir_cache_path = cache_path;
-        no_restore_shell.native_plugins.enabled = true;
-        no_restore_shell.native_plugins.presets = vec!["last-working-dir".to_string()];
-        no_restore_shell
-            .execute_line(&format!("cd {}", shell_quote(&other_shell_path)))
-            .unwrap();
-        no_restore_shell.restore_last_working_dir_for_repl();
-        let unchanged_pwd = no_restore_shell.executor.get_env("PWD").unwrap_or_default();
-        assert!(
-            same_shell_dir(&unchanged_pwd, &other_shell_path),
-            "{unchanged_pwd} != {other_shell_path}"
-        );
-
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
-    fn native_last_working_dir_chpwd_writes_cache() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
-        let _cwd_guard = CwdGuard::capture();
-        let temp = unique_temp_dir("niubash-native-last-working-dir-chpwd");
-        let home = temp.join("home");
-        let target = temp.join("target");
-        std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&target).unwrap();
-
-        let cache_path = temp.join("cache").join("last-working-dir");
-        let target_shell_path = shell_display_path(&target);
-
-        let mut shell = test_shell(HookConfig::default());
-        shell.home_dir = home;
-        shell.last_working_dir_cache_path = cache_path.clone();
-        shell.native_plugins.enabled = true;
-        shell.native_plugins.presets = vec!["last-working-dir".to_string()];
-        shell
-            .execute_interactive_line(&format!("cd {}", shell_quote(&target_shell_path)))
-            .unwrap();
-
-        let cached = std::fs::read_to_string(&cache_path).unwrap();
-        assert_eq!(cached.trim(), target_shell_path);
-
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
     fn bash_prompt_command_updates_ps1_before_prompt_render() {
         let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
         let _cwd_guard = CwdGuard::capture();
@@ -7072,389 +4235,13 @@ BACKTICK_VALUE=`whoami`
         assert_eq!(shell.executor.get_env("STARSHIP_START_TIME"), Some("12345"));
     }
 
-    #[test]
-    fn compiled_git_alias_pack_is_interactive_only() {
-        // P4: the compiled convenience pack (gp/gst/...) must not leak into
-        // script/non-interactive runs where BASH_ALIASES observes it; it is
-        // installed on the interactive path only.
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
-        let _cwd_guard = CwdGuard::capture();
-        let temp = unique_temp_dir("niubash-default-plugin-git");
-        std::fs::create_dir_all(&temp).unwrap();
-
-        let mut shell = Shell::new().unwrap();
-
-        assert_eq!(
-            shell.aliases.get("gst").map(String::as_str),
-            None,
-            "compiled convenience aliases must not be applied in script mode"
-        );
-        assert!(shell.plugins.is_enabled("git"));
-
-        shell.enter_interactive();
-        assert_eq!(
-            shell.aliases.get("gst").map(String::as_str),
-            Some("git status")
-        );
-
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    #[test]
-    fn external_bundle_alias_pack_does_not_use_official_fallback_aliases() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
-        let _cwd_guard = CwdGuard::capture();
-        let temp = unique_temp_dir("niubash-external-git-alias-fallback");
-        let bundle = temp.join("bundle");
-        write_external_aliasless_git_bundle(&bundle, "9.9.13");
-        let _bundle_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_PATH", &bundle);
-        let _root_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_ROOT", &temp.join("root"));
-        let _lock_guard = EnvVarGuard::set("NIU_PLUGIN_LOCK", &temp.join("plugin-lock.toml"));
-
-        let shell = Shell::new().unwrap();
-
-        assert!(shell.plugins.is_enabled("git"));
-        assert!(!shell.aliases.contains_key("gst"));
-        assert!(!shell.aliases.contains_key("gco"));
-
-        let _ = std::fs::remove_dir_all(temp);
-    }
-
-    fn write_process_hook_test_bundle(
-        path: &std::path::Path,
-        version: &str,
-        hooks: &[&str],
-        timeout_millis: u64,
-    ) {
-        let hooks = hooks
-            .iter()
-            .map(|hook| format!("{hook:?}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        std::fs::create_dir_all(path.join("packs").join("process-hook")).unwrap();
-        std::fs::write(
-            path.join("bundle.toml"),
-            format!(
-                r#"name = "oh-my-winuxsh"
-version = {version:?}
-api = "niubash:plugin-bundle@0.1.0"
-min_niubash = "0.8.3"
-[packs]
-default = ["process-hook"]
-available = ["process-hook"]
-[layout]
-packs_dir = "packs"
-"#
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            path.join("packs").join("process-hook").join("plugin.toml"),
-            format!(
-                r#"name = "process-hook"
-bundle = "oh-my-winuxsh"
-version = {version:?}
-kind = "process"
-api = "niubash:plugin@0.1.0"
-category = "workflow"
-summary = "Process plugin lifecycle hook fixture."
-default = true
-permissions = ["cwd:read", "process:run:niubash-process-hook"]
-required_binaries = ["niubash-process-hook"]
-[exports]
-aliases = false
-completions = []
-prompt_segments = []
-hooks = [{hooks}]
-commands = []
-keybindings = []
-[process]
-protocol = "niubash:process-plugin@0.1.0"
-command = "niubash-process-hook"
-args = ["--format", "json"]
-timeout_millis = {timeout_millis}
-"#
-            ),
-        )
-        .unwrap();
-    }
-
-    fn write_source_plugin_test_bundle(path: &std::path::Path, version: &str) {
-        write_source_plugin_test_bundle_with_hooks(path, version, &["startup"]);
-    }
-
-    fn write_source_plugin_test_bundle_with_hooks(
-        path: &std::path::Path,
-        version: &str,
-        hooks: &[&str],
-    ) {
-        let hooks = hooks
-            .iter()
-            .map(|hook| format!("{hook:?}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        std::fs::create_dir_all(path.join("packs").join("source-test")).unwrap();
-        std::fs::write(
-            path.join("bundle.toml"),
-            format!(
-                r#"name = "oh-my-winuxsh"
-version = {version:?}
-api = "niubash:plugin-bundle@0.1.0"
-min_niubash = "0.8.3"
-[packs]
-default = ["source-test"]
-available = ["source-test"]
-[layout]
-packs_dir = "packs"
-"#
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            path.join("packs").join("source-test").join("plugin.toml"),
-            format!(
-                r#"name = "source-test"
-bundle = "oh-my-winuxsh"
-version = {version:?}
-kind = "source"
-api = "niubash:plugin@0.1.0"
-category = "workflow"
-summary = "Source plugin startup fixture."
-default = true
-permissions = ["shell:source"]
-required_binaries = []
-[exports]
-aliases = true
-completions = []
-prompt_segments = []
-hooks = [{hooks}]
-commands = []
-keybindings = []
-themes = []
-[source]
-entry = "packs/source-test/init.winux"
-"#
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            path.join("packs").join("source-test").join("init.winux"),
-            r#"case "$NIU_PLUGIN_HOOK" in
-  startup)
-    export SOURCE_PLUGIN_VALUE="$NIU_PLUGIN_NAME:$NIU_REPL_PLUGIN_STARTUP"
-    alias source_alias='echo from-source-plugin'
-    ;;
-  precmd)
-    export SOURCE_PLUGIN_PRECMD="$NIU_PLUGIN_NAME:$NIU_LAST_EXIT_CODE"
-    ;;
-  preexec)
-    export SOURCE_PLUGIN_PREEXEC="$NIU_PLUGIN_NAME:$NIU_PREEXEC_COMMAND"
-    ;;
-  chpwd)
-    export SOURCE_PLUGIN_CHPWD="$NIU_PLUGIN_NAME:$NIU_OLDPWD->$NIU_PWD"
-    ;;
-esac
-"#,
-        )
-        .unwrap();
-    }
-
-    fn write_external_aliasless_git_bundle(path: &std::path::Path, version: &str) {
-        std::fs::create_dir_all(path.join("packs").join("git")).unwrap();
-        std::fs::write(
-            path.join("bundle.toml"),
-            format!(
-                r#"name = "community-tools"
-version = {version:?}
-api = "niubash:plugin-bundle@0.1.0"
-min_niubash = "0.8.3"
-[packs]
-default = ["git"]
-available = ["git"]
-[layout]
-packs_dir = "packs"
-aliases_dir = "aliases"
-"#
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            path.join("packs").join("git").join("plugin.toml"),
-            format!(
-                r#"name = "git"
-bundle = "community-tools"
-version = {version:?}
-kind = "builtin"
-api = "niubash:plugin@0.1.0"
-category = "devtools"
-summary = "External git alias marker without bundle alias asset."
-default = true
-permissions = ["cwd:read"]
-required_binaries = []
-[exports]
-aliases = true
-completions = []
-prompt_segments = []
-hooks = []
-commands = []
-keybindings = []
-"#
-            ),
-        )
-        .unwrap();
-    }
-
-    fn write_framework_source_plugin_test_bundle(path: &std::path::Path, version: &str) {
-        std::fs::create_dir_all(path.join("plugins").join("prompt-core")).unwrap();
-        std::fs::create_dir_all(path.join("plugins").join("theme-minimal")).unwrap();
-        std::fs::create_dir_all(path.join("lib")).unwrap();
-        std::fs::write(
-            path.join("bundle.toml"),
-            format!(
-                r#"name = "oh-my-winuxsh"
-version = {version:?}
-api = "niubash:plugin-bundle@0.1.0"
-min_niubash = "0.8.3"
-[packs]
-default = []
-available = []
-[layout]
-packs_dir = "packs"
-"#
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            path.join("plugins").join("prompt-core").join("plugin.toml"),
-            format!(
-                r#"name = "prompt-core"
-version = {version:?}
-kind = "source"
-entry = "prompt-core.plugin.winux"
-summary = "Framework prompt core fixture."
-default = true
-permissions = ["shell:source"]
-required_binaries = []
-[exports]
-hooks = ["startup", "precmd"]
-prompt_segments = ["cwd", "prompt_char"]
-"#
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            path.join("lib").join("root.winux"),
-            "export FRAMEWORK_ROOT_VALUE=from-bundle-lib\n",
-        )
-        .unwrap();
-        std::fs::write(
-            path.join("lib").join("prompt.winux"),
-            r#"niubash_prompt_use_template() {
-  NIU_PROMPT_LEFT="$1"
-  NIU_PROMPT_RIGHT="${2:-}"
-  export NIU_PROMPT_LEFT NIU_PROMPT_RIGHT
-}
-"#,
-        )
-        .unwrap();
-        std::fs::write(
-            path.join("plugins")
-                .join("prompt-core")
-                .join("prompt-core.plugin.winux"),
-            r#". "$NIUBASH/lib/root.winux"
-export FRAMEWORK_NIUBASH="$NIUBASH"
-export FRAMEWORK_BUNDLE_DIR="$NIU_PLUGIN_BUNDLE_DIR"
-case "$NIU_PLUGIN_HOOK" in
-  precmd)
-    NIU_PROMPT_GIT="SNAPSHOT:precmd:$NIU_LAST_EXIT_CODE "
-    ;;
-  *)
-    NIU_PROMPT_GIT="SNAPSHOT:startup "
-    ;;
-esac
-export NIU_PROMPT_GIT
-"#,
-        )
-        .unwrap();
-        std::fs::write(
-            path.join("plugins")
-                .join("theme-minimal")
-                .join("plugin.toml"),
-            format!(
-                r#"name = "theme-minimal"
-version = {version:?}
-kind = "source"
-entry = "theme-minimal.plugin.winux"
-summary = "Framework minimal theme fixture."
-default = true
-permissions = ["shell:source"]
-required_binaries = []
-[exports]
-prompt_segments = ["prompt_char"]
-themes = ["minimal"]
-"#
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            path.join("plugins")
-                .join("theme-minimal")
-                .join("theme-minimal.plugin.winux"),
-            r#"[ -f "$NIUBASH/lib/prompt.winux" ] && . "$NIUBASH/lib/prompt.winux"
-NIU_ACTIVE_THEME=minimal
-NIU_PROMPT_SYMBOL="${NIU_PROMPT_SYMBOL:-%}"
-export NIU_ACTIVE_THEME NIU_PROMPT_SYMBOL
-niubash_prompt_use_template "PLUGIN:{git}{prompt_char} " ""
-"#,
-        )
-        .unwrap();
-    }
-
-    fn write_fake_process_hook(bin: &std::path::Path, exit_code: i32, sleep_before_exit: bool) {
-        std::fs::create_dir_all(bin).unwrap();
-        if cfg!(windows) {
-            let path = bin.join("niubash-process-hook.cmd");
-            let sleep = if sleep_before_exit {
-                "ping -n 3 127.0.0.1 >NUL\n"
-            } else {
-                ""
-            };
-            std::fs::write(
-                path,
-                format!(
-                    "@if not \"%NIU_PROCESS_HOOK_LOG%\"==\"\" echo hook=%NIU_PROCESS_PLUGIN_HOOK%;pack=%NIU_PROCESS_PLUGIN_PACK%;args=%*;last=%NIU_LAST_EXIT_CODE%;cmd=%NIU_PREEXEC_COMMAND%;old=%NIU_OLDPWD%;pwd=%NIU_PWD%>>\"%NIU_PROCESS_HOOK_LOG%\"\n@{}@exit /b {}\n",
-                    sleep, exit_code
-                ),
-            )
-            .unwrap();
-        } else {
-            let path = bin.join("niubash-process-hook");
-            let sleep = if sleep_before_exit { "sleep 2\n" } else { "" };
-            std::fs::write(
-                &path,
-                format!(
-                    "#!/bin/sh\nif [ -n \"$NIU_PROCESS_HOOK_LOG\" ]; then echo \"hook=$NIU_PROCESS_PLUGIN_HOOK;pack=$NIU_PROCESS_PLUGIN_PACK;args=$*;last=$NIU_LAST_EXIT_CODE;cmd=$NIU_PREEXEC_COMMAND;old=$NIU_OLDPWD;pwd=$NIU_PWD\" >> \"$NIU_PROCESS_HOOK_LOG\"; fi\n{}exit {}\n",
-                    sleep, exit_code
-                ),
-            )
-            .unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mut permissions = std::fs::metadata(&path).unwrap().permissions();
-                permissions.set_mode(0o755);
-                std::fs::set_permissions(&path, permissions).unwrap();
-            }
-        }
-    }
-
     fn test_shell(hooks: HookConfig) -> Shell {
         let mut executor = Executor::new();
         executor.set_shopt_option("expand_aliases", true);
         let mut shell = Shell {
             executor,
             completion_state: Arc::new(Mutex::new(CompletionState::new(PathBuf::from(".")))),
-            prompt: PromptBackend::Template(NiubashPrompt::new(None, None, "default")),
+            prompt: PromptBackend::Template(NiubashPrompt::new(None, None)),
             home_dir: PathBuf::from("."),
             shell_root: None,
             history_path: PathBuf::from(".niubash_history"),
@@ -7469,23 +4256,16 @@ niubash_prompt_use_template "PLUGIN:{git}{prompt_char} " ""
             native_widget_bindings: Vec::new(),
             user_widget_bindings: Vec::new(),
             compdefs: Vec::new(),
-            plugins: PluginRuntimeState::default(),
-            native_plugins: NativePluginConfig::default(),
             hooks,
             aliases: HashMap::new(),
-            zoxide_last_tracked_dir: None,
-            last_working_dir_cache_path: PathBuf::from(".niubash/cache/last-working-dir"),
-            last_working_dir_restored: false,
             last_interactive_command: None,
             last_interactive_exit_code: None,
             line_editor: None,
-            plugin_prompt_sync: PluginPromptSyncConfig::disabled(),
             process_stdin_pipeline_bridge: false,
             bash_prompt_command_running: false,
             interactive: false,
             no_rc: false,
             no_profile: false,
-            framework_hook_probes: HashMap::new(),
             rc_file: None,
             no_editing: false,
         };
@@ -7576,81 +4356,6 @@ niubash_prompt_use_template "PLUGIN:{git}{prompt_char} " ""
     impl Drop for CwdGuard {
         fn drop(&mut self) {
             let _ = std::env::set_current_dir(&self.previous);
-        }
-    }
-
-    fn write_fake_zoxide(bin: &std::path::Path, target_path: &str, log_path: &str) {
-        let script = if cfg!(windows) {
-            format!(
-                "@echo off\r\nif \"%1\"==\"query\" (\r\n  <nul set /p ={}\r\n  exit /b 0\r\n)\r\nif \"%1\"==\"add\" (\r\n  >\"{}\" echo %~2\r\n  exit /b 0\r\n)\r\nexit /b 1\r\n",
-                target_path, log_path
-            )
-        } else {
-            format!(
-                "#!/bin/sh\nif [ \"$1\" = \"query\" ]; then\n  printf '%s\\n' '{}'\n  exit 0\nfi\nif [ \"$1\" = \"add\" ]; then\n  printf '%s\\n' \"$2\" > '{}'\n  exit 0\nfi\nexit 1\n",
-                target_path, log_path
-            )
-        };
-        let exe = bin.join(if cfg!(windows) {
-            "zoxide.cmd"
-        } else {
-            "zoxide"
-        });
-        std::fs::write(&exe, script).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut permissions = std::fs::metadata(&exe).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&exe, permissions).unwrap();
-        }
-    }
-
-    fn write_fake_thefuck(bin: &std::path::Path, correction: &str, log_path: &str) {
-        let script = if cfg!(windows) {
-            format!(
-                "@echo off\r\n>\"{}\" echo %*\r\n<nul set /p ={}\r\nexit /b 0\r\n",
-                log_path, correction
-            )
-        } else {
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\nprintf '%s\\n' {}\n",
-                log_path,
-                shell_quote(correction)
-            )
-        };
-        let exe = bin.join(if cfg!(windows) {
-            "thefuck.cmd"
-        } else {
-            "thefuck"
-        });
-        std::fs::write(&exe, script).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut permissions = std::fs::metadata(&exe).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&exe, permissions).unwrap();
-        }
-    }
-
-    fn write_fake_fzf(bin: &std::path::Path, selected_path: &str) {
-        let script = if cfg!(windows) {
-            format!(
-                "@echo off\r\n<nul set /p ={}\r\nexit /b 0\r\n",
-                selected_path
-            )
-        } else {
-            format!("#!/bin/sh\nprintf '%s\\n' {}\n", shell_quote(selected_path))
-        };
-        let exe = bin.join(if cfg!(windows) { "fzf.cmd" } else { "fzf" });
-        std::fs::write(&exe, script).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut permissions = std::fs::metadata(&exe).unwrap().permissions();
-            permissions.set_mode(0o755);
-            std::fs::set_permissions(&exe, permissions).unwrap();
         }
     }
 

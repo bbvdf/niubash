@@ -73,7 +73,7 @@ fn print_info() -> anyhow::Result<i32> {
     stdout.write_all(b"\n  \x1b[1;93mFeatures:\x1b[0m\n")?;
     stdout.write_all(b"    \x1b[92m*\x1b[0m Bash-compatible scripting via rubash\n")?;
     stdout.write_all(b"    \x1b[92m*\x1b[0m Native Windows integration (winuxcmd)\n")?;
-    stdout.write_all(b"    \x1b[92m*\x1b[0m Plugin system (oh-my-niu)\n")?;
+    stdout.write_all(b"    \x1b[92m*\x1b[0m External plugin sources (oh-my-bash et al.)\n")?;
     stdout.write_all(b"    \x1b[92m*\x1b[0m Reedline-based interactive input\n")?;
 
     // Runtime facts — the self-verifiable "no emulation" claim

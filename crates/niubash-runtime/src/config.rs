@@ -5,7 +5,6 @@ use std::path::PathBuf;
 
 use crate::completion::CompletionBehavior;
 
-use crate::plugins::OFFICIAL_BUNDLE_NAME;
 use crate::prompt::PromptIndicators;
 
 /// Shell configuration defaults used by the runtime.
@@ -231,46 +230,6 @@ pub struct NativeWidgetBinding {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NativePluginConfig {
-    pub enabled: bool,
-    pub presets: Vec<String>,
-}
-
-impl Default for NativePluginConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            presets: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PluginConfig {
-    pub enabled: bool,
-    pub bundles: Vec<String>,
-    pub load: Vec<String>,
-    pub packs: HashMap<String, PluginPackConfig>,
-}
-
-impl Default for PluginConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            bundles: vec![OFFICIAL_BUNDLE_NAME.to_string()],
-            load: Vec::new(),
-            packs: HashMap::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PluginPackConfig {
-    pub enabled: Option<bool>,
-    pub permissions: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutosuggestConfig {
     pub enabled: bool,
     pub strategies: Vec<String>,
@@ -427,18 +386,15 @@ pub struct FullConfig {
     pub editor: EditorConfig,
     pub history: HistoryConfig,
     pub menus: MenuConfig,
-    pub theme_name: String,
     pub aliases: HashMap<String, String>,
     pub completion_dirs: Vec<PathBuf>,
     pub completion_behavior: CompletionBehavior,
     pub winuxcmd_enabled: bool,
     pub hooks: HookConfig,
-    pub plugins: PluginConfig,
     pub autosuggest: AutosuggestConfig,
     pub syntax_highlighting: SyntaxHighlightConfig,
     pub runtime_completions: RuntimeCompletionConfig,
     pub native_widgets: NativeWidgetConfig,
-    pub native_plugins: NativePluginConfig,
 }
 
 impl Default for FullConfig {
@@ -451,18 +407,15 @@ impl Default for FullConfig {
             editor: EditorConfig::default(),
             history: HistoryConfig::default(),
             menus: MenuConfig::default(),
-            theme_name: "default".to_string(),
             aliases: HashMap::new(),
             completion_dirs: Vec::new(),
             completion_behavior: CompletionBehavior::default(),
             winuxcmd_enabled: true,
             hooks: HookConfig::default(),
-            plugins: PluginConfig::default(),
             autosuggest: AutosuggestConfig::default(),
             syntax_highlighting: SyntaxHighlightConfig::default(),
             runtime_completions: RuntimeCompletionConfig::default(),
             native_widgets: NativeWidgetConfig::default(),
-            native_plugins: NativePluginConfig::default(),
         }
     }
 }

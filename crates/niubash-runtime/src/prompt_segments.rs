@@ -234,7 +234,6 @@ pub struct SegmentPromptConfig {
     pub left_elements: Vec<SegmentId>,
     pub right_elements: Vec<SegmentId>,
     pub separator: String,
-    pub theme_name: String,
     pub prompt_symbol: String,
     pub preset: Option<SegmentPreset>,
 }
@@ -284,7 +283,6 @@ impl SegmentPromptConfig {
             left_elements: left,
             right_elements: right,
             separator,
-            theme_name: "default".to_string(),
             prompt_symbol: prompt_symbol.to_string(),
             preset: Some(preset),
         }
@@ -356,18 +354,11 @@ impl SegmentPrompt {
     }
 
     fn colour_for(&self, segment: &SegmentId) -> SegmentColour {
-        if let Some(preset) = self.config.preset {
-            preset_colour(preset, segment)
-        } else {
-            let theme = crate::theme::by_name(&self.config.theme_name);
-            match segment {
-                SegmentId::Dir => (theme.prompt_dir.foreground, None),
-                SegmentId::Status => (theme.error.foreground, None),
-                SegmentId::Time => (theme.prompt_dir.foreground, None),
-                SegmentId::PromptChar => (theme.prompt_symbol.foreground, None),
-                SegmentId::Context => (theme.prompt_user.foreground, None),
-                _ => (None, None),
-            }
+        match self.config.preset {
+            Some(preset) => preset_colour(preset, segment),
+            // Custom element orders without a preset render unstyled; the
+            // built-in theme lookup retired with niubash#145.
+            None => (None, None),
         }
     }
 
@@ -683,7 +674,6 @@ mod tests {
             left_elements: vec![SegmentId::Dir, SegmentId::PromptChar],
             right_elements: vec![SegmentId::Time],
             separator: " ".to_string(),
-            theme_name: "default".to_string(),
             prompt_symbol: "\u{276f}".to_string(),
             preset: Some(SegmentPreset::Lean),
         }

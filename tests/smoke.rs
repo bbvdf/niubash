@@ -238,7 +238,9 @@ fn smoke_with_oh_my_niu_bundle() {
     let temp = setup_isolated_home("smoke-omn");
     let home = temp.join("home");
 
-    // Write an rc that sources the oh-my-niu framework
+    // The built-in plugin stack retired (niubash#145): legacy rc lines are
+    // legal assignments the host now ignores; the rc must still source
+    // cleanly and reach interactive commands.
     let rc_content = r#"NIU_DISABLE_DEFAULT_PLUGINS=0
 export NIU_DISABLE_DEFAULT_PLUGINS
 NIU_PLUGINS=(git)
@@ -258,12 +260,12 @@ fi
     assert_success(&output, "bundle existence");
     assert_eq!(normalize(&output.stdout), "bundle-found");
 
-    // Verify plugin list includes git
+    // NIU_PLUGINS stays a plain exported array (parse tolerance).
     let output = run_niu_interactive("echo ${NIU_PLUGINS[*]}", &temp, &home);
     assert_success(&output, "plugin array");
     assert!(
         normalize(&output.stdout).contains("git"),
-        "git plugin should be in NIU_PLUGINS"
+        "NIU_PLUGINS assignments must stay visible shell variables"
     );
 
     let _ = fs::remove_dir_all(temp);
@@ -407,13 +409,18 @@ fn smoke_setup_wizard_generates_rc() {
 
     if rc_path.exists() {
         let rc_content = fs::read_to_string(&rc_path).unwrap();
+        // The wizard writes a clean rc (niubash#145): no stack variables.
         assert!(
-            rc_content.contains("NIU_THEME"),
-            "rc should contain NIU_THEME"
+            !rc_content.contains("NIU_THEME="),
+            "rc must not contain NIU_THEME: {rc_content}"
         );
         assert!(
-            rc_content.contains("NIU_PROMPT_SYMBOL"),
-            "rc should contain NIU_PROMPT_SYMBOL"
+            !rc_content.contains("NIU_PLUGINS="),
+            "rc must not contain NIU_PLUGINS: {rc_content}"
+        );
+        assert!(
+            rc_content.contains("USERPROFILE"),
+            "rc should bootstrap HOME from USERPROFILE"
         );
     }
 

@@ -1,9 +1,9 @@
 //! `niu doctor`: one-command health check for a Niubash installation.
 //!
 //! Reuses the same probes the setup wizard trusts (winuxcmd discovery,
-//! command links, nerd font, bundle inventory) and prints a compact report
-//! with fix hints. Critical checks decide the trailing count; advisory rows
-//! (font, shims, language) never fail the run.
+//! command links, nerd font) and prints a compact report with fix hints.
+//! Critical checks decide the trailing count; advisory rows (font, shims,
+//! language) never fail the run.
 
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -102,23 +102,6 @@ pub fn run_doctor() -> anyhow::Result<()> {
         writeln!(
             out,
             "  {warn} startup rc          none — run `niu setup` to create ~/.niubashrc"
-        )?;
-    }
-
-    // ── Critical: the plugin bundle ────────────────────────────────────────
-    critical_total += 1;
-    let inventory = crate::plugins::active_plugin_inventory();
-    if let Some(path) = inventory.path {
-        writeln!(
-            out,
-            "  {ok} plugin bundle       oh-my-niu at {}",
-            display(&path)
-        )?;
-        critical_passed += 1;
-    } else {
-        writeln!(
-            out,
-            "  {warn} plugin bundle       none active — themes/packs need it; see `niu plugin bundle status`"
         )?;
     }
 

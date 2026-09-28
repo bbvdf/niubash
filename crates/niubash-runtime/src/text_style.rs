@@ -125,14 +125,3 @@ pub fn truncate(text: &str, max: usize) -> String {
     out.push('…');
     out
 }
-
-/// Dim "needs: a, b" note for packs whose required programs are absent.
-/// Empty when nothing is missing.
-pub fn warn_missing_note(required: &[String]) -> String {
-    let missing = crate::plugins::missing_required_binaries(required);
-    if missing.is_empty() {
-        String::new()
-    } else {
-        yellow(format!("(needs: {})", missing.join(", ")).as_str())
-    }
-}
