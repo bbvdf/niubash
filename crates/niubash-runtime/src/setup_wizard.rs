@@ -10,7 +10,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+#[cfg(windows)]
+use std::process::Command;
+#[cfg(windows)]
+use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::interactive_menu::{self, pad_display, Selection};
@@ -27,6 +30,7 @@ const WIZARD_ANSWERS_SCHEMA: &str = "niubash:wizard-answers@0.1.0";
 /// niu-git repo docs (`D:/repo/niu-git` README "WPM package" section and
 /// `wpm/niugit.json`, the official-index entry). The wizard only ever shows
 /// this command; it runs it solely on an explicit "Install" pick.
+#[cfg(windows)]
 const NIUGIT_WPM_PACKAGE: &str = "niugit";
 /// Windows-only (owner directive): the wpm install form and the `wpm` string
 /// itself must never appear on other platforms — gate the command const and
@@ -335,6 +339,7 @@ struct EnvProbe {
 
 impl EnvProbe {
     fn collect() -> Self {
+        #[cfg_attr(not(windows), allow(unused_mut))]
         let mut tools: BTreeSet<String> = PROBED_TOOLS
             .iter()
             .chain(PLATFORM_PROBED_TOOLS.iter())
@@ -417,6 +422,7 @@ impl WizardIo {
         }
     }
 
+    #[cfg(windows)]
     fn choice(
         &mut self,
         label: &str,
@@ -805,6 +811,7 @@ fn build_config(theme_pick: &ThemePick) -> WizardConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NiuGitChoice {
     Skip,
+    #[cfg(windows)]
     Install,
     NeverShow,
 }
@@ -880,6 +887,7 @@ fn wizard_answers_path(home: &std::path::Path) -> PathBuf {
 /// or "installed" after a successful pick). While `None` the wizard may
 /// offer the choice again on the next explicit `niu setup` run — a wizard
 /// re-run is user-initiated, never a nag.
+#[cfg(windows)]
 fn read_niu_git_answer(home: &std::path::Path) -> Option<String> {
     let text = std::fs::read_to_string(wizard_answers_path(home)).ok()?;
     for raw in text.lines() {
@@ -1059,8 +1067,6 @@ fn print_config_summary(
             // wizard actually did (ask_niu_git always returns Skip there).
             #[cfg(windows)]
             NiuGitChoice::Install => NIUGIT_INSTALL_COMMAND.to_string(),
-            #[cfg(not(windows))]
-            NiuGitChoice::Install => t.tr("skipped").to_string(),
             NiuGitChoice::NeverShow => t.tr("don't ask again").to_string(),
             NiuGitChoice::Skip => t.tr("skipped").to_string(),
         },
@@ -1095,6 +1101,7 @@ fn write_rc_and_mark_done(
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// `wpm` when the command link is on PATH, else `winuxcmd.exe wpm`.
+#[cfg(windows)]
 fn wpm_command() -> Option<Command> {
     if on_path("wpm") {
         return Some(Command::new("wpm"));
@@ -1106,6 +1113,7 @@ fn wpm_command() -> Option<Command> {
     })
 }
 
+#[cfg(windows)]
 fn wpm_available() -> bool {
     wpm_command().is_some()
 }

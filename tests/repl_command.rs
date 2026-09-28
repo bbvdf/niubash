@@ -1,5 +1,4 @@
 //! Binary-level tests for the non-interactive REPL command surface.
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
