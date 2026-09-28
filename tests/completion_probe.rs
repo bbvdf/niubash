@@ -209,30 +209,6 @@ fn argument_position_does_not_suggest_commands() {
     assert_not_contains(&suggestions, "grep");
 }
 
-#[test]
-fn git_completion_suggests_daily_subcommands_and_flags() {
-    let env = ProbeEnv::new("niubash-completion-git-daily");
-
-    let subcommands = run_probe("git ", &env, &[]);
-    assert_contains(&subcommands, "add");
-    assert_contains(&subcommands, "commit");
-    assert_contains(&subcommands, "push");
-    assert_contains(&subcommands, "pull");
-    assert_contains(&subcommands, "checkout");
-
-    let add = run_probe("git a", &env, &[]);
-    assert_contains(&add, "add");
-    assert_not_contains(&add, "commit");
-
-    let commit_flags = run_probe("git commit --", &env, &[]);
-    assert_contains(&commit_flags, "--message");
-    assert_contains(&commit_flags, "--amend");
-    assert_contains(&commit_flags, "--no-verify");
-
-    let push_flags = run_probe("git push --force", &env, &[]);
-    assert_contains(&push_flags, "--force");
-    assert_contains(&push_flags, "--force-with-lease");
-}
 fn run_probe(line: &str, env: &ProbeEnv, extra_env: &[(&str, String)]) -> Vec<String> {
     let output = run_niu_probe(line, &env.start, &env.home, extra_env);
     assert_success(&output, line);

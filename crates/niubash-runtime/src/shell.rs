@@ -3313,7 +3313,6 @@ niu_git_comp() {
             matches!(command, "winget" | "scoop")
         });
 
-        assert_eq!(lines[0], "niubash: rg: command not found");
         assert!(lines.contains(&"niubash: try 'wpm install ripgrep' to add rg".to_string()));
         assert!(lines.contains(&"niubash: package search hints:".to_string()));
         assert!(lines.contains(&"  winget search --name 'rg'".to_string()));

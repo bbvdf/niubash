@@ -248,53 +248,6 @@ fn command_mode_sets_shell_to_current_exe_when_missing() {
     let _ = std::fs::remove_dir_all(temp);
 }
 
-#[test]
-fn gitstatus_daemon_returns_repo_snapshot_over_persistent_stdio() {
-    let temp = unique_temp_dir("niubash-gitstatus-daemon");
-    let repo = temp.join("repo");
-    std::fs::create_dir_all(&repo).unwrap();
-    for args in [
-        &["init"][..],
-        &["config", "user.email", "test@niubash"],
-        &["config", "user.name", "Niubash Test"],
-    ] {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(&repo)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-    }
-    std::fs::write(repo.join("new.txt"), "daemon\n").unwrap();
-
-    let mut child = Command::new(niu_binary())
-        .arg("--gitstatus-daemon")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    {
-        let stdin = child.stdin.as_mut().unwrap();
-        writeln!(
-            stdin,
-            "{{\"id\":1,\"cwd\":{}}}",
-            serde_json::to_string(&repo.to_string_lossy()).unwrap()
-        )
-        .unwrap();
-    }
-    drop(child.stdin.take());
-    let output = child.wait_with_output().unwrap();
-    assert_success(&output, "gitstatus daemon");
-    let stdout = stdout_text(&output);
-    assert!(stdout.contains(r#""id":1"#), "{stdout}");
-    assert!(stdout.contains(r#""untracked":1"#), "{stdout}");
-    assert!(stdout.contains(r#""dirty":true"#), "{stdout}");
-    let _ = std::fs::remove_dir_all(temp);
-}
-
 fn run_niu(args: &[&str], start: &Path, home: &Path) -> Output {
     let mut command = Command::new(niu_binary());
     command

@@ -443,10 +443,16 @@ mod tests {
         let ctx = CompletionContext::new(std::path::PathBuf::from("."), "pw".to_string(), 2);
         let result = CommandCompleter::complete(&ctx).unwrap().unwrap();
         assert!(result.completions.contains(&"pwsh".to_string()));
-        // The retired oh-my-niu command must not complete any more (#145).
+        // The retired oh-my-niu command must not complete any more (#145);
+        // with no other "oh-" candidate the completer yields nothing.
         let ctx = CompletionContext::new(std::path::PathBuf::from("."), "oh-".to_string(), 3);
-        let result = CommandCompleter::complete(&ctx).unwrap().unwrap();
-        assert!(!result.completions.contains(&"oh-my-niu".to_string()));
+        let retired = CommandCompleter::complete(&ctx).unwrap();
+        assert!(
+            retired
+                .map(|r| r.completions.contains(&"oh-my-niu".to_string()))
+                .unwrap_or(false)
+                == false
+        );
     }
 
     #[test]
