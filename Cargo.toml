@@ -33,6 +33,14 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Network
 [dev-dependencies]
 sha2 = "0.10"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
+# Interactive-mode regression harness (tests/interactive.rs): pseudo-terminal
+# driver. Originally evaluated expectrl 0.9 (pexpect port), but its Windows
+# backend (conpty 0.5.1) failed to attach the child to the pseudo console on
+# Windows 10 19044: the child inherited the parent console instead and the
+# pty streams stayed empty (reproduced with a plain `cmd /C echo` control).
+# portable-pty 0.9 drives ConPTY correctly on the same host, so the driver
+# is built on it for every case, on both Windows and Unix.
+portable-pty = "0.9"
 
 # Published-binary profile (measured on x64 MSVC against the default release
 # profile): thin LTO + one codegen unit enables cross-crate DCE/inlining
