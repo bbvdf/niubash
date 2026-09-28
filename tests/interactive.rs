@@ -619,3 +619,125 @@ fn resize_does_not_crash_shell() {
     s.expect("after-resize-two-ok");
     s.expect_prompt();
 }
+
+// ---------------------------------------------------------------------------
+// niubash#145: interactive startup must reach the prompt when an rc carries
+// the retired built-in plugin/theme stack lines. The original bug: the host
+// spawned the 'niubash-gitstatus' worker thread for the async git prompt and
+// the main thread waited on it before the first prompt render, so a shell
+// whose rc loaded the framework (non-empty NIU_PLUGINS) hung forever after
+// the banner. The whole machinery is deleted; these tests pin the fix by
+// driving the real interactive (PTY) path with timeout-bounded asserts.
+// ---------------------------------------------------------------------------
+
+/// The legacy rc exactly as the old setup wizard wrote it (stack variables,
+/// export block, oh-my-niu discovery loop), plus the sentinels.
+fn legacy_stack_rc() -> String {
+    r#"NIU_THEME='spaceship'
+NIU_THEME_PLUGIN='theme-spaceship'
+NIU_PROMPT_SYMBOL='❯'
+NIU_DISABLE_DEFAULT_PLUGINS=1
+export NIU_THEME NIU_THEME_PLUGIN NIU_PROMPT_SYMBOL
+export NIU_DISABLE_DEFAULT_PLUGINS
+NIU_PLUGINS=(prompt-core git starship common-aliases path-tools extract zoxide fzf thefuck command-not-found direnv dotenv kubectl npm keybindings env-sync)
+if [ -z "${NIUBASH:-}" ]; then
+  for __niubash_bundle in "$HOME/.oh-my-niu" "$HOME/.niubash/oh-my-niu" "$HOME/.niubash/bundles/oh-my-niu"/* "$NIU_APP_BUNDLE_PATH"; do
+    if [ -f "$__niubash_bundle/oh-my-niu.niu" ]; then
+      NIUBASH="$__niubash_bundle"
+      export NIUBASH
+      break
+    fi
+  done
+fi
+if [ -f "$NIUBASH/oh-my-niu.niu" ]; then
+  . "$NIUBASH/oh-my-niu.niu"
+fi
+unset __niubash_bundle
+PS1='P1> '
+PS2='P2> '
+"#
+    .to_string()
+}
+
+/// A minimal oh-my-niu-shaped framework entry the legacy discovery loop can
+/// find: it defines the hook-runner functions the old host dispatched. If the
+/// async git-status machinery ever comes back, sourcing this plus the
+/// non-empty NIU_PLUGINS list is what used to hang startup.
+fn write_legacy_framework_fixture(root: &std::path::Path) -> std::path::PathBuf {
+    let bundle = root.join("oh-my-niu");
+    std::fs::create_dir_all(&bundle).expect("create fixture bundle dir");
+    std::fs::write(
+        bundle.join("oh-my-niu.niu"),
+        r#"# legacy framework fixture (niubash#145 regression)
+niubash_run_precmd_hooks() {
+  NIU_PROMPT_GIT="SNAPSHOT:precmd:${NIU_LAST_EXIT_CODE:-0} "
+  export NIU_PROMPT_GIT
+  return 0
+}
+niubash_run_startup_hooks() { :; }
+niubash_run_preexec_hooks() { :; }
+"#,
+    )
+    .expect("write framework fixture");
+    bundle
+}
+
+/// The headline regression: banner -> prompt must be reached (bounded by the
+/// driver timeout) with the legacy stack rc, and interactive commands must
+/// keep working afterwards.
+#[test]
+fn legacy_niu_plugins_rc_reaches_prompt() {
+    if !require_pty_or_skip("legacy_niu_plugins_rc_reaches_prompt") {
+        return;
+    }
+    let mut s = NiuSession::spawn_custom(
+        "legacy-plugins",
+        &legacy_stack_rc(),
+        &[],
+        (120, 30),
+        HEAVY_TIMEOUT,
+    );
+    s.wait_ready();
+    s.send_line("echo legacy-ok");
+    s.expect("legacy-ok");
+    s.expect_prompt();
+}
+
+/// Same rc, but the discovery loop actually finds a framework entry through
+/// $NIU_APP_BUNDLE_PATH — the exact shape of the owner-machine hang (rc
+/// sourced the framework, NIU_PLUGINS non-empty, prompt never rendered).
+#[test]
+fn legacy_framework_rc_reaches_prompt() {
+    if !require_pty_or_skip("legacy_framework_rc_reaches_prompt") {
+        return;
+    }
+    let fixture_root = std::env::temp_dir().join(format!(
+        "niu-legacy-framework-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let bundle = write_legacy_framework_fixture(&fixture_root);
+    let mut s = NiuSession::spawn_custom(
+        "legacy-framework",
+        &legacy_stack_rc(),
+        &[(
+            "NIU_APP_BUNDLE_PATH".to_string(),
+            bundle.to_string_lossy().into_owned(),
+        )],
+        (120, 30),
+        HEAVY_TIMEOUT,
+    );
+    s.wait_ready();
+    // The framework entry was really sourced (rc-side effect survives).
+    s.send_line("command -v niubash_run_precmd_hooks >/dev/null && echo fw-loaded");
+    s.expect("fw-loaded");
+    s.expect_prompt();
+    s.send_line("echo still-alive");
+    s.expect("still-alive");
+    s.expect_prompt();
+
+    let _ = std::fs::remove_dir_all(&fixture_root);
+}
