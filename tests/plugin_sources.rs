@@ -268,3 +268,193 @@ fn plugin_source_add_rejects_unknown_layout_and_bad_checksum() {
 
     let _ = fs::remove_dir_all(&temp);
 }
+
+/// `niu plugin discover` is the dry ecosystem overview: it shows installed
+/// sources with their state and the managers that are not installed yet,
+/// without writing anything (not even the registry file).
+#[test]
+fn plugin_discover_is_read_only_and_lists_available_managers() {
+    let temp = temp_dir("plugin-discover");
+    let root = temp.join("sources");
+    let envs = [("NIU_PLUGIN_SOURCES_ROOT", root.clone())];
+
+    let out = run_niu_with_env(&["plugin", "discover"], &envs);
+    assert_success(&out, "plugin discover empty");
+    let text = stdout_text(&out);
+    assert!(text.contains("read-only"), "{text}");
+    assert!(text.contains("(none installed)"), "{text}");
+    // oh-my-bash is a known manager that is not installed yet: the hint
+    // shows the add command the user could run — nothing runs on its own.
+    assert!(text.contains("oh-my-bash"), "{text}");
+    assert!(
+        text.contains(
+            "niu plugin source add oh-my-bash --url https://github.com/ohmybash/oh-my-bash.git"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("nothing is installed, sourced, or changed"),
+        "{text}"
+    );
+    // Read-only proof: no registry was created by a listing command.
+    assert!(
+        !root.join("registry.toml").exists(),
+        "discover must not write the registry"
+    );
+
+    // With a source installed (untrusted), discover surfaces the state.
+    let fixture = omb_fixture();
+    run_niu_with_env(
+        &["plugin", "source", "add", &fixture.to_string_lossy()],
+        &envs,
+    );
+    let out = run_niu_with_env(&["plugin", "discover"], &envs);
+    assert_success(&out, "plugin discover untrusted");
+    let text = stdout_text(&out);
+    assert!(text.contains("untrusted"), "{text}");
+    assert!(
+        !text.contains("niu plugin source add oh-my-bash --url"),
+        "installed managers leave the available section: {text}"
+    );
+
+    let _ = fs::remove_dir_all(&temp);
+}
+
+/// §0 layering in the real listing: external oh-my-bash themes lead, the
+/// built-in bundle themes retire behind the separator with the honest
+/// fallback label, and same-name collisions resolve once (external wins).
+#[test]
+fn plugin_themes_external_first_builtins_after_separator() {
+    let temp = temp_dir("plugin-themes-ordering");
+    let root = temp.join("sources");
+    let bundle = temp.join("bundle");
+    write_theme_bundle(&bundle, &["agnoster", "native-only"]);
+    let envs = [
+        ("NIU_PLUGIN_SOURCES_ROOT", root.clone()),
+        ("NIU_PLUGIN_BUNDLE_PATH", bundle.clone()),
+    ];
+    let fixture = omb_fixture();
+
+    // Untrusted: nothing external shows; built-ins only.
+    run_niu_with_env(
+        &["plugin", "source", "add", &fixture.to_string_lossy()],
+        &envs,
+    );
+    let out = run_niu_with_env(&["plugin", "themes"], &envs);
+    assert_success(&out, "plugin themes untrusted ordering");
+    let text = stdout_text(&out);
+    assert!(!text.contains("robbyrussell"), "{text}");
+    assert!(text.contains("native-only"), "{text}");
+
+    run_niu_with_env(&["plugin", "source", "trust", "oh-my-bash"], &envs);
+    let out = run_niu_with_env(&["plugin", "themes"], &envs);
+    assert_success(&out, "plugin themes ordering");
+    let text = stdout_text(&out);
+    let external_section = text.find("External themes").expect("external section");
+    let robbyrussell = text.find("robbyrussell").expect("external theme row");
+    let separator = text.find("built-in fallback").expect("built-in separator");
+    let native_only = text.find("native-only").expect("built-in theme row");
+    assert!(
+        external_section < robbyrussell && robbyrussell < separator && separator < native_only,
+        "external themes must lead, built-ins must follow the separator:\n{text}"
+    );
+    // The external `agnoster` wins over the bundle's same-name theme and is
+    // listed exactly once.
+    assert_eq!(text.matches("agnoster").count(), 1, "{text}");
+    assert!(
+        text[..separator].contains("agnoster"),
+        "agnoster must sit in the external section:\n{text}"
+    );
+
+    let _ = fs::remove_dir_all(&temp);
+}
+
+/// The non-interactive `niu setup` contract stays deterministic: minimal
+/// preset applied, no wizard-answer markers written without a question.
+#[test]
+fn setup_noninteractive_stays_deterministic_and_records_no_answers() {
+    let temp = temp_dir("setup-noninteractive");
+    let home = temp.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let envs = [
+        ("HOME", home.clone()),
+        ("USERPROFILE", home.clone()),
+        ("NIU_PLUGIN_SOURCES_ROOT", temp.join("sources")),
+    ];
+    let out = run_niu_with_env(&["setup"], &envs);
+    assert_success(&out, "non-interactive setup");
+    let rc = fs::read_to_string(home.join(".niubashrc")).expect("rc written");
+    assert!(rc.contains("NIU_THEME='classic'"), "{rc}");
+    assert!(rc.contains("NIU_PLUGINS=(prompt-core git)"), "{rc}");
+    assert!(rc.contains("NIU_DISABLE_DEFAULT_PLUGINS=1"), "{rc}");
+    assert!(
+        home.join(".niubash").join(".setup-done").is_file(),
+        "setup-done marker must exist"
+    );
+    // No question was asked, so no lasting answer (niu-git nag marker) may
+    // be recorded.
+    assert!(
+        !home.join(".niubash").join("wizard-answers.toml").is_file(),
+        "wizard answers must not be written without an explicit pick"
+    );
+    let _ = fs::remove_dir_all(&temp);
+}
+
+/// Minimal oh-my-niu-shaped bundle fixture with native TOML themes (same
+/// shape as tests/plugin_inventory.rs fixtures).
+fn write_theme_bundle(path: &std::path::Path, themes: &[&str]) {
+    fs::create_dir_all(path.join("packs").join("themes")).unwrap();
+    fs::create_dir_all(path.join("themes")).unwrap();
+    fs::write(
+        path.join("bundle.toml"),
+        r#"name = "oh-my-niu"
+version = "9.9.10"
+api = "niubash:plugin-bundle@0.1.0"
+min_niubash = "0.8.3"
+[packs]
+default = ["themes"]
+available = ["themes"]
+[layout]
+packs_dir = "packs"
+themes_dir = "themes"
+"#,
+    )
+    .unwrap();
+    let list = themes
+        .iter()
+        .map(|name| format!("\"{name}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    fs::write(
+        path.join("packs").join("themes").join("plugin.toml"),
+        format!(
+            r#"name = "themes"
+bundle = "oh-my-niu"
+version = "9.9.10"
+kind = "builtin"
+api = "niubash:plugin@0.1.0"
+category = "ux"
+summary = "Ordering fixture."
+default = true
+permissions = []
+required_binaries = []
+[exports]
+aliases = false
+completions = []
+prompt_segments = []
+hooks = []
+commands = []
+keybindings = []
+themes = [{list}]
+"#
+        ),
+    )
+    .unwrap();
+    for name in themes {
+        fs::write(
+            path.join("themes").join(format!("{name}.toml")),
+            "[prompt_user]\nfg = \"green\"\n",
+        )
+        .unwrap();
+    }
+}

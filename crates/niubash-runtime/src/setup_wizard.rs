@@ -1,7 +1,15 @@
 //! First-run setup wizard.
 //!
-//! Guides the user through initial interactive configuration, then writes a
-//! normal shell rc file.
+//! zsh-style minimal flow (owner decision 2026-09-27, see
+//! docs/planning/wizard-redesign.md): one theme pick from the §0-layered
+//! gallery (external oh-my-bash themes first, built-in themes last behind a
+//! separator, "keep current" always an equal option) plus at most two plain
+//! opt-in questions — extra tab completions and the niu-git hint. Every
+//! question defaults to "no change", nothing is installed without an
+//! explicit pick, and skipped questions leave the previous rc semantics
+//! untouched. Presets stay available non-interactively via
+//! `niu setup --preset <name>`; the old multi-page survey (fonts, starship,
+//! wpm tool bundles, WT profile) is retired from the interactive flow.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -16,45 +24,27 @@ const PRIMARY_RC_FILE: &str = ".niubashrc";
 const COMPAT_RC_FILE: &str = ".winuxshrc";
 const SETUP_DONE_FILE: &str = ".setup-done";
 
-/// Companion tools offered through wpm on first run, grouped into cumulative
-/// tiers so the user picks one bundle instead of per-tool questions. Each
-/// entry is a `(binary name on PATH, wpm package name)` pair — they differ
-/// for ripgrep, whose binary is `rg`.
-const TOOL_TIERS: &[&[(&str, &str)]] = &[
-    // Essentials: the daily-driver modern replacements.
-    &[
-        ("eza", "eza"),
-        ("fd", "fd"),
-        ("rg", "ripgrep"),
-        ("fzf", "fzf"),
-        ("bat", "bat"),
-    ],
-    // Modern CLI: navigation, disk usage, diff, search/replace, processes.
-    &[
-        ("zoxide", "zoxide"),
-        ("dust", "dust"),
-        ("duf", "duf"),
-        ("delta", "delta"),
-        ("sd", "sd"),
-        ("procs", "procs"),
-    ],
-    // Everything: history, monitors, TUI helpers, data tools.
-    &[
-        ("atuin", "atuin"),
-        ("bottom", "bottom"),
-        ("lazygit", "lazygit"),
-        ("jq", "jq"),
-        ("yq", "yq"),
-        ("xh", "xh"),
-        ("hyperfine", "hyperfine"),
-        ("tokei", "tokei"),
-        ("glow", "glow"),
-        ("navi", "navi"),
-        ("watchexec", "watchexec"),
-    ],
+/// Schema marker for the wizard answers file (`~/.niubash/wizard-answers.toml`).
+const WIZARD_ANSWERS_SCHEMA: &str = "niubash:wizard-answers@0.1.0";
+
+/// niu-git wpm package name and install command, taken read-only from the
+/// niu-git repo docs (`D:/repo/niu-git` README "WPM package" section and
+/// `wpm/niugit.json`, the official-index entry). The wizard only ever shows
+/// this command; it runs it solely on an explicit "Install" pick.
+const NIUGIT_WPM_PACKAGE: &str = "niugit";
+const NIUGIT_INSTALL_COMMAND: &str = "wpm install niugit";
+
+/// Packs the wizard can add to `NIU_PLUGINS` when the user opts into extra
+/// tab completions; each is added only when its binary is on PATH.
+const COMPLETION_PACK_CANDIDATES: &[(&str, &str)] = &[
+    ("git", "git"),
+    ("docker", "docker"),
+    ("kubectl", "kubectl"),
+    ("npm", "npm"),
 ];
 
-/// Tools probed on PATH during preflight; drives conditional packs/aliases.
+/// Tools probed on PATH during preflight; drives the environment summary and
+/// the completion-pack candidates.
 const PROBED_TOOLS: &[&str] = &[
     "git", "fzf", "eza", "bat", "starship", "zoxide", "fd", "rg", "dust", "duf", "erd", "direnv",
     "kubectl", "docker", "npm", "thefuck", "wpm",
@@ -154,7 +144,12 @@ pub enum GitBackend {
 }
 
 /// Everything the wizard can write into `~/.niubashrc`. Presets fill this in
-/// one shot; the custom flow fills it question by question.
+/// one shot (`niu setup --preset`, non-interactive); the interactive flow
+/// fills only what the user explicitly picked.
+///
+/// Empty-string fields mean "no override": the generated rc omits the line
+/// entirely, so the product defaults (and any previous rc semantics) stay in
+/// charge. That is what makes wizard "skip" paths side-effect free.
 #[derive(Debug, Clone, Default)]
 pub struct WizardConfig {
     pub theme: String,
@@ -170,6 +165,102 @@ pub struct WizardConfig {
     pub plugins: Vec<String>,
     /// Extra `alias name='cmd'` lines appended to the generated rc.
     pub aliases: Vec<(String, String)>,
+    /// When true, write `NIU_DISABLE_DEFAULT_PLUGINS=1` so exactly
+    /// `plugins` loads (preset semantics). The interactive flow never sets
+    /// it: opting into packs only *adds* to the inventory defaults.
+    pub disable_default_plugins: bool,
+    /// Source id (e.g. "oh-my-bash") when `theme` is an external-source
+    /// theme; the rc activates it through the guarded source loader and the
+    /// bash-compatible PS1 channel instead of the native TOML theme pair.
+    pub theme_source_id: Option<String>,
+}
+
+/// The theme question's outcome. `Keep` writes no theme lines, mirroring
+/// whatever is already active (product defaults on a fresh install).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ThemePick {
+    Keep,
+    Native { name: String },
+    External { name: String, source_id: String },
+}
+
+/// One theme in the wizard gallery, tagged with its §0 layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ThemeGalleryEntry {
+    name: String,
+    tier: ThemeGalleryTier,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ThemeGalleryTier {
+    /// `~/.niubash/themes/<name>.toml` — the user's own, always highest.
+    User,
+    /// Trusted external plugin-manager source (oh-my-bash) — primary body.
+    External { source_id: String, adapter: String },
+    /// Bundle-native TOML theme — fallback layer, retired to the end of the
+    /// gallery behind the separator with the honest label.
+    Builtin,
+}
+
+/// The §0-layered theme gallery: user and external themes first, built-in
+/// themes last. `builtin_start` is the index into `entries` where the
+/// built-in fallback tier begins (the separator position).
+#[derive(Debug, Clone)]
+struct ThemeGallery {
+    entries: Vec<ThemeGalleryEntry>,
+    builtin_start: usize,
+}
+
+/// External oh-my-bash themes from trusted sources lead the gallery; the
+/// corpus (252/252 + PS1 byte parity, rubash target-ecosys) proved them, so
+/// they are the default body. Built-in bundle themes follow behind the
+/// separator. Same-name collisions resolve user > external > built-in.
+fn theme_gallery() -> ThemeGallery {
+    let mut user = Vec::new();
+    let mut external = Vec::new();
+    let mut builtin = Vec::new();
+    let mut seen = BTreeSet::new();
+    for entry in theme::user_theme_entries() {
+        if seen.insert(entry.name.to_ascii_lowercase()) {
+            user.push(ThemeGalleryEntry {
+                name: entry.name,
+                tier: ThemeGalleryTier::User,
+            });
+        }
+    }
+    for entry in crate::plugins::sources::source_theme_entries() {
+        if seen.insert(entry.name.to_ascii_lowercase()) {
+            external.push(ThemeGalleryEntry {
+                name: entry.name,
+                tier: ThemeGalleryTier::External {
+                    source_id: entry.source_id,
+                    adapter: entry.adapter_display,
+                },
+            });
+        }
+    }
+    for entry in crate::plugins::plugin_theme_catalog() {
+        if entry.source != "bundle" {
+            continue;
+        }
+        if seen.insert(entry.name.to_ascii_lowercase()) {
+            builtin.push(ThemeGalleryEntry {
+                name: entry.name,
+                tier: ThemeGalleryTier::Builtin,
+            });
+        }
+    }
+    user.sort_by(|a, b| a.name.cmp(&b.name));
+    external.sort_by(|a, b| a.name.cmp(&b.name));
+    builtin.sort_by(|a, b| a.name.cmp(&b.name));
+    let builtin_start = user.len() + external.len();
+    let mut entries = user;
+    entries.extend(external);
+    entries.extend(builtin);
+    ThemeGallery {
+        entries,
+        builtin_start,
+    }
 }
 
 /// A curated setup preset. Built-ins ship in the binary; the oh-my-niu bundle
@@ -299,15 +390,13 @@ impl EnvProbe {
 struct WizardIo {
     interactive: bool,
     fast_forward: bool,
-    lang: Lang,
 }
 
 impl WizardIo {
-    fn new(interactive: bool, lang: Lang) -> Self {
+    fn new(interactive: bool) -> Self {
         WizardIo {
             interactive,
             fast_forward: false,
-            lang,
         }
     }
 
@@ -362,14 +451,6 @@ impl WizardIo {
             }
             Selection::Abort => None,
         }
-    }
-
-    fn yn(&mut self, label: &str, default: bool) -> Option<bool> {
-        let yes = self.lang.tr("Yes");
-        let no = self.lang.tr("No");
-        let options: [&str; 2] = if default { [yes, no] } else { [no, yes] };
-        self.choice(label, 0, &options, "")
-            .map(|idx| options[idx] == yes)
     }
 
     /// The final Apply/Cancel gate. Unlike ordinary questions this never
@@ -493,7 +574,7 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
     display_welcome_side_by_side(reconfigure, lang);
 
     let probe = EnvProbe::collect();
-    let mut io = WizardIo::new(crate::terminal::stdio_is_interactive(), lang);
+    let mut io = WizardIo::new(crate::terminal::stdio_is_interactive());
 
     if io.interactive {
         probe.print_summary(lang);
@@ -537,286 +618,181 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // --- Nerd Font capability ---
-    let mut nf_capable = probe.nerd_font;
-    let mut installed_font: Option<String> = None;
-    if !nf_capable {
+    // --- Q1: theme gallery ---
+    // External oh-my-bash themes lead (corpus-proven primary layer), the
+    // built-in bundle themes retire to the end behind the separator with the
+    // honest fallback label, and "keep current" is an always-equal first
+    // option. No font step, no preset survey: one question.
+    let gallery = theme_gallery();
+    let current = current_theme_pick(&home);
+    let mut theme_pick = ThemePick::Keep;
+    if gallery.entries.is_empty() {
         println!();
         println!(
-            "  \u{2502}  {}  \u{e0b0}\u{e0b2}  \u{f0e7}  \u{f120}  \u{276f}",
-            t.tr("Glyph sample:")
+            "  {}",
+            t.tr("No themes installed yet — keeping the built-in default look.")
         );
-        let mut font_labels = crate::fonts::menu_labels();
-        if let Some(first) = font_labels.first_mut() {
-            first.push_str(t.tr("  (recommended)"));
+        println!(
+            "  {}",
+            t.tr("Browse the ecosystem any time with `niu plugin discover` (read-only).")
+        );
+    } else {
+        let mut options = vec![match &current {
+            ThemePick::Keep => t.tr("Skip — keep my current theme").to_string(),
+            pick @ (ThemePick::Native { .. } | ThemePick::External { .. }) => format!(
+                "{} ({})",
+                t.tr("Skip — keep my current theme"),
+                describe_theme_pick(pick, t)
+            ),
+        }];
+        for entry in &gallery.entries {
+            let label = match &entry.tier {
+                ThemeGalleryTier::User | ThemeGalleryTier::External { .. } => entry.name.clone(),
+                ThemeGalleryTier::Builtin => {
+                    format!("{}{}", entry.name, t.tr("  · built-in fallback"))
+                }
+            };
+            options.push(label);
         }
-        font_labels.push(t.tr("Skip \u{2014} keep my current font").to_string());
-        let font_refs: Vec<&str> = font_labels.iter().map(String::as_str).collect();
-        let font_idx = ask!(io.choice(
-            t.tr("  \u{1f5a4}\u{fe0f}  Install a Nerd Font for icon-rich themes?"),
-            0,
-            &font_refs,
-            t.tr("  \u{2502}  downloads from nerd-fonts and installs per-user \u{2014} no admin needed"),
-        ));
-        if font_idx < crate::fonts::FONT_OPTIONS.len() {
-            let font = &crate::fonts::FONT_OPTIONS[font_idx];
-            match crate::fonts::install(font) {
-                Ok(installed) => {
-                    nf_capable = true;
-                    installed_font = Some(installed.face.to_string());
-                    println!(
-                        "  \u{2705}  {}",
-                        fill(
-                            t.tr("Installed {} ({} files)"),
-                            &[&font.label, &installed.files]
-                        )
-                    );
-                    if probe.windows_terminal {
-                        try_set_wt_profile_font(installed.face);
-                        println!(
-                            "  \u{2502}  {}",
-                            fill(
-                                t.tr("Niubash tabs in Windows Terminal will use '{}'."),
-                                &[&installed.face]
-                            )
-                        );
-                    } else {
-                        println!(
-                            "  \u{2502}  {}",
-                            fill(
-                                t.tr("Now set your terminal font to '{}'."),
-                                &[&installed.face]
-                            )
+        let theme_refs: Vec<&str> = options.iter().map(String::as_str).collect();
+        let nf_capable = probe.nerd_font;
+        let preview = |i: usize| -> Vec<String> {
+            if i == 0 {
+                return match &current {
+                    ThemePick::Keep => vec![t.tr("current look unchanged").to_string()],
+                    pick => vec![format!("{} {}", t.tr("keep"), describe_theme_pick(pick, t))],
+                };
+            }
+            let entry = &gallery.entries[i - 1];
+            match &entry.tier {
+                ThemeGalleryTier::User => {
+                    let mut lines = theme_preview_line(&entry.name, "\u{276f}")
+                        .lines()
+                        .map(String::from)
+                        .collect::<Vec<_>>();
+                    lines.push(t.tr("your theme (~/.niubash/themes)").to_string());
+                    lines
+                }
+                ThemeGalleryTier::External { adapter, .. } => vec![
+                    format!("{} — {} {}", entry.name, adapter, t.tr("theme (external source, primary)")),
+                    t.tr("renders via the bash-compatible PS1 channel; built-in themes stay as fallback").to_string(),
+                ],
+                ThemeGalleryTier::Builtin => {
+                    let mut lines = theme_preview_line(&entry.name, "\u{276f}")
+                        .lines()
+                        .map(String::from)
+                        .collect::<Vec<_>>();
+                    if nerd_font_theme(&entry.name) && !nf_capable {
+                        lines.push(
+                            t.tr("needs a Nerd Font — `niu font` installs one (optional)")
+                                .to_string(),
                         );
                     }
+                    lines
                 }
-                Err(err) => println!(
-                    "  \u{26a0}\u{fe0f}  {} {err:#}",
-                    t.tr("Font install failed:")
-                ),
             }
-        }
-        if !nf_capable {
-            nf_capable = ask!(io.yn(
-                t.tr("  \u{1f524}  Do the glyphs above render correctly (not boxes)?"),
-                false
-            ));
-            if !nf_capable {
-                println!(
-                    "  \u{2502}  {}",
-                    t.tr("Nerd-Font themes fall back to 'classic' for now.")
-                );
-                println!(
-                    "  \u{2502}  {}",
-                    t.tr("Install a Nerd Font and re-run `niu setup` to unlock them.")
-                );
-            }
+        };
+        let builtin_hint = if gallery.builtin_start < gallery.entries.len() {
+            t.tr(
+                "  │  external themes come first; entries marked 'built-in fallback' are the safe built-ins\n  │  Skip changes nothing",
+            )
+        } else {
+            t.tr("  │  external themes from your trusted plugin sources; Skip changes nothing")
+        };
+        let idx = ask!(io.choice_preview(
+            t.tr("  \u{1f3a8}  Pick a theme"),
+            0,
+            &theme_refs,
+            builtin_hint,
+            &preview,
+        ));
+        if idx > 0 {
+            let entry = &gallery.entries[idx - 1];
+            theme_pick = match &entry.tier {
+                ThemeGalleryTier::User | ThemeGalleryTier::Builtin => ThemePick::Native {
+                    name: entry.name.clone(),
+                },
+                ThemeGalleryTier::External { source_id, .. } => ThemePick::External {
+                    name: entry.name.clone(),
+                    source_id: source_id.clone(),
+                },
+            };
         }
     }
 
-    // --- Preset ---
-    let presets = load_presets();
-    let mut preset_labels: Vec<String> = presets
+    // --- Q2: extra tab completions (opt-in, default off) ---
+    let completion_candidates: Vec<&'static str> = COMPLETION_PACK_CANDIDATES
         .iter()
-        .map(|p| format!("{} {}", pad_display(&p.name, 11), t.tr(&p.summary)))
+        .filter(|(_, bin)| probe.on_path(bin))
+        .map(|(pack, _)| *pack)
         .collect();
-    preset_labels.push(format!(
-        "{} {}",
-        pad_display("custom", 11),
-        t.tr("answer every question yourself")
-    ));
-    let preset_refs: Vec<&str> = preset_labels.iter().map(String::as_str).collect();
-    let preset_preview = |i: usize| -> Vec<String> {
-        match presets.get(i) {
-            Some(p) => {
-                let mut lines: Vec<String> = theme_preview_line(&p.theme, &p.prompt_symbol)
-                    .lines()
-                    .map(String::from)
-                    .collect();
-                lines.push(format!("{} {}", t.tr("packs:"), p.packs.join(" ")));
-                lines
-            }
-            None => vec![t.tr("asks every question one by one").to_string()],
-        }
-    };
-    let preset_idx = ask!(io.choice_preview(
-        t.tr("  \u{1f6e0}\u{fe0f}  Choose a setup preset"),
-        0,
-        &preset_refs,
-        t.tr("  \u{2502}  a preset applies a curated configuration in one step; preview follows the highlight"),
-        &preset_preview,
-    ));
-
-    let mut cfg = if preset_idx == presets.len() {
-        ask!(custom_flow(&mut io, nf_capable))
-    } else {
-        let preset = &presets[preset_idx];
-        let mut notes = Vec::new();
-        let cfg = preset.to_config(&probe, nf_capable, &mut notes, lang);
-        if !notes.is_empty() {
-            println!();
-            for note in &notes {
-                println!("  \u{2502}  {}", note);
-            }
-        }
-        cfg
-    };
-
-    // Starship stays opt-in. Segment mode keeps the niubash prompt and lets
-    // starship render just {git}; full mode hands the whole prompt to
-    // `starship init bash` (bundle plugin). A missing binary is installed via
-    // wpm in the tools step below. Presets that don't opt into starship skip
-    // the question entirely — `recommended`/`minimal` keep the built-in
-    // engine so a preset pick really is one step; only `poweruser` (whose
-    // default is the starship segment) and `custom` are asked.
-    let ask_git_engine = preset_idx == presets.len()
-        || presets
-            .get(preset_idx)
-            .is_some_and(|preset| preset.starship_default);
-    if ask_git_engine && cfg.git_enabled && cfg.prompt_enabled {
-        let note = if probe.on_path("starship") {
-            t.tr("  \u{2502}  starship detected on PATH")
-        } else if wpm_available() {
-            t.tr("  \u{2502}  starship will be installed via wpm if selected")
-        } else {
-            t.tr("  \u{2502}  starship not found and wpm is unavailable")
-        };
-        let default_idx = match cfg.git_backend {
-            GitBackend::Native => 0,
-            GitBackend::StarshipSegment => 1,
-            GitBackend::StarshipFull => 2,
-        };
-        let git_engine_options = [
+    let mut completions_enabled = false;
+    if !completion_candidates.is_empty() {
+        let options = [
             format!(
                 "{}  {}",
-                pad_display("Built-in", 16),
-                t.tr("native git status inside the niubash prompt")
+                pad_display(t.tr("Skip"), 8),
+                t.tr("default — nothing changes")
             ),
             format!(
-                "{}  {}",
-                pad_display("Starship segment", 16),
-                t.tr("starship renders just the {git} part")
-            ),
-            format!(
-                "{}  {}",
-                pad_display("Full Starship", 16),
-                t.tr("starship owns the whole prompt (replaces theme)")
+                "{}  {} {}",
+                pad_display(t.tr("Enable"), 8),
+                t.tr("add"),
+                completion_candidates.join(" ")
             ),
         ];
-        let git_engine_refs: Vec<&str> = git_engine_options.iter().map(String::as_str).collect();
+        let option_refs: Vec<&str> = options.iter().map(String::as_str).collect();
         let idx = ask!(io.choice(
-            t.tr("  \u{1f680}  Git prompt engine"),
-            default_idx,
-            &git_engine_refs,
+            t.tr("  \u{2328}\u{fe0f}  Extra tab completions for tools on PATH?"),
+            0,
+            &option_refs,
+            t.tr("  \u{2502}  adds the completion packs found on PATH; skip keeps the defaults"),
+        ));
+        completions_enabled = idx == 1;
+    }
+
+    // --- Q3: niu-git, offered once (never auto-installed, never nagged) ---
+    let mut niu_git = NiuGitChoice::Skip;
+    if read_niu_git_answer(&home).is_none() {
+        let options = [
+            format!(
+                "{}  {}",
+                pad_display(t.tr("Skip"), 14),
+                t.tr("default — nothing is installed")
+            ),
+            format!(
+                "{}  {}",
+                pad_display(t.tr("Install"), 14),
+                NIUGIT_INSTALL_COMMAND
+            ),
+            format!(
+                "{}  {}",
+                pad_display(t.tr("Don't ask again"), 14),
+                t.tr("remember this and stop offering")
+            ),
+        ];
+        let option_refs: Vec<&str> = options.iter().map(String::as_str).collect();
+        let note = if probe.on_path("git") {
+            t.tr("  \u{2502}  a separate GPLv2 project; your current git keeps working either way")
+        } else {
+            t.tr("  \u{2502}  a separate GPLv2 project — native Windows git without MSYS")
+        };
+        let idx = ask!(io.choice(
+            t.tr("  \u{1f9e9}  niu-git — Windows-native git experience?"),
+            0,
+            &option_refs,
             note,
         ));
-        cfg.git_backend = [
-            GitBackend::Native,
-            GitBackend::StarshipSegment,
-            GitBackend::StarshipFull,
-        ][idx];
-    }
-    cfg.plugins.retain(|p| p != "starship");
-    if cfg.git_backend == GitBackend::StarshipFull {
-        cfg.plugins.push("starship".to_string());
+        niu_git = match idx {
+            1 => NiuGitChoice::Install,
+            2 => NiuGitChoice::NeverShow,
+            _ => NiuGitChoice::Skip,
+        };
     }
 
-    // --- Companion tools via a wpm restore manifest ---
-    // Missing tools are offered as cumulative bundles (Essentials / Modern /
-    // Everything). Starship joins the manifest whenever a starship backend
-    // was selected without the binary on PATH. A reconfigure only offers
-    // starship, not the companion bundles.
-    // Entries are (binary on PATH, wpm package) pairs — the manifest holds
-    // package names while detection and verification use binary names.
-    let mut missing: Vec<(String, String)> = Vec::new();
-    if cfg.git_backend != GitBackend::Native && !probe.on_path("starship") {
-        missing.push(("starship".to_string(), "starship".to_string()));
-    }
-    let mut installed_tools: Vec<String> = Vec::new();
-    if wpm_available() {
-        if !reconfigure {
-            let tier_missing: Vec<Vec<(String, String)>> = TOOL_TIERS
-                .iter()
-                .map(|tier| {
-                    tier.iter()
-                        .filter(|(bin, _)| !probe.on_path(bin))
-                        .map(|(bin, pkg)| (bin.to_string(), pkg.to_string()))
-                        .collect()
-                })
-                .collect();
-            if tier_missing.iter().any(|tm| !tm.is_empty()) || !missing.is_empty() {
-                let mut options: Vec<String> = Vec::new();
-                let mut cumulative: Vec<(String, String)> = missing.clone();
-                let tier_names = [t.tr("Essentials"), t.tr("Modern CLI"), t.tr("Everything")];
-                let mut option_tiers: Vec<usize> = Vec::new();
-                for (i, tier) in tier_missing.iter().enumerate() {
-                    if tier.is_empty() {
-                        continue;
-                    }
-                    cumulative.extend(tier.iter().cloned());
-                    let bins: Vec<&str> = cumulative.iter().map(|(bin, _)| bin.as_str()).collect();
-                    options.push(format!(
-                        "{}  {}",
-                        pad_display(tier_names[i], 12),
-                        bins.join(" ")
-                    ));
-                    option_tiers.push(i);
-                }
-                options.push(t.tr("Skip").to_string());
-                let option_refs: Vec<&str> = options.iter().map(String::as_str).collect();
-                let tools_preview = |i: usize| -> Vec<String> {
-                    let Some(&tier) = option_tiers.get(i) else {
-                        return vec![t.tr("nothing extra installed").to_string()];
-                    };
-                    let all: Vec<&str> = missing
-                        .iter()
-                        .chain(tier_missing[..=tier].iter().flatten())
-                        .map(|(bin, _)| bin.as_str())
-                        .collect();
-                    vec![format!("wpm restore: {}", all.join(" "))]
-                };
-                let pick = ask!(io.choice_preview(
-                    t.tr("  \u{1f4e6}  Install companion tools? (optional \u{2014} Niubash itself needs none)"),
-                    0,
-                    &option_refs,
-                    t.tr("  \u{2502}  optional quality-of-life CLI upgrades, installed via wpm\n  \u{2502}  Skip is fine \u{2014} everything works without them; bundles are cumulative\n  \u{2502}  the manifest stays at ~/.niubash/setup-tools.txt"),
-                    &tools_preview,
-                ));
-                if let Some(tier) = option_tiers.get(pick) {
-                    let selected: Vec<(String, String)> = missing
-                        .iter()
-                        .cloned()
-                        .chain(tier_missing[..=*tier].iter().flatten().cloned())
-                        .collect();
-                    installed_tools = install_tools_via_manifest(&selected, &home, lang);
-                } else if !missing.is_empty() {
-                    println!(
-                        "  \u{2502}  {}",
-                        t.tr(
-                            "skipped \u{2014} starship will not work until `wpm install starship`"
-                        )
-                    );
-                }
-            }
-        } else if !missing.is_empty() {
-            let label = t.tr("  \u{1f4e6}  Install starship via wpm").to_string();
-            if ask!(io.yn(&label, true)) {
-                installed_tools = install_tools_via_manifest(&missing, &home, lang);
-            }
-        }
-    }
-
-    // --- Windows Terminal profile ---
-    let mut want_wt_profile = false;
-    if probe.windows_terminal {
-        want_wt_profile = ask!(io.yn(
-            t.tr("  \u{1f5a5}\u{fe0f}  Register a Niubash profile in Windows Terminal"),
-            true
-        ));
-    }
-
-    // --- Summary + confirm ---
-    print_config_summary(&cfg, &installed_tools, want_wt_profile, lang);
+    // --- Summary + explicit Apply gate ---
+    let cfg = build_config(&theme_pick, completions_enabled, &completion_candidates);
+    print_config_summary(&cfg, &theme_pick, completions_enabled, niu_git, lang);
     let confirm_options = [t.tr("Apply"), t.tr("Cancel")];
     let confirm = ask!(io.confirm(
         t.tr("  \u{2705}  Apply this configuration?"),
@@ -829,10 +805,211 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
 
     let backup_path = write_rc_and_mark_done(&home, &cfg, lang)?;
 
-    if want_wt_profile {
-        register_wt_profile(installed_font.as_deref());
+    if niu_git == NiuGitChoice::Install {
+        install_niu_git(&home, lang);
+    } else if niu_git == NiuGitChoice::NeverShow {
+        write_niu_git_answer(&home, "never");
     }
 
+    print_finish_screen(backup_path.as_deref(), lang);
+
+    Ok(())
+}
+
+/// Short human description of a theme pick ("classic", "robbyrussell ·
+/// oh-my-bash").
+fn describe_theme_pick(pick: &ThemePick, t: Lang) -> String {
+    match pick {
+        ThemePick::Keep => t.tr("default").to_string(),
+        ThemePick::Native { name } => name.clone(),
+        ThemePick::External { name, .. } => format!("{} · oh-my-bash", name),
+    }
+}
+
+/// The theme that is active right now: the `NIU_THEME` the shell was started
+/// with, else the assignment in the existing rc (`OSH_THEME` +
+/// `NIU_THEME_SOURCE=omb` marks an external oh-my-bash pick). Used so
+/// "Skip — keep my current theme" is honest and side-effect free.
+fn current_theme_pick(home: &std::path::Path) -> ThemePick {
+    if let Ok(value) = std::env::var("NIU_THEME") {
+        let value = value.trim().trim_matches('\'').trim_matches('"');
+        if !value.is_empty() {
+            return ThemePick::Native {
+                name: value.to_string(),
+            };
+        }
+    }
+    let text = std::fs::read_to_string(home.join(PRIMARY_RC_FILE))
+        .ok()
+        .or_else(|| std::fs::read_to_string(home.join(COMPAT_RC_FILE)).ok());
+    let Some(text) = text else {
+        return ThemePick::Keep;
+    };
+    let mut native: Option<String> = None;
+    let mut osh: Option<String> = None;
+    let mut omb_channel = false;
+    for raw in text.lines() {
+        let line = raw.trim().strip_prefix("export ").unwrap_or(raw).trim();
+        let assigned = |name: &str| -> Option<String> {
+            let rest = line.strip_prefix(name)?.strip_prefix('=')?;
+            let value = rest.trim().trim_matches('\'').trim_matches('"');
+            (!value.is_empty()).then(|| value.to_string())
+        };
+        if let Some(value) = assigned("NIU_THEME") {
+            native = Some(value);
+        } else if let Some(value) = assigned("OSH_THEME") {
+            osh = Some(value);
+        } else if let Some(value) = assigned("NIU_THEME_SOURCE") {
+            omb_channel = value == "omb";
+        }
+    }
+    if omb_channel {
+        if let Some(name) = osh {
+            return ThemePick::External {
+                name,
+                source_id: "oh-my-bash".to_string(),
+            };
+        }
+    }
+    if let Some(name) = native {
+        return ThemePick::Native { name };
+    }
+    if let Some(name) = osh {
+        return ThemePick::External {
+            name,
+            source_id: "oh-my-bash".to_string(),
+        };
+    }
+    ThemePick::Keep
+}
+
+/// Build the rc configuration from the wizard answers. Skip paths mirror the
+/// previous rc verbatim (theme lines omitted, plugin selection re-emitted),
+/// and opting into completions only ever *adds* packs.
+fn build_config(
+    theme_pick: &ThemePick,
+    completions_enabled: bool,
+    completion_candidates: &[&str],
+) -> WizardConfig {
+    let previous = crate::plugins::configured_plugins();
+    let mut cfg = WizardConfig {
+        prompt_enabled: true,
+        ..WizardConfig::default()
+    };
+    match theme_pick {
+        ThemePick::Keep => {}
+        ThemePick::Native { name } => cfg.theme = name.clone(),
+        ThemePick::External { name, source_id } => {
+            cfg.theme = name.clone();
+            cfg.theme_source_id = Some(source_id.clone());
+        }
+    }
+    if completions_enabled {
+        let mut names = previous.load;
+        for pack in completion_candidates {
+            if !names.iter().any(|name| name == pack) {
+                names.push(pack.to_string());
+            }
+        }
+        cfg.plugins = names;
+        cfg.disable_default_plugins = previous.disable_defaults;
+    } else {
+        cfg.plugins = previous.load;
+        cfg.disable_default_plugins = previous.disable_defaults;
+    }
+    cfg
+}
+
+/// The user's answer to the niu-git question.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NiuGitChoice {
+    Skip,
+    Install,
+    NeverShow,
+}
+
+fn wizard_answers_path(home: &std::path::Path) -> PathBuf {
+    home.join(".niubash").join("wizard-answers.toml")
+}
+
+/// The recorded niu-git answer, when the user gave a lasting one ("never",
+/// or "installed" after a successful pick). While `None` the wizard may
+/// offer the choice again on the next explicit `niu setup` run — a wizard
+/// re-run is user-initiated, never a nag.
+fn read_niu_git_answer(home: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(wizard_answers_path(home)).ok()?;
+    for raw in text.lines() {
+        let line = raw.trim();
+        let Some(rest) = line.strip_prefix("niu_git") else {
+            continue;
+        };
+        let value = rest.trim().strip_prefix('=')?.trim();
+        let value = value.trim_matches('"').trim_matches('\'');
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn write_niu_git_answer(home: &std::path::Path, value: &str) {
+    let path = wizard_answers_path(home);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let body = format!(
+        "# Answers the user gave explicitly during `niu setup`.\n\
+         schema = \"{}\"\n\
+         niu_git = \"{}\"\n",
+        WIZARD_ANSWERS_SCHEMA, value
+    );
+    if let Err(err) = std::fs::write(&path, body) {
+        println!(
+            "  \u{26a0}\u{fe0f}  {} {err}",
+            Lang::detect().tr("could not write")
+        );
+    }
+}
+
+/// Run the niu-git install the user explicitly picked — the only path that
+/// ever invokes wpm here. The "installed" marker is only recorded after a
+/// successful install, so a failed install stays retryable.
+fn install_niu_git(home: &std::path::Path, lang: Lang) {
+    let Some(mut wpm) = wpm_command() else {
+        println!(
+            "  \u{26a0}\u{fe0f}  {} {}",
+            lang.tr("wpm not available — install later with:"),
+            NIUGIT_INSTALL_COMMAND
+        );
+        return;
+    };
+    println!("  \u{1f4e6}  {}", NIUGIT_INSTALL_COMMAND);
+    let status = wpm
+        .arg("install")
+        .arg(NIUGIT_WPM_PACKAGE)
+        .stdin(Stdio::null())
+        .status();
+    match status {
+        Ok(status) if status.success() => {
+            write_niu_git_answer(home, "installed");
+            println!("  \u{2705}  {}", lang.tr("niu-git installed"));
+        }
+        Ok(status) => println!(
+            "  \u{26a0}\u{fe0f}  {} (exit {})",
+            lang.tr("niu-git install failed — no other changes were made"),
+            status.code().unwrap_or(1)
+        ),
+        Err(err) => println!(
+            "  \u{26a0}\u{fe0f}  {}: {err}",
+            lang.tr("niu-git install failed — no other changes were made")
+        ),
+    }
+}
+
+/// The final "how to change things later" block — one compact screen, in the
+/// spirit of oh-my-zsh's post-install hints. Nothing here installs anything.
+fn print_finish_screen(backup_path: Option<&std::path::Path>, lang: Lang) {
+    let t = lang;
     println!();
     if let Some(path) = backup_path {
         println!(
@@ -840,33 +1017,26 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
             fill(t.tr("Previous rc backed up to {}"), &[&path.display()])
         );
     }
-    if !installed_tools.is_empty() {
-        println!(
-            "  \u{1f4e6}  {}",
-            format!(
-                "{} {}",
-                t.tr("Installed tools:"),
-                installed_tools.join(", ")
-            )
-        );
-    }
     println!();
+    println!("  \u{1f504}  {}", t.tr("Change things later:"));
     println!(
-        "  \u{1f680}  {}",
-        t.tr("You can tweak these settings any time by editing that file.")
+        "  \u{2502}    {}",
+        t.tr("theme      `niu plugin themes`  →  NIU_THEME=… in ~/.niubashrc")
     );
     println!(
-        "  \u{1f501}  {}",
-        t.tr("Run `niu setup` any time to repeat this guide.")
+        "  \u{2502}    {}",
+        t.tr("plugins    `niu plugin list`  ·  `niu plugin enable <name>`")
     );
     println!(
-        "  \u{1f4a1}  {}",
-        t.tr("Full configuration reference: \
-             https://github.com/unixwin/niubash/blob/master/docs/src/getting-started.md")
+        "  \u{2502}    {}",
+        t.tr("ecosystem  `niu plugin discover`  (sources & themes, read-only)")
     );
+    println!(
+        "  \u{2502}    {}",
+        t.tr("font / WT  `niu font`  ·  `niu --install-wt-profile`")
+    );
+    println!("  \u{2502}    {}", t.tr("this guide `niu setup`"));
     println!();
-
-    Ok(())
 }
 
 /// Apply a named preset non-interactively (`niu setup --preset <name>`).
@@ -907,223 +1077,16 @@ pub fn apply_preset(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The granular question path: every option asked one at a time.
-fn custom_flow(io: &mut WizardIo, nf_capable: bool) -> Option<WizardConfig> {
-    let t = io.lang;
-    let mut cfg = WizardConfig {
-        prompt_style: "off".into(),
-        right_prompt: "off".into(),
-        symbol: ">".into(),
-        completion_style: "ide".into(),
-        ..WizardConfig::default()
-    };
-
-    cfg.prompt_enabled = io.yn(
-        t.tr("  \u{1f3b5}  Enable bundled prompt/theme plugins"),
-        true,
-    )?;
-
-    let path_preview = |i: usize| -> Vec<String> {
-        let dir = ["~/repo/niubash", "C:/Users/name/repo/niubash", "niubash"][i];
-        vec![format!("{dir} \u{276f}")]
-    };
-    cfg.cwd_style = ["home", "full", "basename"][io.choice_preview(
-        t.tr("  \u{1f4c1}  Prompt path display"),
-        0,
-        &["home", "full", "basename"],
-        t.tr("  \u{2502}  home     = ~ and ~/repo below your profile\n  \u{2502}  full     = C:/Users/name/repo\n  \u{2502}  basename = only the current directory name"),
-        &path_preview,
-    )?]
-    .to_string();
-
-    if cfg.prompt_enabled {
-        let theme_list = theme::list_available_names();
-        if theme_list.is_empty() {
-            println!(
-                "  \u{26a0}\u{fe0f}  {}",
-                t.tr("No oh-my-niu themes found \u{2014} skipping theme questions.")
-            );
-            println!(
-                "  \u{2502}  {}",
-                t.tr("The bundle should be preinstalled; run `niu setup` again once it is available.")
-            );
-            cfg.prompt_enabled = false;
-        } else {
-            let theme_refs: Vec<&str> = theme_list.iter().map(String::as_str).collect();
-            let default_idx = theme_refs
-                .iter()
-                .position(|t| *t == "p10-classic")
-                .or_else(|| theme_refs.iter().position(|t| *t == "minimal"))
-                .unwrap_or(0);
-            let theme_help = if nf_capable {
-                t.tr("  \u{2502}  Official themes come from oh-my-niu. Preview follows the highlight.")
-            } else {
-                t.tr(
-                    "  \u{2502}  Themes marked [Nerd Font] need a patched font or they show boxes.",
-                )
-            };
-            let preview = |i: usize| {
-                theme_preview_line(theme_refs[i], "\u{276f}")
-                    .lines()
-                    .map(String::from)
-                    .collect()
-            };
-            cfg.theme = theme_refs[io.choice_preview(
-                t.tr("  \u{1f3a8}  Colour theme"),
-                default_idx,
-                &theme_refs,
-                theme_help,
-                &preview,
-            )?]
-            .to_string();
-
-            const SYMBOLS: [&str; 5] = ["\u{276f}", "\u{3bb}", "\u{25b6}", "$", "%"];
-            let symbol_preview = |i: usize| -> Vec<String> {
-                theme_preview_line(&cfg.theme, SYMBOLS[i])
-                    .lines()
-                    .map(String::from)
-                    .collect()
-            };
-            cfg.symbol = SYMBOLS[io.choice_preview(
-                t.tr("  \u{1f3b5}  Prompt symbol"),
-                0,
-                &SYMBOLS,
-                t.tr("  \u{2502}  \u{276f} heavy right-pointing angle (powerlevel10k style)\n  \u{2502}  \u{3bb} lambda (functional/minimal)\n  \u{2502}  \u{25b6} black right-pointing triangle\n  \u{2502}  $ dollar sign (classic bash)\n  \u{2502}  % percent sign (classic fish)"),
-                &symbol_preview,
-            )?]
-            .to_string();
-
-            let style_preview = |i: usize| -> Vec<String> {
-                let t = theme::by_name(&cfg.theme);
-                let dir = t.prompt_dir.paint("~/repo").to_string();
-                let git = t.git_dirty.paint("main \u{271a} ?").to_string();
-                let sym = t.prompt_symbol.paint(&cfg.symbol).to_string();
-                match i {
-                    0 => vec![format!("{dir} {sym}")],
-                    1 => vec![format!("user@host {dir} {git} {sym}")],
-                    2 => vec![format!("{dir} {git} {sym}      14:23")],
-                    3 => vec![format!("user@host {dir}"), format!("{git} {sym}")],
-                    _ => vec![format!("{dir} {git} {sym}      14:23  main *")],
-                }
-            };
-            cfg.prompt_style = ["minimal", "classic", "powerline", "multiline", "segments"]
-                [io.choice_preview(
-                    t.tr("  \u{1f3b5}  Prompt style"),
-                    0,
-                    &["minimal", "classic", "powerline", "multiline", "segments"],
-                    t.tr("  \u{2502}  minimal   = cwd git prompt_char\n  \u{2502}  classic   = user@host cwd git prompt_char\n  \u{2502}  powerline = compact left prompt with right-side info\n  \u{2502}  multiline = first line context, second line cwd/git\n  \u{2502}  segments  = powerlevel10k-style segment-based prompt"),
-                    &style_preview,
-                )?]
-                .to_string();
-
-            cfg.segment_preset = if cfg.prompt_style == "segments" {
-                let seg_preview = |i: usize| -> Vec<String> {
-                    let t = theme::by_name(&cfg.theme);
-                    let dir = t.prompt_dir.paint("~/repo").to_string();
-                    let git = t.git_dirty.paint("main").to_string();
-                    let sym = t.prompt_symbol.paint(&cfg.symbol).to_string();
-                    match i {
-                        0 => vec![format!("{dir} {git} {sym}"), "  icons + separators".into()],
-                        1 => vec![format!("{dir} {git} {sym}")],
-                        2 => vec![format!("{dir} {git} {sym}"), "  coloured blocks".into()],
-                        3 => vec![dir, sym],
-                        _ => vec![format!("{sym} {dir} ({git})")],
-                    }
-                };
-                Some(
-                    ["classic", "lean", "rainbow", "pure", "robbyrussell"][io.choice_preview(
-                        t.tr("  \u{1f3a8}  Segment preset"),
-                        0,
-                        &["classic", "lean", "rainbow", "pure", "robbyrussell"],
-                        t.tr("  \u{2502}  classic       = P10K classic layout\n  \u{2502}  lean          = P10K lean layout\n  \u{2502}  rainbow       = P10K rainbow colours\n  \u{2502}  pure          = P10K pure layout\n  \u{2502}  robbyrussell  = compact classic prompt feel"),
-                        &seg_preview,
-                    )?]
-                    .to_string(),
-                )
-            } else {
-                None
-            };
-
-            let right_preview = |i: usize| -> Vec<String> {
-                let t = theme::by_name(&cfg.theme);
-                let dir = t.prompt_dir.paint("~/repo").to_string();
-                let git = t.git_dirty.paint("main *").to_string();
-                let sym = t.prompt_symbol.paint(&cfg.symbol).to_string();
-                match i {
-                    0 => vec![format!("{dir} {git} {sym}")],
-                    1 => vec![format!("{dir} {git} {sym}                      14:23")],
-                    _ => vec![format!("{dir} {git} {sym}             14:23  main *")],
-                }
-            };
-            cfg.right_prompt = ["off", "time", "full"][io.choice_preview(
-                t.tr("  \u{23f1}\u{fe0f}  Right-side info"),
-                1,
-                &["off", "time", "full"],
-                t.tr("  \u{2502}  off  = no right prompt\n  \u{2502}  time = show current time (HH:MM)\n  \u{2502}  full = time + git branch"),
-                &right_preview,
-            )?]
-            .to_string();
-        }
-    }
-
-    cfg.git_enabled = if cfg.prompt_enabled {
-        let git_preview = |i: usize| -> Vec<String> {
-            let t = theme::by_name(&cfg.theme);
-            let dir = t.prompt_dir.paint("~/repo").to_string();
-            let sym = t.prompt_symbol.paint(&cfg.symbol).to_string();
-            if i == 0 {
-                let git = t.git_dirty.paint("main *").to_string();
-                vec![format!("{dir} {git} {sym}")]
-            } else {
-                vec![format!("{dir} {sym}")]
-            }
-        };
-        let yes_no = [t.tr("Yes"), t.tr("No")];
-        io.choice_preview(
-            t.tr("  \u{1f500}  Show git branch/status in the prompt"),
-            0,
-            &yes_no,
-            "",
-            &git_preview,
-        )? == 0
-    } else {
-        io.yn(t.tr("  \u{1f500}  Load Git helper aliases/functions"), true)?
-    };
-
-    let completion_preview = |i: usize| -> Vec<String> {
-        match i {
-            0 => vec![
-                "LICENSE     README.md   build.rs   \u{25b8} build script".into(),
-                "src/        target/     Cargo.toml".into(),
-            ],
-            1 => vec![
-                "LICENSE     README.md   build.rs".into(),
-                "src/        target/     Cargo.toml".into(),
-            ],
-            2 => vec![
-                "LICENSE     license file".into(),
-                "README.md   project readme".into(),
-            ],
-            _ => vec!["$ cat Car\u{21e5}  \u{2192}  Cargo.toml".into()],
-        }
-    };
-    cfg.completion_style = ["ide", "column", "list", "inline"][io.choice_preview(
-        t.tr("  \u{1f5b1}\u{fe0f}  Tab completion style"),
-        0,
-        &["ide", "column", "list", "inline"],
-        t.tr("  \u{2502}  ide    = multi-column popup with descriptions (VS Code style, default)\n  \u{2502}  column = multi-column grid (zsh style)\n  \u{2502}  list   = vertical list with descriptions (fish style)\n  \u{2502}  inline = insert first match, Tab cycles (bash menu-complete)"),
-        &completion_preview,
-    )?]
-    .to_string();
-
-    cfg.plugins = plugin_list(cfg.prompt_enabled, cfg.git_enabled);
-    Some(cfg)
-}
-
-/// Render the final confirmation table before anything is written.
-fn print_config_summary(cfg: &WizardConfig, tools: &[String], wt_profile: bool, lang: Lang) {
+/// Render the final confirmation table before anything is written. Only the
+/// explicitly picked rows appear; everything else is called out as untouched.
+fn print_config_summary(
+    cfg: &WizardConfig,
+    theme_pick: &ThemePick,
+    completions_enabled: bool,
+    niu_git: NiuGitChoice,
+    lang: Lang,
+) {
     let t = lang;
-    let on_off = |b: bool| if b { t.tr("on") } else { t.tr("off") };
     let row = |en: &str, value: String| {
         println!("  \u{2502}  {} {}", pad_display(t.tr(en), 13), value);
     };
@@ -1131,49 +1094,29 @@ fn print_config_summary(cfg: &WizardConfig, tools: &[String], wt_profile: bool, 
     println!("  \u{1f4cb}  {}", t.tr("Summary"));
     row(
         "theme",
-        if cfg.theme.is_empty() {
-            t.tr("(none)").to_string()
+        match theme_pick {
+            ThemePick::Keep => t.tr("unchanged").to_string(),
+            ThemePick::Native { name } => name.clone(),
+            ThemePick::External { name, .. } => format!("{} ({})", name, t.tr("oh-my-bash source")),
+        },
+    );
+    row(
+        "completions",
+        if completions_enabled && !cfg.plugins.is_empty() {
+            format!("{} {}", t.tr("add"), cfg.plugins.join(" "))
         } else {
-            cfg.theme.clone()
+            t.tr("unchanged").to_string()
         },
     );
     row(
-        "prompt",
-        format!(
-            "{} '{}'  {}: {}",
-            cfg.prompt_style,
-            cfg.symbol,
-            t.tr("right"),
-            cfg.right_prompt
-        ),
-    );
-    row("cwd style", cfg.cwd_style.clone());
-    row("git", on_off(cfg.git_enabled).to_string());
-    row(
-        "starship",
-        match cfg.git_backend {
-            GitBackend::Native => t.tr("off").to_string(),
-            GitBackend::StarshipSegment => t.tr("git segment").to_string(),
-            GitBackend::StarshipFull => t.tr("full prompt").to_string(),
+        "niu-git",
+        match niu_git {
+            NiuGitChoice::Install => NIUGIT_INSTALL_COMMAND.to_string(),
+            NiuGitChoice::NeverShow => t.tr("don't ask again").to_string(),
+            NiuGitChoice::Skip => t.tr("skipped").to_string(),
         },
     );
-    row("completion", cfg.completion_style.clone());
-    row("plugins", cfg.plugins.join(" "));
-    if !cfg.aliases.is_empty() {
-        row(
-            "aliases",
-            format!("{} {}", cfg.aliases.len(), t.tr("custom")),
-        );
-    }
-    if !tools.is_empty() {
-        row(
-            "tools",
-            format!("{} {}", t.tr("installing:"), tools.join(" ")),
-        );
-    }
-    if wt_profile {
-        row("terminal", t.tr("+ Windows Terminal profile").to_string());
-    }
+    println!("  \u{2502}  {}", t.tr("everything else stays untouched"));
     println!();
 }
 
@@ -1200,55 +1143,6 @@ fn write_rc_and_mark_done(
     Ok(backup_path)
 }
 
-#[cfg(windows)]
-fn register_wt_profile(font_face: Option<&str>) {
-    let lang = Lang::detect();
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    let icon = wt_icon_path(&exe);
-    match crate::windows_terminal::install_niubash_profile(&exe, icon.as_deref(), false, font_face)
-    {
-        Ok(summary) if !summary.updated.is_empty() => {
-            println!(
-                "  \u{1f5a5}\u{fe0f}  {}",
-                lang.tr("Windows Terminal profile registered.")
-            );
-        }
-        _ => println!(
-            "  \u{26a0}\u{fe0f}  {}",
-            lang.tr("Could not register the Windows Terminal profile.")
-        ),
-    }
-}
-
-/// Windows Terminal only exists on Windows; the wizard only reaches this
-/// through `WT_SESSION`, which is never set elsewhere.
-#[cfg(not(windows))]
-fn register_wt_profile(_font_face: Option<&str>) {}
-
-/// Point the Windows Terminal Niubash profile at `face` (best-effort).
-#[cfg(windows)]
-fn try_set_wt_profile_font(face: &str) {
-    let _ = crate::windows_terminal::set_niubash_profile_font(face);
-}
-
-#[cfg(not(windows))]
-fn try_set_wt_profile_font(_face: &str) {}
-
-#[cfg(windows)]
-fn wt_icon_path(commandline: &std::path::Path) -> Option<PathBuf> {
-    let app_dir = commandline.parent()?;
-    [
-        app_dir.join("assets").join("niubash-icon-256.png"),
-        app_dir.join("assets").join("niubash-icon.png"),
-        app_dir.join("niubash-icon-256.png"),
-        app_dir.join("niubash-icon.png"),
-    ]
-    .into_iter()
-    .find(|path| path.is_file())
-}
-
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// `wpm` when the command link is on PATH, else `winuxcmd.exe wpm`.
@@ -1265,82 +1159,6 @@ fn wpm_command() -> Option<Command> {
 
 fn wpm_available() -> bool {
     wpm_command().is_some()
-}
-
-/// Write the wpm package list to `~/.niubash/setup-tools.txt` and install
-/// everything in one shot via `wpm restore`. `tools` are `(binary, package)`
-/// pairs; the manifest lists packages, and the return value is the binaries
-/// verified present after the restore. The manifest stays on disk so the
-/// setup is reproducible.
-fn install_tools_via_manifest(
-    tools: &[(String, String)],
-    home: &std::path::Path,
-    lang: Lang,
-) -> Vec<String> {
-    let Some(mut wpm) = wpm_command() else {
-        return Vec::new();
-    };
-    let niubash_dir = home.join(".niubash");
-    let _ = std::fs::create_dir_all(&niubash_dir);
-    let manifest = niubash_dir.join("setup-tools.txt");
-    let mut body = String::from(
-        "# Niubash setup companion tools.\n# Reinstall with: wpm restore ~/.niubash/setup-tools.txt\n",
-    );
-    for (_, package) in tools {
-        body.push_str(package);
-        body.push('\n');
-    }
-    if let Err(err) = std::fs::write(&manifest, &body) {
-        println!(
-            "  \u{26a0}\u{fe0f}  {}",
-            format!(
-                "{} {} {err}",
-                lang.tr("could not write"),
-                manifest.display()
-            )
-        );
-        return Vec::new();
-    }
-    println!();
-    println!("  \u{1f4e6}  wpm restore {}", manifest.display());
-    let run_restore = |wpm: &mut std::process::Command, force: bool| {
-        let mut cmd = wpm.arg("restore");
-        if force {
-            cmd = cmd.arg("--force");
-        }
-        cmd.arg(&manifest).stdin(Stdio::null()).status()
-    };
-    let ok = matches!(run_restore(&mut wpm, false), Ok(s) if s.success())
-        || matches!(run_restore(&mut wpm, true), Ok(s) if s.success());
-    if !ok {
-        println!(
-            "  \u{26a0}\u{fe0f}  {}",
-            lang.tr("wpm restore failed (see output above)")
-        );
-    }
-    println!();
-    tools
-        .iter()
-        .filter(|(bin, _)| tool_installed(bin))
-        .map(|(bin, _)| bin.clone())
-        .collect()
-}
-
-/// Post-install verification: on PATH, or next to the winuxcmd executable /
-/// its `usr/bin` links dir.
-fn tool_installed(tool: &str) -> bool {
-    if on_path(tool) {
-        return true;
-    }
-    let Some(exe) = crate::winuxcmd::find_winuxcmd() else {
-        return false;
-    };
-    let Some(dir) = exe.parent() else {
-        return false;
-    };
-    [dir.to_path_buf(), dir.join("usr").join("bin")]
-        .iter()
-        .any(|d| d.join(format!("{tool}.exe")).is_file())
 }
 
 // ── Presets ──────────────────────────────────────────────────────────────────
@@ -1428,6 +1246,10 @@ impl Preset {
             completion_style: self.completion_style.clone(),
             plugins,
             aliases,
+            // Presets are an exact selection: the listed packs replace the
+            // inventory defaults (same rc semantics presets always had).
+            disable_default_plugins: true,
+            theme_source_id: None,
         }
     }
 }
@@ -1705,6 +1527,29 @@ fn setup_home_dir() -> PathBuf {
     shell_home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// Guarded activation block for an external oh-my-bash theme (§3.3/§11.4):
+/// set `OSH_THEME` first, then reuse the adapter's canonical loader snippet
+/// (its `${OSH_THEME:-…}` default defers to ours). The existence guard keeps
+/// the native fallback layer alive when the source tree is missing.
+fn external_theme_activation(cfg: &WizardConfig, theme: &str) -> Option<String> {
+    let source_id = cfg.theme_source_id.as_deref()?;
+    if theme.is_empty() {
+        return None;
+    }
+    let record = crate::plugins::sources::read_source_registry()
+        .into_iter()
+        .find(|record| record.id == source_id)?;
+    let adapter = crate::plugins::sources::adapter_for(&record.adapter)?;
+    let mut block = format!(
+        "# Theme '{theme}' — external source '{source_id}' (primary; native themes stay as fallback)\n\
+         OSH_THEME={}\n\
+         export OSH_THEME\n",
+        shell_quote(theme)
+    );
+    block.push_str(&adapter.loader_snippet(&record));
+    Some(block)
+}
+
 fn generate_rc(cfg: &WizardConfig) -> String {
     let theme = if cfg.prompt_enabled {
         cfg.theme.as_str()
@@ -1716,7 +1561,12 @@ fn generate_rc(cfg: &WizardConfig) -> String {
     } else {
         ">"
     };
-    let (prompt_template, right_template) = if cfg.prompt_style == "segments" {
+    let external = external_theme_activation(cfg, theme);
+    let (prompt_template, right_template) = if cfg.prompt_style.is_empty() {
+        // No explicit prompt choice: leave the bundle's prompt defaults in
+        // charge instead of overriding them with a template call.
+        (String::new(), String::new())
+    } else if cfg.prompt_style == "segments" {
         match cfg.segment_preset.as_deref().unwrap_or("classic") {
             "pure" => (
                 "{cwd} {git} {command_execution_time}{newline}{prompt_char} ".to_string(),
@@ -1777,12 +1627,47 @@ fn generate_rc(cfg: &WizardConfig) -> String {
     } else {
         strip_git_prompt_tokens(&right_template)
     };
-    let theme_plugin = if cfg.prompt_enabled {
-        theme_plugin_name(theme)
+    // Empty fields mean "no override" — the line is omitted entirely, so the
+    // wizard's skip paths change nothing.
+    let mut header = String::new();
+    if external.is_none() {
+        // §3.2: an external oh-my-bash pick does not write the native theme
+        // pair; the source loader owns the prompt channel.
+        if !theme.is_empty() {
+            header.push_str(&format!("NIU_THEME={}\n", shell_quote(theme)));
+            header.push_str(&format!(
+                "NIU_THEME_PLUGIN={}\n",
+                shell_quote(&theme_plugin_name(theme))
+            ));
+        }
+    }
+    if !symbol.is_empty() {
+        header.push_str(&format!("NIU_PROMPT_SYMBOL={}\n", shell_quote(symbol)));
+    }
+    if !cfg.cwd_style.is_empty() {
+        header.push_str(&format!(
+            "NIU_PROMPT_CWD_STYLE={}\n",
+            shell_quote(cfg.cwd_style.as_str())
+        ));
+    }
+    if !cfg.completion_style.is_empty() {
+        header.push_str(&format!(
+            "NIU_COMPLETION_STYLE={}\n",
+            shell_quote(cfg.completion_style.as_str())
+        ));
+    }
+    if cfg.disable_default_plugins {
+        header.push_str("NIU_DISABLE_DEFAULT_PLUGINS=1\n");
+    }
+    // Plugin lines are written only when there is an explicit selection:
+    // a preset's exact list, the user's preserved previous list, or the
+    // completion packs they opted into. An empty skip-all config writes
+    // nothing, leaving the inventory defaults active.
+    let plugins_block = if cfg.disable_default_plugins || !cfg.plugins.is_empty() {
+        format!("NIU_PLUGINS=({})\n", cfg.plugins.join(" "))
     } else {
         String::new()
     };
-    let plugins = format!("({})", cfg.plugins.join(" "));
     // Must be exported before the bundle loads: prompt-core reads
     // NIU_PROMPT_GIT_BACKEND when it initializes.
     let starship_segment_setup = if cfg.git_backend == GitBackend::StarshipSegment {
@@ -1804,16 +1689,22 @@ fn generate_rc(cfg: &WizardConfig) -> String {
         }
         block
     };
-    let prompt_call = if cfg.git_backend == GitBackend::StarshipFull {
+    let prompt_call = if !cfg.prompt_enabled {
+        "# Prompt/theme plugins disabled by setup.\n".to_string()
+    } else if external.is_some() {
+        format!(
+            "# Prompt owned by the oh-my-bash theme '{theme}'; PS1 renders via the bash-compatible channel.\n"
+        )
+    } else if cfg.git_backend == GitBackend::StarshipFull {
         "# Prompt owned by Starship (the starship plugin runs `starship init bash`).\n".to_string()
-    } else if cfg.prompt_enabled {
+    } else if cfg.prompt_style.is_empty() {
+        String::new()
+    } else {
         format!(
             "niubash_prompt_use_template {} {} 2>/dev/null || true\n",
             shell_quote(&prompt_template),
             shell_quote(&right_template)
         )
-    } else {
-        "# Prompt/theme plugins disabled by setup.\n".to_string()
     };
     format!(
         r#"# Niubash interactive rc — generated by the setup wizard.
@@ -1821,19 +1712,10 @@ fn generate_rc(cfg: &WizardConfig) -> String {
 # Structured TOML manifests are not user startup configuration; new interactive setup
 # should live here.
 
-NIU_THEME={}
-NIU_THEME_PLUGIN={}
-NIU_PROMPT_SYMBOL={}
-NIU_PROMPT_CWD_STYLE={}
-NIU_COMPLETION_STYLE={}
-NIU_DISABLE_DEFAULT_PLUGINS=1
-export NIU_THEME NIU_THEME_PLUGIN NIU_PROMPT_SYMBOL
+{header}export NIU_THEME NIU_THEME_PLUGIN NIU_PROMPT_SYMBOL
 export NIU_PROMPT_CWD_STYLE NIU_COMPLETION_STYLE NIU_DISABLE_DEFAULT_PLUGINS
 
-NIU_PLUGINS={}
-{}
-{}
-if [ -z "${{HOME:-}}" ] && [ -n "${{USERPROFILE:-}}" ]; then
+{plugins_block}{starship_segment_setup}{segment_note}if [ -z "${{HOME:-}}" ] && [ -n "${{USERPROFILE:-}}" ]; then
   case "$USERPROFILE" in
     /[A-Za-z]/*)
       __niubash_home_drive="${{USERPROFILE#/}}"
@@ -1842,7 +1724,7 @@ if [ -z "${{HOME:-}}" ] && [ -n "${{USERPROFILE:-}}" ]; then
       HOME="$__niubash_home_drive:/$__niubash_home_rest"
       ;;
     *)
-      HOME="${{USERPROFILE//\\//}}"
+      HOME="${{USERPROFILE//\\}}"
       ;;
   esac
   export HOME
@@ -1864,34 +1746,22 @@ elif [ -f "$NIUBASH/oh-my-niu.winux" ]; then
   . "$NIUBASH/oh-my-niu.winux"
 fi
 
-{}
-{}
-unset __niubash_bundle __niubash_home_drive __niubash_home_rest
-"#,
-        shell_quote(theme),
-        shell_quote(&theme_plugin),
-        shell_quote(symbol),
-        shell_quote(cfg.cwd_style.as_str()),
-        shell_quote(cfg.completion_style.as_str()),
-        plugins,
-        starship_segment_setup,
-        segment_note,
-        alias_block,
-        prompt_call,
-    )
-}
+{external_block}{alias_block}{prompt_call}unset __niubash_bundle __niubash_home_drive __niubash_home_rest
 
-/// The plugin list for the custom flow: mirrors the wizard's own decisions,
-/// independent of preset packs.
-fn plugin_list(prompt_enabled: bool, git_enabled: bool) -> Vec<String> {
-    let mut plugins = Vec::new();
-    if prompt_enabled {
-        plugins.push("prompt-core".to_string());
-    }
-    if git_enabled {
-        plugins.push("git".to_string());
-    }
-    plugins
+# Change things later (nothing here runs automatically):
+#   niu plugin themes            list themes (external first, built-in fallback)
+#   niu plugin discover          see sources & themes without installing
+#   niu plugin enable <name>     turn a pack on
+#   niu setup                    re-run this guide
+"#,
+        header = header,
+        plugins_block = plugins_block,
+        starship_segment_setup = starship_segment_setup,
+        segment_note = segment_note,
+        external_block = external.unwrap_or_default(),
+        alias_block = alias_block,
+        prompt_call = prompt_call,
+    )
 }
 
 fn theme_plugin_name(theme: &str) -> String {
@@ -2025,94 +1895,65 @@ fn zh(en: &str) -> Option<&'static str> {
         "fail after setup, restart niu or run `wpm links rebuild`." =>
             "无法使用，请重启 niu 或运行 `wpm links rebuild`。",
 
-        // Nerd Font step
-        "Glyph sample:" => "字形示例：",
-        "  (recommended)" => "  （推荐）",
-        "Skip \u{2014} keep my current font" => "跳过 —— 保留当前字体",
-        "  \u{1f5a4}\u{fe0f}  Install a Nerd Font for icon-rich themes?" =>
-            "  \u{1f5a4}\u{fe0f}  安装 Nerd Font 以启用图标主题？",
-        "  \u{2502}  downloads from nerd-fonts and installs per-user \u{2014} no admin needed" =>
-            "  \u{2502}  从 nerd-fonts 官方发布下载，按用户安装 —— 无需管理员权限",
-        "Installed {} ({} files)" => "已安装 {}（{} 个文件）",
-        "Niubash tabs in Windows Terminal will use '{}'." =>
-            "Windows Terminal 中的 Niubash 标签页将使用 '{}'。",
-        "Now set your terminal font to '{}'." => "请把终端字体设置为 '{}'。",
-        "Font install failed:" => "字体安装失败：",
-        "  \u{1f524}  Do the glyphs above render correctly (not boxes)?" =>
-            "  \u{1f524}  上面的字形显示正常吗（不是方框/乱码）？",
-        "Nerd-Font themes fall back to 'classic' for now." =>
-            "Nerd Font 主题暂时回退为 'classic'。",
-        "Install a Nerd Font and re-run `niu setup` to unlock them." =>
-            "安装 Nerd Font 后重新运行 `niu setup` 即可解锁。",
+        // Theme gallery step
+        "Skip — keep my current theme" => "跳过 —— 保留当前主题",
+        "  · built-in fallback" => "  · 内置保底",
+        "  \u{1f3a8}  Pick a theme" => "  \u{1f3a8}  选择主题",
+        "  │  external themes come first; entries marked 'built-in fallback' are the safe built-ins\n  \u{2502}  Skip changes nothing" =>
+            "  \u{2502}  外部主题排在前面；标注“内置保底”的是安全内置项\n  \u{2502}  跳过则不做任何改动",
+        "  │  external themes from your trusted plugin sources; Skip changes nothing" =>
+            "  \u{2502}  来自你已信任插件源的外部主题；跳过则不做任何改动",
+        "No themes installed yet — keeping the built-in default look." =>
+            "尚未安装任何主题 —— 保持内置默认外观。",
+        "Browse the ecosystem any time with `niu plugin discover` (read-only)." =>
+            "随时用 `niu plugin discover` 浏览生态（只读，不安装）。",
+        "current look unchanged" => "当前外观保持不变",
+        "keep" => "保留",
+        "default" => "默认",
+        "your theme (~/.niubash/themes)" => "你的主题（~/.niubash/themes）",
+        "theme (external source, primary)" => "主题（外部源，主选）",
+        "renders via the bash-compatible PS1 channel; built-in themes stay as fallback" =>
+            "经 bash 兼容 PS1 通道渲染；内置主题作为保底保留",
+        "needs a Nerd Font — `niu font` installs one (optional)" =>
+            "需要 Nerd Font —— 可用 `niu font` 安装（可选）",
 
-        // Preset step
-        "curated daily driver: spaceship theme, git, smart aliases" =>
-            "精选日常配置：spaceship 主题、git、智能别名",
-        "everything above plus starship, direnv, and tool-specific packs" =>
-            "在 recommended 基础上增加 starship、direnv 和工具专属插件包",
-        "safe everywhere: classic theme, git prompt, no extra tooling" =>
-            "处处可用：classic 主题、git 提示符、不装额外工具",
-        "answer every question yourself" => "逐项回答每个问题",
-        "  \u{1f6e0}\u{fe0f}  Choose a setup preset" => "  \u{1f6e0}\u{fe0f}  选择一个设置预设",
-        "  \u{2502}  a preset applies a curated configuration in one step; preview follows the highlight" =>
-            "  \u{2502}  预设一步应用整套配置；预览随高亮选项实时变化",
-        "packs:" => "插件包：",
-        "asks every question one by one" => "逐项询问每个问题",
-
-        // Starship step
-        "  \u{2502}  starship detected on PATH" => "  \u{2502}  已在 PATH 上检测到 starship",
-        "  \u{2502}  starship will be installed via wpm if selected" =>
-            "  \u{2502}  若选择 starship，将通过 wpm 自动安装",
-        "  \u{2502}  starship not found and wpm is unavailable" =>
-            "  \u{2502}  未找到 starship 且 wpm 不可用",
-        "  \u{1f680}  Git prompt engine" => "  \u{1f680}  Git 提示符引擎",
-        "native git status inside the niubash prompt" => "niubash 提示符内置的原生 git 状态",
-        "starship renders just the {git} part" => "starship 只渲染 {git} 部分",
-        "starship owns the whole prompt (replaces theme)" =>
-            "starship 接管整个提示符（替换主题）",
-
-        // Companion tools step
-        "Essentials" => "基础工具",
-        "Modern CLI" => "现代 CLI",
-        "Everything" => "全部安装",
+        // Completion opt-in
         "Skip" => "跳过",
-        "nothing extra installed" => "不额外安装任何工具",
-        "  \u{1f4e6}  Install companion tools? (optional \u{2014} Niubash itself needs none)" =>
-            "  \u{1f4e6}  安装配套命令行工具？（可选 —— Niubash 本体不依赖它们）",
-        "  \u{2502}  optional quality-of-life CLI upgrades, installed via wpm\n  \u{2502}  Skip is fine \u{2014} everything works without them; bundles are cumulative\n  \u{2502}  the manifest stays at ~/.niubash/setup-tools.txt" =>
-            "  \u{2502}  可选的效率工具升级，通过 wpm 安装；跳过完全不影响使用\n  \u{2502}  套餐逐级包含；安装清单保存在 ~/.niubash/setup-tools.txt",
-        "skipped \u{2014} starship will not work until `wpm install starship`" =>
-            "已跳过 —— 运行 `wpm install starship` 之前 starship 不可用",
-        "  \u{1f4e6}  Install starship via wpm" => "  \u{1f4e6}  通过 wpm 安装 starship",
-        "could not write" => "无法写入",
-        "wpm restore failed (see output above)" => "wpm restore 失败（详见上方输出）",
+        "Enable" => "启用",
+        "add" => "添加",
+        "default — nothing changes" => "默认 —— 不做任何改动",
+        "  \u{2328}\u{fe0f}  Extra tab completions for tools on PATH?" =>
+            "  \u{2328}\u{fe0f}  为 PATH 上的工具启用更多 Tab 补全？",
+        "  \u{2502}  adds the completion packs found on PATH; skip keeps the defaults" =>
+            "  \u{2502}  添加在 PATH 上找到的工具的补全包；跳过则保持默认",
 
-        // Windows Terminal
-        "  \u{1f5a5}\u{fe0f}  Register a Niubash profile in Windows Terminal" =>
-            "  \u{1f5a5}\u{fe0f}  在 Windows Terminal 中注册 Niubash 配置文件",
-        "Windows Terminal profile registered." => "Windows Terminal 配置文件已注册。",
-        "Could not register the Windows Terminal profile." =>
-            "无法注册 Windows Terminal 配置文件。",
+        // niu-git single-choice
+        "Install" => "安装",
+        "Don't ask again" => "不再询问",
+        "remember this and stop offering" => "记住这个选择，之后不再提供",
+        "default — nothing is installed" => "默认 —— 不安装任何东西",
+        "  \u{1f9e9}  niu-git — Windows-native git experience?" =>
+            "  \u{1f9e9}  niu-git —— Windows 原生 git 体验？",
+        "  \u{2502}  a separate GPLv2 project; your current git keeps working either way" =>
+            "  \u{2502}  独立的 GPLv2 项目；无论选不选，现有 git 照常工作",
+        "  \u{2502}  a separate GPLv2 project — native Windows git without MSYS" =>
+            "  \u{2502}  独立的 GPLv2 项目 —— 无 MSYS 的 Windows 原生 git",
+        "wpm not available — install later with:" =>
+            "wpm 不可用 —— 之后可用以下命令安装：",
+        "niu-git installed" => "niu-git 已安装",
+        "niu-git install failed — no other changes were made" =>
+            "niu-git 安装失败 —— 其他内容未做任何改动",
 
         // Summary (labels shared with the environment summary above)
         "Summary" => "配置摘要",
         "theme" => "主题",
-        "prompt" => "提示符",
-        "cwd style" => "路径样式",
-        "git" => "git",
-        "starship" => "starship",
-        "completion" => "补全",
-        "plugins" => "插件",
-        "aliases" => "别名",
-        "(none)" => "（无）",
-        "right" => "右侧",
-        "on" => "开",
-        "off" => "关",
-        "git segment" => "git 段",
-        "full prompt" => "整个提示符",
-        "custom" => "条自定义",
-        "installing:" => "将安装：",
-        "+ Windows Terminal profile" => "+ Windows Terminal 配置文件",
+        "completions" => "补全",
+        "niu-git" => "niu-git",
+        "oh-my-bash source" => "oh-my-bash 源",
+        "unchanged" => "保持不变",
+        "skipped" => "已跳过",
+        "don't ask again" => "不再询问",
+        "everything else stays untouched" => "其余一切保持原样",
 
         // Confirm + final messages
         "  \u{2705}  Apply this configuration?" => "  \u{2705}  应用此配置？",
@@ -2123,55 +1964,24 @@ fn zh(en: &str) -> Option<&'static str> {
             "设置已取消 —— 未写入任何内容。",
         "Shell rc written to {}" => "Shell 配置已写入 {}",
         "Previous rc backed up to {}" => "原 rc 已备份至 {}",
-        "Installed tools:" => "已安装工具：",
-        "You can tweak these settings any time by editing that file." =>
-            "随时编辑该文件即可调整这些设置。",
-        "Run `niu setup` any time to repeat this guide." =>
-            "随时运行 `niu setup` 可重新进入本向导。",
-        "Full configuration reference: https://github.com/unixwin/niubash/blob/master/docs/src/getting-started.md" =>
-            "完整配置参考：https://github.com/unixwin/niubash/blob/master/docs/src/getting-started.md",
+        "could not write" => "无法写入",
+
+        // Finish screen
+        "Change things later:" => "之后想调整：",
+        "theme      `niu plugin themes`  →  NIU_THEME=… in ~/.niubashrc" =>
+            "主题       `niu plugin themes`  →  在 ~/.niubashrc 设 NIU_THEME=…",
+        "plugins    `niu plugin list`  ·  `niu plugin enable <name>`" =>
+            "插件       `niu plugin list`  ·  `niu plugin enable <名称>`",
+        "ecosystem  `niu plugin discover`  (sources & themes, read-only)" =>
+            "生态       `niu plugin discover`（插件源与主题，只读）",
+        "font / WT  `niu font`  ·  `niu --install-wt-profile`" =>
+            "字体/终端  `niu font`  ·  `niu --install-wt-profile`",
+        "this guide `niu setup`" => "本向导     `niu setup`",
 
         // apply_preset
         "unknown preset" => "未知预设",
         "available:" => "可用：",
         "Preset applied:" => "预设已应用：",
-
-        // Custom flow
-        "  \u{1f3b5}  Enable bundled prompt/theme plugins" =>
-            "  \u{1f3b5}  启用内置提示符/主题插件",
-        "  \u{1f4c1}  Prompt path display" => "  \u{1f4c1}  提示符路径显示",
-        "  \u{2502}  home     = ~ and ~/repo below your profile\n  \u{2502}  full     = C:/Users/name/repo\n  \u{2502}  basename = only the current directory name" =>
-            "  \u{2502}  home     = 以 ~ 表示主目录，如 ~/repo\n  \u{2502}  full     = 完整路径 C:/Users/name/repo\n  \u{2502}  basename = 只显示当前目录名",
-        "No oh-my-niu themes found \u{2014} skipping theme questions." =>
-            "未找到 oh-my-niu 主题 —— 跳过主题问题。",
-        "The bundle should be preinstalled; run `niu setup` again once it is available." =>
-            "发行包应预置该 bundle；就绪后请重新运行 `niu setup`。",
-        "  \u{1f3a8}  Colour theme" => "  \u{1f3a8}  配色主题",
-        "  \u{2502}  Official themes come from oh-my-niu. Preview follows the highlight." =>
-            "  \u{2502}  官方主题来自 oh-my-niu。预览随高亮实时变化。",
-        "  \u{2502}  Themes marked [Nerd Font] need a patched font or they show boxes." =>
-            "  \u{2502}  标注 [Nerd Font] 的主题需要专用字体，否则会显示为方框。",
-        "  \u{1f3b5}  Prompt symbol" => "  \u{1f3b5}  提示符符号",
-        "  \u{2502}  \u{276f} heavy right-pointing angle (powerlevel10k style)\n  \u{2502}  \u{3bb} lambda (functional/minimal)\n  \u{2502}  \u{25b6} black right-pointing triangle\n  \u{2502}  $ dollar sign (classic bash)\n  \u{2502}  % percent sign (classic fish)" =>
-            "  \u{2502}  \u{276f} 加重右尖角（powerlevel10k 风格）\n  \u{2502}  \u{3bb} lambda（函数式/极简）\n  \u{2502}  \u{25b6} 黑色右三角\n  \u{2502}  $ 美元符（经典 bash）\n  \u{2502}  % 百分号（经典 fish）",
-        "  \u{1f3b5}  Prompt style" => "  \u{1f3b5}  提示符样式",
-        "  \u{2502}  minimal   = cwd git prompt_char\n  \u{2502}  classic   = user@host cwd git prompt_char\n  \u{2502}  powerline = compact left prompt with right-side info\n  \u{2502}  multiline = first line context, second line cwd/git\n  \u{2502}  segments  = powerlevel10k-style segment-based prompt" =>
-            "  \u{2502}  minimal   = 路径 git 符号\n  \u{2502}  classic   = user@host 路径 git 符号\n  \u{2502}  powerline = 紧凑左提示 + 右侧信息\n  \u{2502}  multiline = 首行上下文，第二行路径/git\n  \u{2502}  segments  = powerlevel10k 式分段提示符",
-        "  \u{1f3a8}  Segment preset" => "  \u{1f3a8}  分段预设",
-        "  \u{2502}  classic       = P10K classic layout\n  \u{2502}  lean          = P10K lean layout\n  \u{2502}  rainbow       = P10K rainbow colours\n  \u{2502}  pure          = P10K pure layout\n  \u{2502}  robbyrussell  = compact classic prompt feel" =>
-            "  \u{2502}  classic       = P10K classic 布局\n  \u{2502}  lean          = P10K lean 布局\n  \u{2502}  rainbow       = P10K rainbow 配色\n  \u{2502}  pure          = P10K pure 布局\n  \u{2502}  robbyrussell  = 紧凑经典提示符",
-        "  \u{23f1}\u{fe0f}  Right-side info" => "  \u{23f1}\u{fe0f}  右侧信息",
-        "  \u{2502}  off  = no right prompt\n  \u{2502}  time = show current time (HH:MM)\n  \u{2502}  full = time + git branch" =>
-            "  \u{2502}  off  = 无右侧提示\n  \u{2502}  time = 显示当前时间（HH:MM）\n  \u{2502}  full = 时间 + git 分支",
-        "  \u{1f500}  Show git branch/status in the prompt" =>
-            "  \u{1f500}  在提示符中显示 git 分支/状态",
-        "  \u{1f500}  Load Git helper aliases/functions" =>
-            "  \u{1f500}  加载 Git 辅助别名/函数",
-        "  \u{1f5b1}\u{fe0f}  Tab completion style" => "  \u{1f5b1}\u{fe0f}  Tab 补全样式",
-        "  \u{2502}  ide    = multi-column popup with descriptions (VS Code style, default)\n  \u{2502}  column = multi-column grid (zsh style)\n  \u{2502}  list   = vertical list with descriptions (fish style)\n  \u{2502}  inline = insert first match, Tab cycles (bash menu-complete)" =>
-            "  \u{2502}  ide    = 多列弹窗 + 描述（VS Code 风格，默认）\n  \u{2502}  column = 多列网格（zsh 风格）\n  \u{2502}  list   = 竖排列表 + 描述（fish 风格）\n  \u{2502}  inline = 插入首个匹配，Tab 循环（bash menu-complete）",
-        "Yes" => "是",
-        "No" => "否",
 
         // Preset-expansion notes
         "pack '{}' skipped ('{}' not found on PATH)" =>
@@ -2226,7 +2036,13 @@ mod tests {
         segment: Option<&str>,
         completion: &str,
     ) -> WizardConfig {
-        let mut plugins = plugin_list(prompt_enabled, git);
+        let mut plugins = Vec::new();
+        if prompt_enabled {
+            plugins.push("prompt-core".to_string());
+        }
+        if git {
+            plugins.push("git".to_string());
+        }
         if git_backend == GitBackend::StarshipFull {
             plugins.push("starship".to_string());
         }
@@ -2243,6 +2059,9 @@ mod tests {
             completion_style: completion.to_string(),
             plugins,
             aliases: Vec::new(),
+            // Test configs model the preset flow (exact selection).
+            disable_default_plugins: true,
+            theme_source_id: None,
         }
     }
 
@@ -2311,8 +2130,10 @@ mod tests {
             "column",
         ));
 
-        assert!(rc.contains("NIU_THEME=''"));
-        assert!(rc.contains("NIU_THEME_PLUGIN=''"));
+        // "No theme" now means the theme override lines are omitted entirely
+        // rather than written empty.
+        assert!(!rc.contains("NIU_THEME="));
+        assert!(!rc.contains("NIU_THEME_PLUGIN="));
         assert!(rc.contains("NIU_PROMPT_CWD_STYLE='basename'"));
         assert!(rc.contains("NIU_DISABLE_DEFAULT_PLUGINS=1"));
         assert!(rc.contains("NIU_PLUGINS=(git)"));
@@ -2454,11 +2275,14 @@ mod tests {
         // fails loudly instead of silently falling back to English.
         for key in [
             "Welcome to Niubash",
-            "  \u{1f4e6}  Install companion tools? (optional \u{2014} Niubash itself needs none)",
+            "  \u{1f3a8}  Pick a theme",
+            "Skip — keep my current theme",
+            "  · built-in fallback",
+            "  \u{2328}\u{fe0f}  Extra tab completions for tools on PATH?",
+            "  \u{1f9e9}  niu-git — Windows-native git experience?",
             "Apply",
             "Cancel",
-            "Yes",
-            "No",
+            "Change things later:",
         ] {
             assert!(zh(key).is_some(), "missing zh translation for {key:?}");
         }
@@ -2489,6 +2313,315 @@ ls = "eza --icons"
         assert_eq!(preset.aliases["ll"], "ls -la");
         assert_eq!(preset.conditional_packs["fzf"], "fzf");
         assert_eq!(preset.conditional_aliases["eza"]["ls"], "eza --icons");
+    }
+
+    /// Minimal oh-my-niu-shaped bundle with native TOML themes (same shape
+    /// as tests/plugin_inventory.rs fixtures).
+    fn write_theme_bundle(path: &std::path::Path, themes: &[&str]) {
+        std::fs::create_dir_all(path.join("packs").join("themes")).unwrap();
+        std::fs::create_dir_all(path.join("themes")).unwrap();
+        std::fs::write(
+            path.join("bundle.toml"),
+            r#"name = "oh-my-niu"
+version = "9.9.10"
+api = "niubash:plugin-bundle@0.1.0"
+min_niubash = "0.8.3"
+[packs]
+default = ["themes"]
+available = ["themes"]
+[layout]
+packs_dir = "packs"
+themes_dir = "themes"
+"#,
+        )
+        .unwrap();
+        let list = themes
+            .iter()
+            .map(|name| format!("\"{name}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        std::fs::write(
+            path.join("packs").join("themes").join("plugin.toml"),
+            format!(
+                r#"name = "themes"
+bundle = "oh-my-niu"
+version = "9.9.10"
+kind = "builtin"
+api = "niubash:plugin@0.1.0"
+category = "ux"
+summary = "Wizard gallery fixture."
+default = true
+permissions = []
+required_binaries = []
+[exports]
+aliases = false
+completions = []
+prompt_segments = []
+hooks = []
+commands = []
+keybindings = []
+themes = [{list}]
+"#
+            ),
+        )
+        .unwrap();
+        for name in themes {
+            std::fs::write(
+                path.join("themes").join(format!("{name}.toml")),
+                "[prompt_user]\nfg = \"green\"\n",
+            )
+            .unwrap();
+        }
+    }
+
+    /// The vendored oh-my-bash fixture tree shipped with the repo tests.
+    fn omb_fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/sources/oh-my-bash")
+    }
+
+    fn install_trusted_omb_fixture(root: &std::path::Path) {
+        crate::plugins::sources::add_source(crate::plugins::sources::SourceInstallRequest {
+            adapter: None,
+            origin: omb_fixture_path().to_string_lossy().into_owned(),
+            ref_name: None,
+            expected_checksum: None,
+        })
+        .expect("fixture source add must succeed");
+        crate::plugins::sources::trust_source("oh-my-bash").expect("fixture trust must succeed");
+        let _ = root;
+    }
+
+    #[test]
+    fn theme_gallery_external_first_builtins_after_separator() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let temp = unique_temp_dir("wizard-gallery");
+        let root = temp.join("sources");
+        let bundle = temp.join("bundle");
+        // The bundle's `agnoster` collides by name with the fixture's
+        // external `agnoster` — external must win, and appear exactly once.
+        write_theme_bundle(&bundle, &["agnoster", "native-only", "p10-classic"]);
+        let _sources = EnvGuard::set("NIU_PLUGIN_SOURCES_ROOT", &root.to_string_lossy());
+        let _bundle = EnvGuard::set("NIU_PLUGIN_BUNDLE_PATH", &bundle.to_string_lossy());
+        install_trusted_omb_fixture(&root);
+
+        let gallery = theme_gallery();
+        let position = |name: &str| {
+            gallery
+                .entries
+                .iter()
+                .position(|entry| entry.name == name)
+                .unwrap_or_else(|| panic!("{name} missing from {gallery:?}"))
+        };
+        let agnoster = position("agnoster");
+        let robbyrussell = position("robbyrussell");
+        let native_only = position("native-only");
+        let p10 = position("p10-classic");
+        // External themes lead; everything from the separator on is the
+        // built-in fallback tier.
+        assert!(agnoster < gallery.builtin_start, "{gallery:?}");
+        assert!(robbyrussell < gallery.builtin_start, "{gallery:?}");
+        assert!(native_only >= gallery.builtin_start, "{gallery:?}");
+        assert!(p10 >= gallery.builtin_start, "{gallery:?}");
+        assert!(matches!(
+            gallery.entries[agnoster].tier,
+            ThemeGalleryTier::External { .. }
+        ));
+        assert!(matches!(
+            gallery.entries[native_only].tier,
+            ThemeGalleryTier::Builtin
+        ));
+        assert_eq!(
+            gallery
+                .entries
+                .iter()
+                .filter(|entry| entry.name == "agnoster")
+                .count(),
+            1,
+            "same-name collision must resolve once (external wins): {gallery:?}"
+        );
+        for (index, entry) in gallery.entries.iter().enumerate() {
+            let is_builtin = matches!(entry.tier, ThemeGalleryTier::Builtin);
+            assert_eq!(
+                is_builtin,
+                index >= gallery.builtin_start,
+                "tier ordering violated at {index}: {gallery:?}"
+            );
+        }
+
+        crate::plugins::sources::remove_source("oh-my-bash").unwrap();
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn wizard_skip_answers_leave_zero_rc_overrides() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let temp = unique_temp_dir("wizard-skip");
+        let home = temp.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let _home = EnvGuard::set("HOME", &host_to_shell_style_path(&home));
+        let _userprofile = EnvGuard::unset("USERPROFILE");
+
+        // Skipped every question, first run (no previous rc): the rc the
+        // wizard writes must not override anything.
+        let cfg = build_config(&ThemePick::Keep, false, &[]);
+        let rc = generate_rc(&cfg);
+        assert!(!rc.contains("NIU_PLUGINS="), "{rc}");
+        assert!(!rc.contains("NIU_DISABLE_DEFAULT_PLUGINS=1"), "{rc}");
+        assert!(!rc.contains("NIU_THEME="), "{rc}");
+        assert!(!rc.contains("OSH_THEME="), "{rc}");
+        assert!(!rc.contains("niubash_prompt_use_template"), "{rc}");
+        assert!(!rc.contains("alias "), "{rc}");
+        assert!(!rc.contains("wpm"), "{rc}");
+        // The how-to-change-later hints are still there.
+        assert!(rc.contains("niu plugin discover"), "{rc}");
+        assert!(rc.contains("niu setup"), "{rc}");
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn wizard_skip_preserves_previous_plugin_selection() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let temp = unique_temp_dir("wizard-skip-keep");
+        let home = temp.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(
+            home.join(PRIMARY_RC_FILE),
+            "NIU_DISABLE_DEFAULT_PLUGINS=1\nNIU_PLUGINS=(prompt-core git golang)\n",
+        )
+        .unwrap();
+        let _home = EnvGuard::set("HOME", &host_to_shell_style_path(&home));
+        let _userprofile = EnvGuard::unset("USERPROFILE");
+
+        // Reconfigure with every question skipped: the previous explicit
+        // selection is carried over verbatim — a skip never disables packs.
+        let cfg = build_config(&ThemePick::Keep, false, &[]);
+        let rc = generate_rc(&cfg);
+        assert!(rc.contains("NIU_PLUGINS=(prompt-core git golang)"), "{rc}");
+        assert!(rc.contains("NIU_DISABLE_DEFAULT_PLUGINS=1"), "{rc}");
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn wizard_completion_optin_only_adds_packs() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let temp = unique_temp_dir("wizard-completions");
+        let home = temp.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let _home = EnvGuard::set("HOME", &host_to_shell_style_path(&home));
+        let _userprofile = EnvGuard::unset("USERPROFILE");
+
+        // Fresh home: opting in adds packs on top of the defaults; the
+        // wizard must not write the disable-defaults switch.
+        let cfg = build_config(&ThemePick::Keep, true, &["git", "docker"]);
+        let rc = generate_rc(&cfg);
+        assert!(rc.contains("NIU_PLUGINS=(git docker)"), "{rc}");
+        assert!(!rc.contains("NIU_DISABLE_DEFAULT_PLUGINS=1"), "{rc}");
+
+        // A previous explicit list is merged, never dropped.
+        std::fs::write(
+            home.join(PRIMARY_RC_FILE),
+            "NIU_PLUGINS=(prompt-core golang)\n",
+        )
+        .unwrap();
+        let cfg = build_config(&ThemePick::Keep, true, &["git"]);
+        let rc = generate_rc(&cfg);
+        assert!(rc.contains("NIU_PLUGINS=(prompt-core golang git)"), "{rc}");
+        assert!(!rc.contains("NIU_DISABLE_DEFAULT_PLUGINS=1"), "{rc}");
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn wizard_external_theme_pick_writes_guarded_loader() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let temp = unique_temp_dir("wizard-omb-theme");
+        let root = temp.join("sources");
+        let _sources = EnvGuard::set("NIU_PLUGIN_SOURCES_ROOT", &root.to_string_lossy());
+        install_trusted_omb_fixture(&root);
+
+        let cfg = WizardConfig {
+            theme: "robbyrussell".to_string(),
+            theme_source_id: Some("oh-my-bash".to_string()),
+            prompt_enabled: true,
+            ..WizardConfig::default()
+        };
+        let rc = generate_rc(&cfg);
+        // §3.2/§3.3: OSH_THEME + NIU_THEME_SOURCE=omb + the guarded loader,
+        // and no native theme pair or template override.
+        assert!(rc.contains("OSH_THEME='robbyrussell'"), "{rc}");
+        assert!(rc.contains("NIU_THEME_SOURCE=omb"), "{rc}");
+        assert!(rc.contains("if [ -r "), "{rc}");
+        assert!(rc.contains(". \"$OSH/oh-my-bash.sh\""), "{rc}");
+        assert!(
+            rc.contains("${NIU_PLUGIN_SOURCES_ROOT:-$HOME/.niubash/sources}/oh-my-bash"),
+            "{rc}"
+        );
+        assert!(rc.contains("native themes stay as fallback"), "{rc}");
+        assert!(!rc.contains("NIU_THEME="), "{rc}");
+        assert!(!rc.contains("NIU_THEME_PLUGIN="), "{rc}");
+        assert!(!rc.contains("niubash_prompt_use_template"), "{rc}");
+        assert!(rc.contains("bash-compatible channel"), "{rc}");
+
+        crate::plugins::sources::remove_source("oh-my-bash").unwrap();
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn wizard_native_theme_pick_writes_theme_pair() {
+        let cfg = WizardConfig {
+            theme: "p10-classic".to_string(),
+            prompt_enabled: true,
+            ..WizardConfig::default()
+        };
+        let rc = generate_rc(&cfg);
+        assert!(rc.contains("NIU_THEME='p10-classic'"), "{rc}");
+        assert!(rc.contains("NIU_THEME_PLUGIN='theme-p10-classic'"), "{rc}");
+        assert!(!rc.contains("OSH_THEME="), "{rc}");
+    }
+
+    #[test]
+    fn niu_git_answer_round_trip_gates_the_question() {
+        let temp = unique_temp_dir("niu-git-answer");
+        assert!(
+            read_niu_git_answer(&temp).is_none(),
+            "no answer recorded yet — the wizard may offer the choice"
+        );
+        write_niu_git_answer(&temp, "never");
+        assert_eq!(read_niu_git_answer(&temp).as_deref(), Some("never"));
+        let text = std::fs::read_to_string(wizard_answers_path(&temp)).unwrap();
+        assert!(text.contains("niu_git = \"never\""), "{text}");
+        assert!(text.contains(WIZARD_ANSWERS_SCHEMA), "{text}");
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn current_theme_pick_reads_existing_rc() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _theme_env = EnvGuard::unset("NIU_THEME");
+        let temp = unique_temp_dir("wizard-current-theme");
+        std::fs::create_dir_all(&temp).unwrap();
+        assert_eq!(current_theme_pick(&temp), ThemePick::Keep);
+
+        std::fs::write(temp.join(PRIMARY_RC_FILE), "NIU_THEME='classic'\n").unwrap();
+        assert_eq!(
+            current_theme_pick(&temp),
+            ThemePick::Native {
+                name: "classic".to_string()
+            }
+        );
+
+        std::fs::write(
+            temp.join(PRIMARY_RC_FILE),
+            "OSH_THEME='robbyrussell'\nNIU_THEME_SOURCE=omb\n",
+        )
+        .unwrap();
+        assert_eq!(
+            current_theme_pick(&temp),
+            ThemePick::External {
+                name: "robbyrussell".to_string(),
+                source_id: "oh-my-bash".to_string()
+            }
+        );
+        let _ = std::fs::remove_dir_all(&temp);
     }
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {

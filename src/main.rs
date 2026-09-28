@@ -1237,6 +1237,7 @@ fn run_plugin_command(args: &[String]) -> anyhow::Result<()> {
         }
         "search" => run_plugin_search_command(&args[3..]),
         "themes" => run_plugin_themes_command(&args[3..]),
+        "discover" => run_plugin_discover_command(&args[3..]),
         "info" => {
             let Some(name) = args.get(3) else {
                 anyhow::bail!("plugin info requires a plugin name");
@@ -1884,6 +1885,112 @@ fn run_plugin_themes_command(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `niu plugin discover`: a dry, read-only overview of the plugin ecosystem.
+/// Shows installed external sources (with their ready/untrusted/degraded
+/// state), the known plugin managers that are *not* installed yet, and the
+/// theme/pack catalogs — without installing, trusting, sourcing, or writing
+/// anything. Every install stays an explicit command the user runs.
+fn run_plugin_discover_command(args: &[String]) -> anyhow::Result<()> {
+    for arg in args {
+        match arg.as_str() {
+            "--verbose" => {}
+            unknown => anyhow::bail!("unknown plugin option '{}'", unknown),
+        }
+    }
+    println!(
+        "{}",
+        niubash_runtime::text_style::bold("Niubash plugin ecosystem")
+    );
+    println!(
+        "{}",
+        niubash_runtime::text_style::dim(
+            "  read-only overview — nothing is installed, sourced, or changed"
+        )
+    );
+    println!();
+
+    println!(
+        "{}",
+        niubash_runtime::text_style::cyan("Plugin sources (external plugin managers)")
+    );
+    let statuses = niubash_runtime::plugins::sources::list_sources();
+    if statuses.is_empty() {
+        println!("  (none installed)");
+    }
+    for status in &statuses {
+        let marker = match status.state.as_str() {
+            "ready" => niubash_runtime::text_style::green("ready"),
+            "untrusted" => niubash_runtime::text_style::yellow("untrusted"),
+            _ => niubash_runtime::text_style::red("degraded"),
+        };
+        let assets = status
+            .asset_count
+            .map(|count| format!(" ({count} assets)"))
+            .unwrap_or_default();
+        println!(
+            "  {} {:<12} {:<12} {}{}",
+            marker, status.record.id, status.record.version, status.record.license, assets
+        );
+    }
+    println!();
+
+    println!("{}", niubash_runtime::text_style::cyan("Available sources"));
+    let mut listed = 0usize;
+    for adapter in niubash_runtime::plugins::sources::builtin_source_adapters() {
+        if statuses
+            .iter()
+            .any(|status| status.record.id == adapter.id())
+        {
+            continue;
+        }
+        let add_hint = match adapter.default_origin() {
+            Some(origin) => format!("niu plugin source add {} --url {}", adapter.id(), origin),
+            None => format!("niu plugin source add {} --path <dir>", adapter.id()),
+        };
+        println!(
+            "  {:<12} {:<9} {}",
+            adapter.display_name(),
+            adapter.license(),
+            niubash_runtime::text_style::dim(&add_hint)
+        );
+        listed += 1;
+    }
+    if listed == 0 {
+        println!(
+            "  {}",
+            niubash_runtime::text_style::dim("(every known manager is already installed)")
+        );
+    }
+    println!();
+
+    let catalog = niubash_runtime::plugins::plugin_theme_catalog();
+    let external = catalog
+        .iter()
+        .filter(|entry| entry.source == "external_source")
+        .count();
+    let builtin = catalog
+        .iter()
+        .filter(|entry| entry.source == "bundle")
+        .count();
+    println!("{}", niubash_runtime::text_style::cyan("Themes"));
+    println!(
+        "  {} external (primary) · {} built-in (fallback) — list: niu plugin themes",
+        external, builtin
+    );
+    println!();
+
+    println!("{}", niubash_runtime::text_style::cyan("Packs"));
+    println!("  bundle packs — list: niu plugin list · toggle: niu plugin enable/disable <name>");
+    println!();
+    println!(
+        "{}",
+        niubash_runtime::text_style::dim(
+            "This command only lists; sources stay untrusted until you review and trust them."
+        )
+    );
+    Ok(())
+}
+
 fn run_plugin_bundle_command(args: &[String]) -> anyhow::Result<()> {
     let Some(subcommand) = args.get(0) else {
         anyhow::bail!("plugin bundle requires a subcommand: status");
@@ -2165,6 +2272,7 @@ fn print_plugin_usage() {
     println!("  list [--json] [--verbose] List official Niubash plugins (active state)");
     println!("  info <name> [--json] [--verbose]  Inspect one plugin");
     println!("  search [query] [--json] [--verbose]  Discover plugins");
+    println!("  discover [--verbose]      Dry ecosystem overview (sources, themes, packs)");
     println!("  themes [--json] [--verbose]  List user and bundle themes");
     println!("  enable <name>             Enable a plugin in ~/.niubashrc");
     println!("  disable <name>            Disable a plugin in ~/.niubashrc");

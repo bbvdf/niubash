@@ -126,6 +126,12 @@ pub trait PluginSourceAdapter: Sync + Send {
     /// License of the manager's tree (recorded in the registry and shown at
     /// the trust boundary; §11.5).
     fn license(&self) -> &'static str;
+    /// Canonical git origin, shown by `niu plugin discover` so the user can
+    /// compose the `add` command themselves. `None` for managers that only
+    /// install from local paths.
+    fn default_origin(&self) -> Option<&'static str> {
+        None
+    }
     /// Layout fingerprint: does this tree belong to this plugin manager?
     fn detect(&self, root: &Path) -> bool;
     /// Human-readable version of the installed tree (git HEAD, marker file).
@@ -153,6 +159,10 @@ impl PluginSourceAdapter for OhMyBashAdapter {
     }
     fn license(&self) -> &'static str {
         "MIT"
+    }
+    fn default_origin(&self) -> Option<&'static str> {
+        // §12.1 index entry: source-url of the official oh-my-bash record.
+        Some("https://github.com/ohmybash/oh-my-bash.git")
     }
     fn detect(&self, root: &Path) -> bool {
         root.join("oh-my-bash.sh").is_file()

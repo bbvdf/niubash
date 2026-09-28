@@ -772,3 +772,17 @@ doctor §7"bundle 完整性"行同型）。显式 `--checksum` 提供时在 stag
 WP-S1 不依赖任何引擎修复（安装/枚举/信任/回滚全是 Rust 层协议）；source 的
 **交互激活**依赖 rubash#251（13/326 函数，#148 eval-glob 家族残余）与 §3.3
 canary。即：S1 现在可做、现在可测；OMB 主题点亮时点由 #251 决定。
+
+## 13. 设计附录 C：首跑向导 zsh 化 + 生态 surfacing（2026-09-27，owner 拍板）
+
+owner 决策覆盖 §6.1 的首跑形态：**简单向导胜过功能齐全的向导**（参考
+oh-my-zsh 安装器的"一两个问题 + 一屏'以后怎么改'即退场"）。首跑不再是分节
+向导/预设问卷，而是：主题画廊一问（§0 分层：外部 source 主题在前，内置
+主题隔条后置、诚实标注"保底"，Skip 恒等可选）+ 至多两三个默认关的
+opt-in 问题（补全包、niu-git 一次性询问）。字体/预设菜单/starship/工具套
+餐/WT 注册问题全部退出交互流程（保留 `niu font`、`niu setup --preset`、
+`niu --install-wt-profile` 等显式命令）。配套新增只读的 `niu plugin
+discover`（含 source 状态 ready/untrusted 与可装管理器提示），主题目录
+（`plugin_theme_catalog`/`niu plugin themes`）按 §0 排序并带"built-in
+fallback 保底"标记。决策与细节记录于 `docs/planning/wizard-redesign.md`；
+§6 的分节设计保留为后续"单节重跑"（`niu setup --section …`）的素材。

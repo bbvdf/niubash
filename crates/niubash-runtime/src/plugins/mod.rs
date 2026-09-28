@@ -3186,13 +3186,11 @@ pub fn plugin_theme_catalog_text(verbose: bool) -> String {
     let mut out = String::new();
     out.push_str(&crate::text_style::bold("Niubash themes"));
     out.push_str(&crate::text_style::dim(
-        "  (user themes override bundle themes)\n",
+        "  (external sources are primary; built-in themes are the fallback layer)\n",
     ));
     out.push_str(&crate::text_style::dim(
         "Switch with NIU_THEME=<name> in ~/.niubashrc\n",
     ));
-    let mut user = Vec::new();
-    let mut bundle = Vec::new();
     let entries = plugin_theme_catalog();
     if verbose {
         for entry in &entries {
@@ -3207,51 +3205,72 @@ pub fn plugin_theme_catalog_text(verbose: bool) -> String {
             ));
         }
     }
+    let mut user = Vec::new();
+    let mut external = Vec::new();
+    let mut builtin = Vec::new();
     for entry in entries {
-        if entry.source == "user" {
-            user.push(entry.name);
-        } else {
-            bundle.push((entry.name, entry.owner));
+        match entry.source.as_str() {
+            "user" => user.push((entry.name, None)),
+            "external_source" => external.push((entry.name, Some(entry.owner))),
+            _ => builtin.push((entry.name, Some(entry.owner))),
         }
     }
-    let is_current = |name: &str| {
-        current
-            .as_deref()
-            .is_some_and(|needle| name.eq_ignore_ascii_case(needle))
-    };
-    if !user.is_empty() {
-        out.push_str(&format!(
-            "\n{} (~/.niubash/themes):\n",
-            crate::text_style::cyan("User themes")
-        ));
-        for name in &user {
-            if is_current(name) {
-                out.push_str(&format!("  {} {}\n", crate::text_style::green("★"), name));
-            } else {
-                out.push_str(&format!("    {name}\n"));
-            }
-        }
-    }
-    if !bundle.is_empty() {
-        out.push_str(&format!(
-            "\n{}:\n",
-            crate::text_style::cyan("Bundle themes")
-        ));
-        for (name, owner) in &bundle {
-            if is_current(name) {
+    fn push_rows(out: &mut String, rows: &[(String, Option<String>)], current: Option<&str>) {
+        for (name, owner) in rows {
+            let owner = owner
+                .as_deref()
+                .map(|owner| format!("  {owner}"))
+                .unwrap_or_default();
+            let marked = current.is_some_and(|needle| name.eq_ignore_ascii_case(needle));
+            if marked {
                 out.push_str(&format!(
-                    "  {} {:<20} {}\n",
+                    "  {} {:<20}{}\n",
                     crate::text_style::green("★"),
                     name,
                     owner
                 ));
             } else {
-                out.push_str(&format!("    {:<20} {}\n", name, owner));
+                out.push_str(&format!("    {:<20}{}\n", name, owner));
             }
         }
     }
-    if user.is_empty() && bundle.is_empty() {
+    if !user.is_empty() {
+        out.push_str(&format!(
+            "\n{} (~/.niubash/themes):\n",
+            crate::text_style::cyan("User themes")
+        ));
+        push_rows(&mut out, &user, current.as_deref());
+    }
+    // §0 layering: external-source themes lead every listing.
+    if !external.is_empty() {
+        out.push_str(&format!(
+            "\n{}:\n",
+            crate::text_style::cyan("External themes (primary)")
+        ));
+        push_rows(&mut out, &external, current.as_deref());
+    }
+    // Built-in (bundle-native) themes retire to the end of the gallery,
+    // behind a visible separator, honestly labeled as the fallback layer.
+    if !builtin.is_empty() {
+        out.push_str(&format!(
+            "\n{}\n",
+            crate::text_style::dim("── built-in fallback 保底 ──")
+        ));
+        out.push_str(&format!(
+            "{}:\n",
+            crate::text_style::cyan("Built-in themes")
+        ));
+        push_rows(&mut out, &builtin, current.as_deref());
+    }
+    if user.is_empty() && external.is_empty() && builtin.is_empty() {
         out.push_str("(no themes found)\n");
+    } else if builtin.is_empty() {
+        out.push_str(&format!(
+            "\n{}\n",
+            crate::text_style::dim(
+                "(no built-in theme bundle installed — compiled fallback active)"
+            )
+        ));
     }
     out
 }
@@ -3300,7 +3319,11 @@ pub fn plugin_theme_catalog() -> Vec<PluginThemeCatalogEntry> {
                 if crate::theme::load_theme_from_file(theme_name, &path).is_none() {
                     continue;
                 }
-                seen.insert(theme_name.to_ascii_lowercase());
+                // External sources win same-name collisions (§11.3): the
+                // bundle layer only adds names no earlier layer claimed.
+                if !seen.insert(theme_name.to_ascii_lowercase()) {
+                    continue;
+                }
                 entries.push(PluginThemeCatalogEntry {
                     name: theme_name.clone(),
                     source: "bundle".to_string(),
@@ -3313,7 +3336,29 @@ pub fn plugin_theme_catalog() -> Vec<PluginThemeCatalogEntry> {
             }
         }
     }
+    // §0 layering is a listing guarantee, not an accident of insertion
+    // order: user > external source > bundle-native (any future compiled
+    // built-in layer would sort last), alphabetical within a tier.
+    entries.sort_by(|a, b| {
+        theme_catalog_rank(&a.source)
+            .cmp(&theme_catalog_rank(&b.source))
+            .then_with(|| {
+                a.name
+                    .to_ascii_lowercase()
+                    .cmp(&b.name.to_ascii_lowercase())
+            })
+    });
     entries
+}
+
+/// Listing rank for theme catalog entries (§0: external primary, native
+/// fallback). Lower sorts first.
+fn theme_catalog_rank(source: &str) -> u8 {
+    match source {
+        "user" => 0,
+        "external_source" => 1,
+        _ => 2,
+    }
 }
 pub fn plugin_theme(name: &str) -> Option<Theme> {
     // `native:<name>` skips the external-source layer and reaches the

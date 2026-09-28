@@ -241,9 +241,11 @@ fn plugin_themes_lists_user_and_bundle_sources_only() {
     let stdout = stdout_text(&text);
     assert!(stdout.contains("Niubash themes"), "{stdout}");
     assert!(!stdout.contains("builtin_fallback"), "{stdout}");
-    // Default output shows the clean "Bundle themes" section with the theme
-    // name and owner. The `- name source=...` jargon line is --verbose only.
-    assert!(stdout.contains("Bundle themes"), "{stdout}");
+    // Default output shows the clean built-in section (the fallback layer,
+    // behind the §0 separator) with the theme name and owner. The
+    // `- name source=...` jargon line is --verbose only.
+    assert!(stdout.contains("Built-in themes"), "{stdout}");
+    assert!(stdout.contains("built-in fallback"), "{stdout}");
     assert!(stdout.contains("testmarket"), "{stdout}");
     assert!(stdout.contains("oh-my-niu@9.9.10"), "{stdout}");
     assert!(
@@ -304,8 +306,8 @@ fn plugin_themes_marks_external_bundle_trust_source() {
     let stdout = stdout_text(&text);
     assert!(stdout.contains("community-tools@9.9.10"), "{stdout}");
     // The trust_source= jargon line is --verbose only; the default view shows
-    // the theme name and owner in the clean section.
-    assert!(stdout.contains("Bundle themes"), "{stdout}");
+    // the theme name and owner in the clean built-in section.
+    assert!(stdout.contains("Built-in themes"), "{stdout}");
     let verbose = run_niu_with_env(&["plugin", "themes", "--verbose"], &envs);
     assert_success(&verbose, "plugin themes external verbose");
     let stdout = stdout_text(&verbose);
