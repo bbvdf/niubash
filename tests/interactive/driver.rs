@@ -48,6 +48,8 @@ pub const CTRL_C: &str = "\u{3}";
 /// Ctrl+D (EOF) as sent through the pty input pipe.
 pub const CTRL_D: &str = "\u{4}";
 /// Carriage return — the Enter key for a pty input pipe.
+/// Kept for lane tests that send bare key events.
+#[allow(dead_code)]
 pub const ENTER: &str = "\r";
 /// Tab key.
 pub const TAB: &str = "\t";
@@ -127,6 +129,8 @@ impl TerminalResponder {
 pub enum DriveError {
     Timeout,
     Eof,
+    /// Kept for lane tests that surface reader I/O errors.
+    #[allow(dead_code)]
     Io(std::io::Error),
 }
 
@@ -162,6 +166,8 @@ impl OutputBuffer {
         }
     }
 
+    /// Kept for lane tests that poll the raw stream.
+    #[allow(dead_code)]
     fn contains(&self, needle: &str) -> bool {
         find_subslice(&self.pending.lock().unwrap(), needle.as_bytes()).is_some()
     }
@@ -320,7 +326,7 @@ fn try_spawn(
             pixel_height: 0,
         })
         .ok()?;
-    let mut master = pair.master;
+    let master = pair.master;
     let slave = pair.slave;
 
     let command = niu_command(&home, &start, extra_env);
@@ -463,6 +469,7 @@ impl NiuSession {
     }
 
     /// Press Enter on the current (possibly empty) buffer.
+    #[allow(dead_code)]
     pub fn press_enter(&mut self) {
         self.send(ENTER);
     }
@@ -518,6 +525,7 @@ impl NiuSession {
     }
 
     /// Whether `needle` has arrived but is still unread (non-consuming).
+    #[allow(dead_code)]
     pub fn screen_contains(&self, needle: &str) -> bool {
         self.output.contains(needle)
     }

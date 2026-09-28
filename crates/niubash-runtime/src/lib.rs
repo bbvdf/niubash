@@ -68,7 +68,6 @@ pub mod ctrl_c;
 pub mod doctor;
 pub(crate) mod easter_eggs;
 pub mod fonts;
-pub mod git_status;
 pub(crate) mod history;
 pub mod interactive_menu;
 pub mod logo;

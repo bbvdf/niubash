@@ -27,13 +27,12 @@ use crate::config::{
     load as load_config, AutosuggestConfig, EditorMode, HookConfig, MenuConfig, NativePluginConfig,
     NativeWidgetBinding, NativeWidgetConfig, SyntaxHighlightConfig,
 };
-use crate::git_status::GitPromptSymbols;
 use crate::path_utils::{shell_home_dir, shell_path_to_host_path};
 use crate::plugins::{
     PluginKind, PluginProcessSpec, PluginRuntimeState, OFFICIAL_BUNDLE_LEGACY_NAMES,
     OFFICIAL_BUNDLE_NAME,
 };
-use crate::prompt::{BashPrompt, GitPromptDecor, NiubashPrompt, PromptBackend, PromptIndicators};
+use crate::prompt::{BashPrompt, NiubashPrompt, PromptBackend, PromptIndicators};
 use crate::prompt_segments::{
     SegmentId, SegmentPreset, SegmentPrompt, SegmentPromptAdapter, SegmentPromptConfig,
 };
@@ -168,8 +167,6 @@ struct PluginPromptSyncConfig {
     indicators: PromptIndicators,
     theme_name: String,
     prompt_symbol: String,
-    git_prompt_symbols: GitPromptSymbols,
-    git_prompt_format: Option<String>,
 }
 
 impl PluginPromptSyncConfig {
@@ -180,8 +177,6 @@ impl PluginPromptSyncConfig {
             indicators: PromptIndicators::default(),
             theme_name: "default".to_string(),
             prompt_symbol: "%".to_string(),
-            git_prompt_symbols: GitPromptSymbols::default(),
-            git_prompt_format: None,
         }
     }
 }
@@ -367,11 +362,8 @@ impl Shell {
         } else {
             config.shell.prompt_style.as_deref().unwrap_or("template")
         };
-        let git_prompt_symbols = GitPromptSymbols::from(&config.git_prompt);
-        let template_git_prompt_format = config.shell.git_prompt_format.clone();
         let native_prompt_configured = config.shell.prompt_format.is_some()
             || config.shell.right_prompt_format.is_some()
-            || config.shell.git_prompt_format.is_some()
             || config.shell.prompt_style.is_some()
             || config.shell.segment_preset.is_some()
             || config.shell.left_prompt_elements.is_some()
@@ -381,17 +373,12 @@ impl Shell {
             indicators: config.shell.prompt_indicators.clone(),
             theme_name: config.theme_name.clone(),
             prompt_symbol: config.shell.prompt_symbol.clone(),
-            git_prompt_symbols: git_prompt_symbols.clone(),
-            git_prompt_format: template_git_prompt_format.clone(),
         };
         let prompt: PromptBackend = if prompt_style == "segments" {
             let preset_name = config.shell.segment_preset.as_deref().unwrap_or("classic");
             let preset = SegmentPreset::from_name(preset_name).unwrap_or(SegmentPreset::Classic);
-            let mut seg_config = SegmentPromptConfig::from_preset(
-                preset,
-                &config.shell.prompt_symbol,
-                git_prompt_symbols.clone(),
-            );
+            let mut seg_config =
+                SegmentPromptConfig::from_preset(preset, &config.shell.prompt_symbol);
             if let Some(bundle_preset) = crate::plugins::plugin_prompt_preset(preset_name) {
                 let left_elements: Vec<SegmentId> = bundle_preset
                     .left_elements
@@ -407,7 +394,6 @@ impl Shell {
                     .filter_map(|segment| SegmentId::from_name(segment))
                     .collect();
                 seg_config.separator = bundle_preset.separator;
-                seg_config.git_prompt_format = bundle_preset.git_prompt_format;
             }
             seg_config.theme_name = config.theme_name.clone();
             if let Some(ref left) = config.shell.left_prompt_elements {
@@ -429,10 +415,8 @@ impl Shell {
             let template_prompt = NiubashPrompt::new_with_symbol(
                 prompt_format,
                 right_prompt_format,
-                template_git_prompt_format.clone(),
                 config.shell.prompt_indicators.clone(),
                 &config.theme_name,
-                git_prompt_symbols,
                 config.shell.prompt_symbol.clone(),
             );
             PromptBackend::Template(template_prompt)
@@ -733,10 +717,6 @@ impl Shell {
         }
         rewrite_winuxcmd_command_shims(&mut tokens, interactive_terminal_colors);
 
-        let git_command = tokens
-            .first()
-            .is_some_and(|first| first.value.trim().eq_ignore_ascii_case("git"));
-
         // parse() returns Ast directly (not Result) in rubash.
         let mut ast = parse(&tokens);
         normalize_bare_windows_drive_commands(&mut ast);
@@ -837,9 +817,6 @@ impl Shell {
         }
 
         self.sync_process_cwd_from_executor_pwd();
-        if git_command {
-            self.mark_gitstatus_dirty_current_dir();
-        }
         self.sync_process_path_from_executor_path();
         self.sync_alias_mirror_from_executor();
         Ok(code)
@@ -917,7 +894,6 @@ impl Shell {
         normalize_executor_home_env(&mut self.executor, &self.home_dir);
         ensure_windows_profile_env(&mut self.executor, &self.home_dir);
         ensure_prompt_terminal_env(&mut self.executor);
-        self.sync_gitstatus_prompt_env();
         if self.no_profile {
             // GNU bash --noprofile skips login-profile startup; niubash has
             // no separate profile file, so skip the legacy migration pass.
@@ -1126,7 +1102,6 @@ impl Shell {
         let left_template = self.executor.get_env("NIU_PROMPT_LEFT").map(str::to_owned);
         let right_template = self.executor.get_env("NIU_PROMPT_RIGHT").map(str::to_owned);
         if left_template.is_none() && right_template.is_none() {
-            self.clear_gitstatus_prompt_env("none");
             return;
         }
 
@@ -1141,22 +1116,14 @@ impl Shell {
             .get_env("NIU_PROMPT_SYMBOL")
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(&self.plugin_prompt_sync.prompt_symbol);
-        let git_prompt_snapshot = self.executor.get_env("NIU_PROMPT_GIT").map(str::to_owned);
-        let git_status_snapshot = self.git_status_from_prompt_env();
-        let git_prompt_decor = self.git_prompt_decor_from_env();
 
-        let mut prompt = NiubashPrompt::new_with_symbol(
+        let prompt = NiubashPrompt::new_with_symbol(
             left_template,
             right_template,
-            self.plugin_prompt_sync.git_prompt_format.clone(),
             self.plugin_prompt_sync.indicators.clone(),
             theme_name,
-            self.plugin_prompt_sync.git_prompt_symbols.clone(),
             prompt_symbol.to_string(),
         );
-        prompt.set_git_prompt_snapshot(git_prompt_snapshot);
-        prompt.set_git_status_snapshot(git_status_snapshot);
-        prompt.set_git_prompt_decor(git_prompt_decor);
         self.prompt = PromptBackend::Template(prompt);
     }
 
@@ -1217,67 +1184,6 @@ impl Shell {
             let _ = std::io::stdout().flush();
         }
         self.executor.set_last_exit_code(last_exit_code);
-    }
-
-    fn git_status_from_prompt_env(&self) -> Option<crate::git_status::GitRepoStatus> {
-        if self.executor.get_env("NIU_PROMPT_GIT_SOURCE") != Some("native") {
-            return None;
-        }
-        let branch = self
-            .executor
-            .get_env("NIU_GITSTATUS_BRANCH")
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)?;
-        let status = crate::git_status::GitRepoStatus {
-            branch: Some(branch),
-            dirty: self.executor.get_env("NIU_GITSTATUS_DIRTY") == Some("1"),
-            staged: self.parse_gitstatus_count("NIU_GITSTATUS_STAGED"),
-            unstaged: self.parse_gitstatus_count("NIU_GITSTATUS_UNSTAGED"),
-            untracked: self.parse_gitstatus_count("NIU_GITSTATUS_UNTRACKED"),
-            deleted: self.parse_gitstatus_count("NIU_GITSTATUS_DELETED"),
-            ahead: self.parse_gitstatus_count("NIU_GITSTATUS_AHEAD"),
-            behind: self.parse_gitstatus_count("NIU_GITSTATUS_BEHIND"),
-            stashes: self.parse_gitstatus_count("NIU_GITSTATUS_STASHES"),
-            conflicts: self.parse_gitstatus_count("NIU_GITSTATUS_CONFLICTS"),
-        };
-        if self.executor.get_env("NIU_PROMPT_GIT")
-            != Some(self.render_git_prompt_snapshot(&status).as_str())
-        {
-            return None;
-        }
-        Some(status)
-    }
-
-    fn parse_gitstatus_count(&self, name: &str) -> usize {
-        self.executor
-            .get_env(name)
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(0)
-    }
-
-    fn git_prompt_decor_from_env(&self) -> GitPromptDecor {
-        GitPromptDecor {
-            prefix: self
-                .executor
-                .get_env("NIU_THEME_GIT_PROMPT_PREFIX")
-                .unwrap_or("git:(")
-                .to_string(),
-            suffix: self
-                .executor
-                .get_env("NIU_THEME_GIT_PROMPT_SUFFIX")
-                .unwrap_or(")")
-                .to_string(),
-            dirty_suffix: self
-                .executor
-                .get_env("NIU_THEME_GIT_PROMPT_DIRTY")
-                .unwrap_or(" *")
-                .to_string(),
-            clean_suffix: self
-                .executor
-                .get_env("NIU_THEME_GIT_PROMPT_CLEAN")
-                .unwrap_or("")
-                .to_string(),
-        }
     }
 
     fn run_source_plugin_startup_scripts(&mut self) {
@@ -1378,7 +1284,6 @@ impl Shell {
     pub fn run_precmd_hooks(&mut self) {
         let last_exit_code = self.executor.last_exit_code();
         self.run_native_precmd_plugins();
-        self.sync_gitstatus_prompt_env();
         let hooks = self.hooks.precmd.clone();
         let last_exit_code_string = last_exit_code.to_string();
         // Set in process env so segment prompt can read it via std::env::var.
@@ -1574,10 +1479,6 @@ impl Shell {
         if same_shell_dir(old_pwd, new_pwd) {
             return;
         }
-        let env = self.executor.env_vars_snapshot();
-        if let Some(cwd) = shell_pwd_to_existing_host_dir(new_pwd, &env) {
-            crate::git_status::request_refresh(&cwd);
-        }
         self.run_native_chpwd_plugins();
         let hooks = self.hooks.chpwd.clone();
         let context = [
@@ -1752,110 +1653,6 @@ impl Shell {
         }
         if self.native_plugin_enabled("last-working-dir") {
             self.save_last_working_dir_current_dir();
-        }
-    }
-
-    fn sync_gitstatus_prompt_env(&mut self) {
-        let Some(cwd) = self
-            .executor_pwd_host_path()
-            .or_else(|| std::env::current_dir().ok())
-        else {
-            self.clear_gitstatus_prompt_env("none");
-            return;
-        };
-        let snapshot = crate::git_status::snapshot_for_prompt(&cwd);
-        self.executor
-            .set_env("NIU_GITSTATUS_STATE", snapshot.state().as_str());
-        let Some(status) = snapshot.status().cloned() else {
-            self.clear_gitstatus_prompt_env(snapshot.state().as_str());
-            return;
-        };
-
-        self.executor.set_env(
-            "NIU_GITSTATUS_BRANCH",
-            status.branch.as_deref().unwrap_or_default(),
-        );
-        self.executor
-            .set_env("NIU_GITSTATUS_DIRTY", if status.dirty { "1" } else { "0" });
-        self.executor
-            .set_env("NIU_GITSTATUS_STAGED", &status.staged.to_string());
-        self.executor
-            .set_env("NIU_GITSTATUS_UNSTAGED", &status.unstaged.to_string());
-        self.executor
-            .set_env("NIU_GITSTATUS_UNTRACKED", &status.untracked.to_string());
-        self.executor
-            .set_env("NIU_GITSTATUS_DELETED", &status.deleted.to_string());
-        self.executor
-            .set_env("NIU_GITSTATUS_AHEAD", &status.ahead.to_string());
-        self.executor
-            .set_env("NIU_GITSTATUS_BEHIND", &status.behind.to_string());
-        self.executor
-            .set_env("NIU_GITSTATUS_STASHES", &status.stashes.to_string());
-        self.executor
-            .set_env("NIU_GITSTATUS_CONFLICTS", &status.conflicts.to_string());
-        self.executor
-            .set_env("NIU_PROMPT_GIT", &self.render_git_prompt_snapshot(&status));
-        self.executor.set_env("NIU_PROMPT_GIT_SOURCE", "native");
-        self.executor.set_env("NIU_PROMPT_GIT_DIRTY", "0");
-    }
-
-    fn clear_gitstatus_prompt_env(&mut self, state: &str) {
-        self.executor.set_env("NIU_GITSTATUS_STATE", state);
-        for name in [
-            "NIU_GITSTATUS_BRANCH",
-            "NIU_GITSTATUS_DIRTY",
-            "NIU_GITSTATUS_STAGED",
-            "NIU_GITSTATUS_UNSTAGED",
-            "NIU_GITSTATUS_UNTRACKED",
-            "NIU_GITSTATUS_DELETED",
-            "NIU_GITSTATUS_AHEAD",
-            "NIU_GITSTATUS_BEHIND",
-            "NIU_GITSTATUS_STASHES",
-            "NIU_GITSTATUS_CONFLICTS",
-            "NIU_PROMPT_GIT",
-            "NIU_PROMPT_GIT_SOURCE",
-        ] {
-            self.executor.unset_env(name);
-        }
-        self.executor.set_env("NIU_PROMPT_GIT_DIRTY", "0");
-    }
-
-    fn render_git_prompt_snapshot(&self, status: &crate::git_status::GitRepoStatus) -> String {
-        let Some(branch) = status.branch.as_deref().filter(|branch| !branch.is_empty()) else {
-            return String::new();
-        };
-        let prefix = self
-            .executor
-            .get_env("NIU_THEME_GIT_PROMPT_PREFIX")
-            .unwrap_or("git:(");
-        let suffix = self
-            .executor
-            .get_env("NIU_THEME_GIT_PROMPT_SUFFIX")
-            .unwrap_or(")");
-        let dirty = self
-            .executor
-            .get_env("NIU_THEME_GIT_PROMPT_DIRTY")
-            .unwrap_or(" *");
-        let clean = self
-            .executor
-            .get_env("NIU_THEME_GIT_PROMPT_CLEAN")
-            .unwrap_or("");
-        let compact = status.compact_status_with(&self.plugin_prompt_sync.git_prompt_symbols);
-        let mut body = branch.to_string();
-        if !compact.is_empty() {
-            body.push(' ');
-            body.push_str(&compact);
-        }
-        body.push_str(if status.dirty { dirty } else { clean });
-        format!("{prefix}{body}{suffix}")
-    }
-
-    fn mark_gitstatus_dirty_current_dir(&self) {
-        if let Some(cwd) = self
-            .executor_pwd_host_path()
-            .or_else(|| std::env::current_dir().ok())
-        {
-            crate::git_status::mark_dirty(&cwd);
         }
     }
 
@@ -4397,11 +4194,6 @@ fn is_niubash_framework_dir(path: &Path) -> bool {
     framework_dir_has_new_entry(path) || path.join("oh-my-winuxsh.winux").is_file()
 }
 
-fn shell_pwd_to_existing_host_dir(pwd: &str, env: &HashMap<String, String>) -> Option<PathBuf> {
-    let path = Executor::resolve_shell_path_from_env(pwd, env);
-    path.is_dir().then_some(path)
-}
-
 fn compatible_shell_path_from_env() -> Option<PathBuf> {
     let path = std::env::var_os(COMPATIBLE_SHELL_PATH_ENV)?;
     if path.is_empty() {
@@ -5255,7 +5047,10 @@ mod tests {
             Some("PLUGIN:{git}{prompt_char} ")
         );
         assert!(rendered.contains("PLUGIN:"), "{rendered:?}");
-        assert!(rendered.contains("SNAPSHOT:startup"), "{rendered:?}");
+        // The host no longer substitutes git status into templates (#145):
+        // `{git}` stays literal and NIU_PROMPT_GIT is inert host-side.
+        assert!(rendered.contains("{git}"), "{rendered:?}");
+        assert!(!rendered.contains("SNAPSHOT:"), "{rendered:?}");
         assert!(rendered.contains('%'), "{rendered:?}");
 
         let _ = std::fs::remove_dir_all(temp);
@@ -5275,37 +5070,6 @@ mod tests {
                 .any(|ch| (0xE000..=0xE0FF).contains(&(ch as u32))),
             "prompt contains a raw-byte marker: {rendered:?}"
         );
-    }
-
-    #[test]
-    fn prompt_core_precmd_git_snapshot_updates_next_host_prompt() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
-        let _cwd_guard = CwdGuard::capture();
-        let temp = unique_temp_dir("niubash-framework-plugin-prompt-snapshot");
-        let bundle = temp.join("bundle");
-        let home = temp.join("home");
-        std::fs::create_dir_all(&home).unwrap();
-        write_framework_source_plugin_test_bundle(&bundle, "9.9.16");
-
-        let _bundle_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_PATH", &bundle);
-        let _root_guard = EnvVarGuard::set("NIU_PLUGIN_BUNDLE_ROOT", &temp.join("root"));
-        let _lock_guard = EnvVarGuard::set("NIU_PLUGIN_LOCK", &temp.join("plugin-lock.toml"));
-
-        let mut shell = Shell::new().unwrap();
-        shell.home_dir = home;
-        shell.run_startup_rc();
-        shell.execute_script("false").unwrap();
-        shell.run_precmd_hooks();
-
-        let rendered = reedline::Prompt::render_prompt_left(&shell.prompt).into_owned();
-        assert_eq!(
-            shell.executor.get_env("NIU_PROMPT_GIT"),
-            Some("SNAPSHOT:precmd:1 ")
-        );
-        assert!(rendered.contains("SNAPSHOT:precmd:1"), "{rendered:?}");
-        assert!(!rendered.contains("SNAPSHOT:startup"), "{rendered:?}");
-
-        let _ = std::fs::remove_dir_all(temp);
     }
 
     #[test]
@@ -7690,7 +7454,7 @@ niubash_prompt_use_template "PLUGIN:{git}{prompt_char} " ""
         let mut shell = Shell {
             executor,
             completion_state: Arc::new(Mutex::new(CompletionState::new(PathBuf::from(".")))),
-            prompt: PromptBackend::Template(NiubashPrompt::new(None, None, None, "default")),
+            prompt: PromptBackend::Template(NiubashPrompt::new(None, None, "default")),
             home_dir: PathBuf::from("."),
             shell_root: None,
             history_path: PathBuf::from(".niubash_history"),

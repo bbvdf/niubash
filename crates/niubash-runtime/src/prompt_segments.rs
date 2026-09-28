@@ -14,7 +14,6 @@ use std::path::Path;
 use nu_ansi_term::{Color, Style};
 use reedline::{Prompt, PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus};
 
-use crate::git_status::{collect_for_prompt, GitPromptSymbols, GitRepoStatus};
 use crate::path_utils::shell_home_dir;
 use crate::prompt::{format_local_time, PromptIndicators};
 
@@ -24,7 +23,6 @@ use crate::prompt::{format_local_time, PromptIndicators};
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SegmentId {
     Dir,
-    Vcs,
     Status,
     Time,
     PromptChar,
@@ -46,7 +44,6 @@ impl SegmentId {
             .collect();
         match normalised.as_str() {
             "dir" => Some(Self::Dir),
-            "vcs" => Some(Self::Vcs),
             "status" => Some(Self::Status),
             "time" => Some(Self::Time),
             "promptchar" => Some(Self::PromptChar),
@@ -114,7 +111,6 @@ fn preset_colour(preset: SegmentPreset, segment: &SegmentId) -> SegmentColour {
     match preset {
         SegmentPreset::Lean => match segment {
             SegmentId::Dir => (Some(White), Some(Blue)),
-            SegmentId::Vcs => (Some(Black), Some(Green)),
             SegmentId::Status => (Some(White), None),
             SegmentId::Time => (Some(White), None),
             SegmentId::PromptChar => (Some(White), None),
@@ -126,7 +122,6 @@ fn preset_colour(preset: SegmentPreset, segment: &SegmentId) -> SegmentColour {
         },
         SegmentPreset::Classic => match segment {
             SegmentId::Dir => (Some(White), Some(Blue)),
-            SegmentId::Vcs => (Some(Black), Some(Green)),
             SegmentId::Status => (Some(Black), Some(Yellow)),
             SegmentId::Time => (Some(Black), Some(Yellow)),
             SegmentId::PromptChar => (Some(White), None),
@@ -138,7 +133,6 @@ fn preset_colour(preset: SegmentPreset, segment: &SegmentId) -> SegmentColour {
         },
         SegmentPreset::Rainbow => match segment {
             SegmentId::Dir => (Some(Blue), None),
-            SegmentId::Vcs => (Some(Green), None),
             SegmentId::Status => (Some(Red), None),
             SegmentId::Time => (Some(Yellow), None),
             SegmentId::PromptChar => (Some(White), None),
@@ -150,7 +144,6 @@ fn preset_colour(preset: SegmentPreset, segment: &SegmentId) -> SegmentColour {
         },
         SegmentPreset::Pure => match segment {
             SegmentId::Dir => (Some(Cyan), None),
-            SegmentId::Vcs => (Some(Black), Some(Green)),
             SegmentId::Status => (Some(Red), None),
             SegmentId::PromptChar => (Some(Magenta), None),
             SegmentId::Context => (Some(Black), Some(Cyan)),
@@ -159,7 +152,6 @@ fn preset_colour(preset: SegmentPreset, segment: &SegmentId) -> SegmentColour {
         },
         SegmentPreset::Robbyrussell => match segment {
             SegmentId::Dir => (Some(Green), None),
-            SegmentId::Vcs => (Some(Cyan), None),
             SegmentId::Status => (Some(Red), None),
             SegmentId::PromptChar => (Some(Green), None),
             SegmentId::Context => (Some(Green), None),
@@ -171,36 +163,11 @@ fn preset_colour(preset: SegmentPreset, segment: &SegmentId) -> SegmentColour {
 // ---- Segment content rendering ----
 
 /// Produce the raw text content (no ANSI styling) for a segment.
-fn render_content(
-    segment: &SegmentId,
-    git: Option<&GitRepoStatus>,
-    config: &SegmentPromptConfig,
-) -> Option<String> {
+fn render_content(segment: &SegmentId, config: &SegmentPromptConfig) -> Option<String> {
     match segment {
         SegmentId::Dir => {
             let cwd = std::env::current_dir().ok()?;
             Some(short_dir(&cwd))
-        }
-        SegmentId::Vcs => {
-            let status = git?;
-            let branch = status.branch.as_deref().unwrap_or("");
-            if branch.is_empty() {
-                return None;
-            }
-            let compact = status.compact_status_with(&config.git_prompt_symbols);
-            let body = match &config.git_prompt_format {
-                Some(fmt) if !fmt.is_empty() => fmt
-                    .replace("{git_branch}", branch)
-                    .replace("{git_status}", &compact),
-                _ => {
-                    if compact.is_empty() {
-                        branch.to_string()
-                    } else {
-                        format!("{} {}", branch, compact)
-                    }
-                }
-            };
-            Some(body)
         }
         SegmentId::Status => {
             let code = std::env::var("NIU_LAST_EXIT_CODE")
@@ -269,36 +236,25 @@ pub struct SegmentPromptConfig {
     pub separator: String,
     pub theme_name: String,
     pub prompt_symbol: String,
-    pub git_prompt_symbols: GitPromptSymbols,
-    pub git_prompt_format: Option<String>,
     pub preset: Option<SegmentPreset>,
 }
 
 impl SegmentPromptConfig {
     /// Build from a preset with default element ordering and colour.
-    pub fn from_preset(
-        preset: SegmentPreset,
-        prompt_symbol: &str,
-        git_symbols: GitPromptSymbols,
-    ) -> Self {
+    pub fn from_preset(preset: SegmentPreset, prompt_symbol: &str) -> Self {
         let (left, right, separator) = match preset {
             SegmentPreset::Lean => (
-                vec![
-                    SegmentId::Dir,
-                    SegmentId::Vcs,
-                    SegmentId::Newline,
-                    SegmentId::PromptChar,
-                ],
+                vec![SegmentId::Dir, SegmentId::Newline, SegmentId::PromptChar],
                 vec![],
                 " ".to_string(),
             ),
             SegmentPreset::Classic => (
-                vec![SegmentId::Dir, SegmentId::Vcs, SegmentId::Newline],
+                vec![SegmentId::Dir, SegmentId::Newline],
                 vec![SegmentId::Status, SegmentId::Time],
                 "\u{e0b0}".to_string(),
             ),
             SegmentPreset::Rainbow => (
-                vec![SegmentId::Dir, SegmentId::Vcs, SegmentId::Newline],
+                vec![SegmentId::Dir, SegmentId::Newline],
                 vec![SegmentId::Status, SegmentId::Time],
                 "\u{e0b0}".to_string(),
             ),
@@ -306,7 +262,6 @@ impl SegmentPromptConfig {
                 vec![
                     SegmentId::Context,
                     SegmentId::Dir,
-                    SegmentId::Vcs,
                     SegmentId::CommandExecutionTime,
                     SegmentId::Newline,
                     SegmentId::PromptChar,
@@ -318,7 +273,6 @@ impl SegmentPromptConfig {
                 vec![
                     SegmentId::Context,
                     SegmentId::Dir,
-                    SegmentId::Vcs,
                     SegmentId::Newline,
                     SegmentId::PromptChar,
                 ],
@@ -326,20 +280,12 @@ impl SegmentPromptConfig {
                 " ".to_string(),
             ),
         };
-        let git_format = match preset {
-            SegmentPreset::Classic | SegmentPreset::Rainbow => {
-                Some("git:({git_branch})".to_string())
-            }
-            _ => None,
-        };
         Self {
             left_elements: left,
             right_elements: right,
             separator,
             theme_name: "default".to_string(),
             prompt_symbol: prompt_symbol.to_string(),
-            git_prompt_symbols: git_symbols,
-            git_prompt_format: git_format,
             preset: Some(preset),
         }
     }
@@ -389,13 +335,12 @@ impl SegmentPrompt {
         if self.config.right_elements.is_empty() {
             return String::new();
         }
-        let git = current_git_status();
         let mut segments: Vec<RenderedSegment> = Vec::new();
         for element in &self.config.right_elements {
             if *element == SegmentId::Newline {
                 break;
             }
-            if let Some(content) = render_content(element, git.as_ref(), &self.config) {
+            if let Some(content) = render_content(element, &self.config) {
                 let (fg, bg) = self.colour_for(element);
                 segments.push(RenderedSegment { content, fg, bg });
             }
@@ -417,7 +362,6 @@ impl SegmentPrompt {
             let theme = crate::theme::by_name(&self.config.theme_name);
             match segment {
                 SegmentId::Dir => (theme.prompt_dir.foreground, None),
-                SegmentId::Vcs => (theme.git_clean.foreground, None),
                 SegmentId::Status => (theme.error.foreground, None),
                 SegmentId::Time => (theme.prompt_dir.foreground, None),
                 SegmentId::PromptChar => (theme.prompt_symbol.foreground, None),
@@ -429,7 +373,6 @@ impl SegmentPrompt {
 
     /// Split left_elements into `PromptLine`s, breaking at `Newline` segments.
     fn render_lines(&self) -> Vec<PromptLine> {
-        let git = current_git_status();
         let mut lines: Vec<PromptLine> = Vec::new();
         let mut current: Vec<RenderedSegment> = Vec::new();
 
@@ -439,7 +382,7 @@ impl SegmentPrompt {
                 current = Vec::new();
                 continue;
             }
-            if let Some(content) = render_content(element, git.as_ref(), &self.config) {
+            if let Some(content) = render_content(element, &self.config) {
                 let (fg, bg) = self.colour_for(element);
                 current.push(RenderedSegment { content, fg, bg });
             }
@@ -532,12 +475,6 @@ fn render_separator(next: &RenderedSegment, prev_bg: Option<Color>, separator: &
     }
 }
 
-/// Read the current git status (non-blocking) for prompt rendering.
-fn current_git_status() -> Option<GitRepoStatus> {
-    let cwd = std::env::current_dir().ok()?;
-    collect_for_prompt(&cwd)
-}
-
 // ---- reedline adapter ----
 
 /// Wraps `SegmentPrompt` into the `reedline::Prompt` trait.
@@ -585,7 +522,6 @@ impl Prompt for SegmentPromptAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git_status::GitPromptSymbols;
     use crate::test_support::PROCESS_STATE_LOCK;
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -596,7 +532,9 @@ mod tests {
     fn segment_id_from_name_case_insensitive() {
         assert_eq!(SegmentId::from_name("dir"), Some(SegmentId::Dir));
         assert_eq!(SegmentId::from_name("DIR"), Some(SegmentId::Dir));
-        assert_eq!(SegmentId::from_name("vcs"), Some(SegmentId::Vcs));
+        // The host no longer renders VCS status (issue #145): "vcs" stopped
+        // being a known segment name when the built-in git prompt retired.
+        assert_eq!(SegmentId::from_name("vcs"), None);
         assert_eq!(
             SegmentId::from_name("prompt_char"),
             Some(SegmentId::PromptChar)
@@ -644,13 +582,8 @@ mod tests {
 
     #[test]
     fn lean_preset_has_correct_elements() {
-        let cfg = SegmentPromptConfig::from_preset(
-            SegmentPreset::Lean,
-            "\u{276f}",
-            GitPromptSymbols::default(),
-        );
+        let cfg = SegmentPromptConfig::from_preset(SegmentPreset::Lean, "\u{276f}");
         assert!(cfg.left_elements.contains(&SegmentId::Dir));
-        assert!(cfg.left_elements.contains(&SegmentId::Vcs));
         assert!(cfg.left_elements.contains(&SegmentId::Newline));
         assert!(cfg.left_elements.contains(&SegmentId::PromptChar));
         assert!(cfg.right_elements.is_empty());
@@ -658,11 +591,7 @@ mod tests {
 
     #[test]
     fn classic_preset_has_right_elements() {
-        let cfg = SegmentPromptConfig::from_preset(
-            SegmentPreset::Classic,
-            "\u{276f}",
-            GitPromptSymbols::default(),
-        );
+        let cfg = SegmentPromptConfig::from_preset(SegmentPreset::Classic, "\u{276f}");
         assert!(cfg.left_elements.contains(&SegmentId::Dir));
         assert!(cfg.right_elements.contains(&SegmentId::Time));
     }
@@ -670,7 +599,7 @@ mod tests {
     #[test]
     fn time_content_renders_hhmm() {
         let cfg = default_cfg();
-        let content = render_content(&SegmentId::Time, None, &cfg);
+        let content = render_content(&SegmentId::Time, &cfg);
         assert!(content.is_some());
         let s = content.unwrap();
         assert_eq!(s.len(), 5);
@@ -680,7 +609,7 @@ mod tests {
     #[test]
     fn time_segment_renders_system_local_clock() {
         let cfg = default_cfg();
-        let content = render_content(&SegmentId::Time, None, &cfg).unwrap();
+        let content = render_content(&SegmentId::Time, &cfg).unwrap();
         let expected = format_local_time();
         if content != expected {
             let expected = format_local_time();
@@ -691,15 +620,8 @@ mod tests {
     #[test]
     fn prompt_char_is_symbol() {
         let cfg = default_cfg();
-        let content = render_content(&SegmentId::PromptChar, None, &cfg);
+        let content = render_content(&SegmentId::PromptChar, &cfg);
         assert_eq!(content.as_deref(), Some("\u{276f}"));
-    }
-
-    #[test]
-    fn vcs_segment_returns_none_without_git() {
-        let cfg = default_cfg();
-        let content = render_content(&SegmentId::Vcs, None, &cfg);
-        assert!(content.is_none());
     }
 
     #[test]
@@ -707,7 +629,7 @@ mod tests {
         let _guard = STATUS_ENV_LOCK.lock().unwrap();
         let cfg = default_cfg();
         std::env::remove_var("NIU_LAST_EXIT_CODE");
-        let content = render_content(&SegmentId::Status, None, &cfg);
+        let content = render_content(&SegmentId::Status, &cfg);
         assert!(content.is_none());
     }
 
@@ -716,7 +638,7 @@ mod tests {
         let _guard = STATUS_ENV_LOCK.lock().unwrap();
         let cfg = default_cfg();
         std::env::set_var("NIU_LAST_EXIT_CODE", "1");
-        let content = render_content(&SegmentId::Status, None, &cfg);
+        let content = render_content(&SegmentId::Status, &cfg);
         assert!(content.is_some());
         assert!(content.unwrap().contains("1"));
         std::env::remove_var("NIU_LAST_EXIT_CODE");
@@ -725,7 +647,7 @@ mod tests {
     #[test]
     fn newline_renders_empty() {
         let cfg = default_cfg();
-        let content = render_content(&SegmentId::Newline, None, &cfg);
+        let content = render_content(&SegmentId::Newline, &cfg);
         assert_eq!(content, Some(String::new()));
     }
 
@@ -742,11 +664,7 @@ mod tests {
 
     #[test]
     fn render_lean_does_not_panic() {
-        let cfg = SegmentPromptConfig::from_preset(
-            SegmentPreset::Lean,
-            "\u{276f}",
-            GitPromptSymbols::default(),
-        );
+        let cfg = SegmentPromptConfig::from_preset(SegmentPreset::Lean, "\u{276f}");
         let prompt = SegmentPrompt::new(cfg);
         let _left = prompt.render_left();
         let _right = prompt.render_right();
@@ -754,11 +672,7 @@ mod tests {
 
     #[test]
     fn render_classic_does_not_panic() {
-        let cfg = SegmentPromptConfig::from_preset(
-            SegmentPreset::Classic,
-            "\u{276f}",
-            GitPromptSymbols::default(),
-        );
+        let cfg = SegmentPromptConfig::from_preset(SegmentPreset::Classic, "\u{276f}");
         let prompt = SegmentPrompt::new(cfg);
         let _left = prompt.render_left();
         let _right = prompt.render_right();
@@ -771,8 +685,6 @@ mod tests {
             separator: " ".to_string(),
             theme_name: "default".to_string(),
             prompt_symbol: "\u{276f}".to_string(),
-            git_prompt_symbols: GitPromptSymbols::default(),
-            git_prompt_format: None,
             preset: Some(SegmentPreset::Lean),
         }
     }

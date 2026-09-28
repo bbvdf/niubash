@@ -17,10 +17,6 @@ pub struct ShellConfig {
     pub prompt_format: Option<String>,
     /// Optional right-side prompt template.
     pub right_prompt_format: Option<String>,
-    /// Optional format for the git prompt segment. Supports `{git_branch}` and
-    /// `{git_status}` placeholders, e.g. `git:({git_branch})`. When unset, the
-    /// branch name is rendered on its own.
-    pub git_prompt_format: Option<String>,
     /// Optional mode-specific prompt indicators.
     pub prompt_indicators: PromptIndicators,
     /// Prompt backend: "template" (legacy) or "segments" (p10k-style).
@@ -425,60 +421,6 @@ fn parse_style_map_value(value: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// User-configurable git prompt symbols.
-///
-/// Each field is a format string where `{n}` is replaced by the count.
-/// Empty or missing fields inherit defaults; an empty string set
-/// explicitly suppresses that segment (oh-my-posh / starship style).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitPromptConfig {
-    pub staged: String,
-    pub unstaged: String,
-    pub untracked: String,
-    pub deleted: String,
-    pub ahead: String,
-    pub behind: String,
-    pub stashes: String,
-    pub conflicts: String,
-    pub separator: String,
-}
-
-impl Default for GitPromptConfig {
-    fn default() -> Self {
-        Self {
-            // Boolean symbols by default: no count unless the format uses {n}.
-            // Users who want counts can set e.g. staged = "●{n}" explicitly.
-            staged: "●".to_string(),
-            unstaged: "✚".to_string(),
-            untracked: "?".to_string(),
-            deleted: "✖".to_string(),
-            ahead: "↑".to_string(),
-            behind: "↓".to_string(),
-            stashes: "⚑".to_string(),
-            conflicts: "✖".to_string(),
-            separator: " ".to_string(),
-        }
-    }
-}
-
-use crate::git_status::GitPromptSymbols;
-
-impl From<&GitPromptConfig> for GitPromptSymbols {
-    fn from(cfg: &GitPromptConfig) -> Self {
-        Self {
-            staged: cfg.staged.clone(),
-            unstaged: cfg.unstaged.clone(),
-            untracked: cfg.untracked.clone(),
-            deleted: cfg.deleted.clone(),
-            ahead: cfg.ahead.clone(),
-            behind: cfg.behind.clone(),
-            stashes: cfg.stashes.clone(),
-            conflicts: cfg.conflicts.clone(),
-            separator: cfg.separator.clone(),
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct FullConfig {
     pub shell: ShellConfig,
@@ -497,7 +439,6 @@ pub struct FullConfig {
     pub runtime_completions: RuntimeCompletionConfig,
     pub native_widgets: NativeWidgetConfig,
     pub native_plugins: NativePluginConfig,
-    pub git_prompt: GitPromptConfig,
 }
 
 impl Default for FullConfig {
@@ -522,7 +463,6 @@ impl Default for FullConfig {
             runtime_completions: RuntimeCompletionConfig::default(),
             native_widgets: NativeWidgetConfig::default(),
             native_plugins: NativePluginConfig::default(),
-            git_prompt: GitPromptConfig::default(),
         }
     }
 }

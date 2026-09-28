@@ -179,7 +179,6 @@ fn run(args: &[String]) -> anyhow::Result<()> {
                 | "--version"
                 | "-C"
                 | "--repl-command"
-                | "--gitstatus-daemon"
                 | "--completion-probe"
                 | "--install-wt-profile"
                 | "--self-update"
@@ -212,7 +211,6 @@ fn run(args: &[String]) -> anyhow::Result<()> {
             print_version();
             Ok(())
         }
-        "--gitstatus-daemon" => niubash_runtime::git_status::run_daemon_stdio(),
         "--completion-probe" => {
             print_completion_probe(args)?;
             Ok(())

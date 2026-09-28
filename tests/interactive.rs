@@ -393,6 +393,7 @@ fn alias_define_then_use_live() {
 /// `set +H` disables history expansion (`!!` becomes a literal command);
 /// `set -H` re-enables it.
 #[test]
+#[allow(non_snake_case)]
 fn set_H_flips_history_expansion() {
     if !require_pty_or_skip("set_H_flips_history_expansion") {
         return;
