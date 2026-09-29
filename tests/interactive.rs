@@ -34,7 +34,8 @@ mod driver;
 use std::time::Duration;
 
 use driver::{
-    require_pty_or_skip, NiuSession, CTRL_C, CTRL_D, CTRL_D as EOF_KEY, HEAVY_TIMEOUT, TAB,
+    require_pty_or_skip, NiuSession, CTRL_C, CTRL_D, CTRL_D as EOF_KEY, DEFAULT_TIMEOUT,
+    HEAVY_TIMEOUT, TAB,
 };
 
 /// Short window for negative ("must not run") assertions.
@@ -757,4 +758,122 @@ fn legacy_framework_rc_reaches_prompt() {
     s.expect_prompt();
 
     let _ = std::fs::remove_dir_all(&fixture_root);
+}
+
+// ---------------------------------------------------------------------------
+// niubash#147: after `cd` under a paren-bearing theme prompt (robbyrussell's
+// `git:(branch)`), the shell must not report
+// `unexpected EOF while looking for matching ')'` and the next prompt must
+// not carry a stray literal `)` as echoed input. The owner report (build
+// @688f224) also showed `cd` printing the working directory; with CDPATH
+// unset GNU `cd` prints nothing, and the engine's cd already follows GNU
+// builtins/cd.def (print only on a CDPATH hit, `cd -`, or cdable_vars), so
+// these tests pin both sides: no print without CDPATH, print with
+// CDPATH="." (what oh-my-bash's lib/shopt.sh sets).
+// ---------------------------------------------------------------------------
+
+/// robbyrussell-shaped PS1 with raw color escapes and the `git:(branch)`
+/// parens, matching the theme byte shape the report ran.
+fn paren_theme_rc() -> String {
+    let e = "\u{1b}";
+    format!(
+        "PS1='{e}[1;92m\u{279c}{e}[97m  {e}[96m\\W{e}[97m {e}[94mgit:({e}[91mmaster{e}[94m){e}[97m '\n\
+         PS2='P2> '\n\
+         NIU_DISABLE_DEFAULT_PLUGINS=1\n"
+    )
+}
+
+/// cd under the paren prompt: no EOF diagnostic, no stray `)` in the echoed
+/// input, and no working-directory print while CDPATH is unset.
+#[test]
+fn cd_with_paren_theme_prompt_leaks_nothing_into_input() {
+    if !require_pty_or_skip("cd_with_paren_theme_prompt_leaks_nothing_into_input") {
+        return;
+    }
+    let mut s = NiuSession::spawn_custom(
+        "paren-cd",
+        &paren_theme_rc(),
+        &[],
+        (120, 30),
+        DEFAULT_TIMEOUT,
+    );
+    s.expect("Niubash");
+    s.expect("git:(");
+
+    let repo = s.start().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    // Fidelity to the report (cd into a git repo): init one when git is
+    // available; the assertions hold either way.
+    let _ = std::process::Command::new("git")
+        .arg("init")
+        .arg(&repo)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    s.send_line("cd repo");
+    s.send_line("echo after-paren-cd-ok");
+    // The window covers the cd input echo, any cd output, the next prompt,
+    // and the follow-up command's echo + output. A paren fragment leaking
+    // into the input stream would either parse-fail (EOF diagnostic) or sit
+    // in the edit buffer and break the follow-up command (its marker would
+    // never print), so this one expect is the stray-paren detector.
+    let follow = s.expect("after-paren-cd-ok");
+    assert!(
+        !follow.replace('\u{1b}', "").contains("unexpected EOF"),
+        "unexpected EOF diagnostic after cd; window: {follow:?}"
+    );
+    // No working-directory print without CDPATH (GNU cd.def prints only on
+    // a CDPATH hit / `cd -` / cdable_vars).
+    let start_path = s
+        .start()
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_lowercase();
+    assert!(
+        !follow.to_lowercase().contains(&start_path),
+        "plain cd printed the working directory without CDPATH; window: {follow:?}"
+    );
+    s.expect("git:(");
+    assert!(
+        !s.transcript()
+            .replace('\u{1b}', "")
+            .contains("unexpected EOF"),
+        "unexpected EOF diagnostic in the session transcript"
+    );
+}
+
+/// With CDPATH set (oh-my-bash's lib/shopt.sh sets CDPATH="."), a relative
+/// cd that hits CDPATH prints the new directory — the GNU behavior the
+/// owner's window actually exercised, pinned here so the engine contract
+/// survives host changes.
+#[test]
+fn cd_with_cdpath_prints_directory_like_gnu() {
+    if !require_pty_or_skip("cd_with_cdpath_prints_directory_like_gnu") {
+        return;
+    }
+    let mut s = NiuSession::spawn_custom(
+        "cdpath-print",
+        &paren_theme_rc(),
+        &[],
+        (120, 30),
+        DEFAULT_TIMEOUT,
+    );
+    s.expect("Niubash");
+    s.expect("git:(");
+    std::fs::create_dir_all(s.start().join("repo")).unwrap();
+
+    s.send_line("export CDPATH=.");
+    s.expect("git:(");
+    s.send_line("cd repo");
+    // GNU builtins/cd.def:353-378 — a non-empty CDPATH element that finds
+    // the directory prints it.
+    let window = s.expect("/start/repo");
+    assert!(
+        !window.replace('\u{1b}', "").contains("unexpected EOF"),
+        "EOF diagnostic after CDPATH cd; window: {window:?}"
+    );
+    s.expect("git:(");
+    s.send_line("echo cdpath-ok");
+    s.expect("cdpath-ok");
 }
