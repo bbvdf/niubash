@@ -457,13 +457,20 @@ impl NiuSession {
     }
 
     /// Send raw bytes (control keys, escape sequences, text without Enter).
+    ///
+    /// One guard for write+flush, scoped like `send_line`. The previous
+    /// chain `self.writer.lock().unwrap().write_all(..).and_then(|_|
+    /// self.writer.lock().unwrap().flush())` self-deadlocked on every call:
+    /// the first `MutexGuard` is a temporary of the whole statement, so it
+    /// was still held when the `and_then` closure re-locked the (non-
+    /// reentrant) mutex — every test that sent a bare control key wedged
+    /// forever with no timeout able to fire (rubash#287 driver side).
     pub fn send(&mut self, keys: &str) {
-        self.writer
-            .lock()
-            .unwrap()
-            .write_all(keys.as_bytes())
-            .and_then(|_| self.writer.lock().unwrap().flush())
-            .unwrap_or_else(|e| panic!("send {keys:?} failed: {e}\n{}", self.transcript()));
+        let result = {
+            let mut w = self.writer.lock().unwrap();
+            w.write_all(keys.as_bytes()).and_then(|()| w.flush())
+        };
+        result.unwrap_or_else(|e| panic!("send {keys:?} failed: {e}\n{}", self.transcript()));
     }
 
     /// Send a line and press Enter.
