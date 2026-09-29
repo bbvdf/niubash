@@ -59,7 +59,13 @@ fn rubash_revision_from_checkout() -> Option<String> {
         return None;
     }
 
-    if let Some(status) = git(&dir, &["status", "--porcelain"]) {
+    // `git describe --dirty` semantics (builtin/describe.c describe_default,
+    // --dirty runs `diff-index --quiet HEAD`): only tracked content that
+    // differs from HEAD makes a tree dirty; untracked files never do.
+    // `git status --porcelain` alone also counts `??` entries, so a tree
+    // whose only changes are untracked scratch files used to bake a bogus
+    // `-dirty` into the version banner.
+    if let Some(status) = git(&dir, &["status", "--porcelain", "--untracked-files=no"]) {
         if status.status.success() && !String::from_utf8_lossy(&status.stdout).trim().is_empty() {
             revision.push_str("-dirty");
         }
@@ -80,39 +86,94 @@ fn git(dir: &Path, args: &[&str]) -> Option<std::process::Output> {
 }
 
 /// A path dependency does not make Cargo re-run this script when only the
-/// sibling checkout's refs move, so watch them by hand. `HEAD` alone is not
-/// enough — on a branch it stays `ref: refs/heads/<branch>` and only the
-/// pointed-at ref file changes.
+/// sibling checkout's state moves, so watch the git metadata files by hand.
+///
+/// The revision label has two halves and each needs its own cache key:
+///
+/// - The commit hash moves with `HEAD`. `HEAD` alone is not enough — on a
+///   branch it stays `ref: refs/heads/<branch>` and only the pointed-at ref
+///   file changes — so the symref target is watched too, on ANY branch (a
+///   lane worktree moves `refs/heads/wt/...`, not master/main). Refs may
+///   also live in `packed-refs` instead of a loose file, so that file is
+///   watched as well. Per-worktree files (`HEAD`, `index`) live in the
+///   worktree's own git dir, refs in the common dir; a linked worktree
+///   splits the two.
+/// - The `-dirty` half flips without any ref moving (edit, stage, restore,
+///   stash, clean). Those operations all rewrite the index — and so does
+///   every `git status` stat-cache refresh — so the index is the watch key
+///   that keeps a dirty-at-build-time tree from serving a stale `-dirty`
+///   after it was cleaned (or vice versa) while HEAD stood still.
 fn watch_rubash_refs(dir: &Path) {
-    let dot_git = git_common_dir(dir).unwrap_or_else(|| dir.join(".git"));
-    for rel in ["HEAD", "FETCH_HEAD", "refs/heads/master", "refs/heads/main"] {
-        let path = dot_git.join(rel);
+    let (git_dir, common_dir) = split_git_dirs(dir);
+    for path in [
+        git_dir.join("HEAD"),
+        git_dir.join("index"),
+        common_dir.join("FETCH_HEAD"),
+        common_dir.join("packed-refs"),
+        common_dir.join("refs/heads/master"),
+        common_dir.join("refs/heads/main"),
+    ] {
         if path.is_file() {
             println!("cargo:rerun-if-changed={}", path.display());
         }
     }
+    // Watch the branch HEAD actually points at, on any branch.
+    if let Ok(head) = fs::read_to_string(git_dir.join("HEAD")) {
+        if let Some(target) = head.trim().strip_prefix("ref:") {
+            let target = target.trim();
+            let path = common_dir.join(target);
+            if path.is_file() {
+                println!("cargo:rerun-if-changed={}", path.display());
+            }
+        }
+    }
 }
 
-/// A submodule worktree stores `.git` as a file pointing at the superproject's
-/// `modules/` directory; resolve it so the ref files can be watched.
-fn git_common_dir(dir: &Path) -> Option<PathBuf> {
-    let git_marker = dir.join(".git");
-    if !git_marker.is_file() {
-        return None;
+/// Resolve (per-worktree git dir, common git dir) for a checkout. A plain
+/// clone keeps everything in `<dir>/.git`; a linked worktree stores `.git`
+/// as a `gitdir:` file pointing at `<main>/.git/worktrees/<name>`, whose
+/// `commondir` file names the shared metadata directory.
+fn split_git_dirs(dir: &Path) -> (PathBuf, PathBuf) {
+    let marker = dir.join(".git");
+    if !marker.is_file() {
+        let plain = dir.join(".git");
+        return (plain.clone(), plain);
     }
-    let target = fs::read_to_string(&git_marker)
+    let Some(target) = fs::read_to_string(&marker)
         .ok()
-        .map(|text| text.trim().to_string())?;
-    let rest = target.strip_prefix("gitdir:").map(str::trim)?;
-    if rest.is_empty() {
-        return None;
-    }
-    let absolute = PathBuf::from(rest);
-    Some(if absolute.is_absolute() {
-        absolute
+        .map(|text| text.trim().to_string())
+        .and_then(|text| {
+            text.strip_prefix("gitdir:")
+                .map(str::trim)
+                .filter(|rest| !rest.is_empty())
+                .map(str::to_string)
+        })
+    else {
+        let plain = dir.join(".git");
+        return (plain.clone(), plain);
+    };
+    let git_dir = PathBuf::from(&target);
+    let git_dir = if git_dir.is_absolute() {
+        git_dir
     } else {
-        dir.join(absolute)
-    })
+        dir.join(git_dir)
+    };
+    let common_dir = match fs::read_to_string(git_dir.join("commondir"))
+        .ok()
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+    {
+        Some(text) => {
+            let path = PathBuf::from(text);
+            if path.is_absolute() {
+                path
+            } else {
+                git_dir.join(path)
+            }
+        }
+        None => git_dir.clone(),
+    };
+    (git_dir, common_dir)
 }
 
 /// `git = "..."` dependencies record their revision in `Cargo.lock`; a path
