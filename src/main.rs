@@ -157,8 +157,8 @@ fn run(args: &[String]) -> anyhow::Result<()> {
     // '+' is shell-option syntax (-c/-i/-o/-O/+B/+o ...), never a script
     // name. Route all of them through the engine's ShellInvocation parser —
     // a rejected option is a usage error, not "No such file or directory".
-    if (first.starts_with('-') || first.starts_with('+'))
-        && !matches!(
+    if first.starts_with('-') || first.starts_with('+') {
+        if !matches!(
             first.as_str(),
             "-h" | "--help"
                 | "-V"
@@ -168,44 +168,44 @@ fn run(args: &[String]) -> anyhow::Result<()> {
                 | "--completion-probe"
                 | "--install-wt-profile"
                 | "--self-update"
-        )
-        && !legacy_command_mode_has_post_c_login_flag(args)
-    {
-        // P3 invocation alignment: a leading-dash argument the engine parser
-        // rejects is a usage error with the GNU surface (shell.c:874-881):
-        // "<shell>: <option>: invalid option" + usage block, rc 2
-        // (EX_BADUSAGE). The engine (rubash main.rs) reports under the
-        // literal "bash" name so the upstream invocation suite normalizes
-        // byte-for-byte; keep that convention.
-        return match ShellInvocation::parse(&args[1..]) {
-            Ok(_) => run_shell_invocation(&args[1..]),
-            Err(message) => {
-                eprintln!("bash: {message}");
-                if message.contains("invalid option") {
-                    show_shell_usage();
-                }
-                std::process::exit(2);
+        ) && !legacy_command_mode_has_post_c_login_flag(args)
+        {
+            // GNU shell.c parse_shell_options walks argv in one left-to-right
+            // pass: option words may stand in any order before the first
+            // non-option operand, and the shell does not re-dispatch on the
+            // first word alone. A launcher-owned word therefore keeps its
+            // meaning wherever it appears among the leading options
+            // (niubash#148): `niu --norc -C 'cmd'` used to fall through to
+            // the engine parser here, which has no REPL-command -C (GNU -C
+            // is noclobber) and then treated the command string as a script
+            // path. Words after the launcher flag's own argument keep GNU
+            // operand semantics, so `niu -C 'cmd' --norc` still binds
+            // --norc as $0 exactly like `bash -c 'cmd' --norc`.
+            if let Some(index) = launcher_dispatch_index(args) {
+                return dispatch_launcher_word(args, index);
             }
-        };
+            // P3 invocation alignment: a leading-dash argument the engine parser
+            // rejects is a usage error with the GNU surface (shell.c:874-881):
+            // "<shell>: <option>: invalid option" + usage block, rc 2
+            // (EX_BADUSAGE). The engine (rubash main.rs) reports under the
+            // literal "bash" name so the upstream invocation suite normalizes
+            // byte-for-byte; keep that convention.
+            return match ShellInvocation::parse(&args[1..]) {
+                Ok(_) => run_shell_invocation(&args[1..]),
+                Err(message) => {
+                    eprintln!("bash: {message}");
+                    if message.contains("invalid option") {
+                        show_shell_usage();
+                    }
+                    std::process::exit(2);
+                }
+            };
+        }
+        // The leading word is itself a launcher word (or the legacy
+        // `niu -c -l cmd` shape kept above): dispatch on argv[1].
+        return dispatch_launcher_word(args, 1);
     }
     match first.as_str() {
-        "-h" | "--help" => {
-            print_usage();
-            Ok(())
-        }
-        "--version" | "-V" => {
-            print_version();
-            Ok(())
-        }
-        "--completion-probe" => {
-            print_completion_probe(args)?;
-            Ok(())
-        }
-        "--install-wt-profile" => {
-            install_windows_terminal_profile(args)?;
-            Ok(())
-        }
-        "--self-update" => self_update::run(&args[2..]),
         "setup" | "configure" => match setup_preset_arg(&args[2..]) {
             Some(name) => niubash_runtime::setup_wizard::apply_preset(&name),
             None => niubash_runtime::setup_wizard::rerun_wizard(),
@@ -213,31 +213,6 @@ fn run(args: &[String]) -> anyhow::Result<()> {
         "font" => niubash_runtime::fonts::run_font_command(),
         "doctor" => niubash_runtime::doctor::run_doctor(),
         "plugin" => run_plugin_command(args),
-        "-C" | "--repl-command" => run_repl_command(args),
-        "-c" => {
-            let command_mode = parse_legacy_command_mode(args)?;
-            let mut shell = niubash_runtime::Shell::new()?;
-            niubash_runtime::startup_trace::tick("-c: Shell::new");
-            shell.executor.inherit_process_stdin();
-            shell.enable_process_stdin_pipeline_bridge();
-            shell
-                .executor
-                .set_env("BASH_EXECUTION_STRING", command_mode.command);
-            if let Some(command_name) = command_mode.command_name {
-                shell.set_script_name(command_name);
-                shell
-                    .executor
-                    .set_positional_params(command_mode.positional_params.to_vec());
-            }
-            let code = shell.execute_script(command_mode.command)?;
-            niubash_runtime::startup_trace::tick("-c: execute_script");
-            let code = shell.finish_with_exit_trap(code)?;
-            niubash_runtime::startup_trace::tick("-c: exit trap");
-            if code != 0 {
-                std::process::exit(code);
-            }
-            Ok(())
-        }
         _ => {
             // Treat as a script file to execute
             let mut shell = niubash_runtime::Shell::new()?;
@@ -283,22 +258,118 @@ fn run(args: &[String]) -> anyhow::Result<()> {
     }
 }
 
+/// Index of the launcher-owned word among the leading option words of `args`
+/// (argv[1]..), honoring GNU parse_shell_options' single left-to-right walk:
+/// engine options that take a separate argument (`-o`, `-O`, `--rcfile`,
+/// `--init-file`) consume the following word, `-c`/`-s` and the first
+/// non-option word hand the rest to the engine route, and every other
+/// `-`/`+` word is engine shell-option syntax. Returns `None` when the whole
+/// leading option run belongs to the engine.
+fn launcher_dispatch_index(args: &[String]) -> Option<usize> {
+    const LAUNCHER_WORDS: &[&str] = &[
+        "-h",
+        "--help",
+        "-V",
+        "--version",
+        "-C",
+        "--repl-command",
+        "--completion-probe",
+        "--install-wt-profile",
+        "--self-update",
+    ];
+    let mut index = 1usize;
+    while let Some(arg) = args.get(index) {
+        if LAUNCHER_WORDS.contains(&arg.as_str()) {
+            return Some(index);
+        }
+        match arg.as_str() {
+            // -c consumes the rest as the command string + operands, -s the
+            // remaining words as positional parameters; both belong to the
+            // engine route either way.
+            "-c" | "-s" => return None,
+            "-o" | "+o" | "-O" | "+O" | "--rcfile" | "--init-file" => index += 2,
+            word if word.starts_with('-') || word.starts_with('+') => index += 1,
+            // First non-option word is the script operand (engine route).
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Run the launcher word at `args[index]`. `args[1..index]` are the option
+/// words that stood before it (applied by the handlers that understand
+/// them); `args[index + 1..]` are the word's own arguments.
+fn dispatch_launcher_word(args: &[String], index: usize) -> anyhow::Result<()> {
+    let word = args[index].as_str();
+    let leading_options = &args[1..index];
+    let rest = &args[index + 1..];
+    match word {
+        "-h" | "--help" => {
+            print_usage();
+            Ok(())
+        }
+        "--version" | "-V" => {
+            print_version();
+            Ok(())
+        }
+        "--completion-probe" => {
+            print_completion_probe(rest)?;
+            Ok(())
+        }
+        "--install-wt-profile" => {
+            install_windows_terminal_profile(rest)?;
+            Ok(())
+        }
+        "--self-update" => self_update::run(rest),
+        "-C" | "--repl-command" => run_repl_command(word, leading_options, rest),
+        // Only reachable for the legacy `niu -c -l <cmd>` shape: a plain
+        // leading -c routes to the engine parser above.
+        "-c" => {
+            let command_mode = parse_legacy_command_mode(rest)?;
+            let mut shell = niubash_runtime::Shell::new()?;
+            niubash_runtime::startup_trace::tick("-c: Shell::new");
+            shell.executor.inherit_process_stdin();
+            shell.enable_process_stdin_pipeline_bridge();
+            shell
+                .executor
+                .set_env("BASH_EXECUTION_STRING", command_mode.command);
+            if let Some(command_name) = command_mode.command_name {
+                shell.set_script_name(command_name);
+                shell
+                    .executor
+                    .set_positional_params(command_mode.positional_params.to_vec());
+            }
+            let code = shell.execute_script(command_mode.command)?;
+            niubash_runtime::startup_trace::tick("-c: execute_script");
+            let code = shell.finish_with_exit_trap(code)?;
+            niubash_runtime::startup_trace::tick("-c: exit trap");
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
+        other => anyhow::bail!("unknown launcher word '{other}'"),
+    }
+}
+
 struct LegacyCommandMode<'a> {
     command: &'a str,
     command_name: Option<&'a str>,
     positional_params: &'a [String],
 }
 
-fn parse_legacy_command_mode(args: &[String]) -> anyhow::Result<LegacyCommandMode<'_>> {
-    let mut index = 2;
-    while matches!(args.get(index).map(String::as_str), Some("-l" | "--login")) {
+/// `niu -c [-l|--login] <command> [name [params...]]` — the legacy shape kept
+/// for the `-c -l` combination. `rest` starts right after the `-c` word.
+fn parse_legacy_command_mode(rest: &[String]) -> anyhow::Result<LegacyCommandMode<'_>> {
+    let mut index = 0;
+    while matches!(rest.get(index).map(String::as_str), Some("-l" | "--login")) {
         index += 1;
     }
-    let Some(command) = args.get(index) else {
+    let Some(command) = rest.get(index) else {
         anyhow::bail!("-c requires an argument");
     };
-    let command_name = args.get(index + 1).map(String::as_str);
-    let positional_params = args.get(index + 2..).unwrap_or(&[]);
+    let command_name = rest.get(index + 1).map(String::as_str);
+    let positional_params = rest.get(index + 2..).unwrap_or(&[]);
     Ok(LegacyCommandMode {
         command,
         command_name,
@@ -394,6 +465,14 @@ fn run_shell_invocation(args: &[String]) -> anyhow::Result<()> {
     if invocation.interactive && !niubash_runtime::terminal::stdio_is_interactive() {
         shell.executor.set_env("__RUBASH_INTERACTIVE", "1");
         shell.executor.set_shopt_option("expand_aliases", true);
+        // GNU decides "interactive" from the -i flag, never from the shape
+        // of stdin (shell.c:672 forced_interactive is set in option parsing,
+        // before run_startup_files at shell.c:722 sources ~/.bashrc for an
+        // interactive shell). The interactive startup rc — and --rcfile,
+        // which the shell already carries — must therefore run on the piped
+        // -i path too (niubash#146), still before the interactive history
+        // setup, which shell.c:806-811 runs only after the startup files.
+        shell.run_startup_rc();
         rubash::script_driver::prepare_interactive_history(&mut shell.executor);
         let code = rubash::script_driver::run_interactive_stdin(&mut shell.executor);
         std::process::exit(code);
@@ -893,29 +972,64 @@ fn run_repl() -> anyhow::Result<()> {
     niubash_runtime::repl::run_repl(shell)
 }
 
-fn run_repl_command(args: &[String]) -> anyhow::Result<()> {
-    if args.len() < 3 {
-        anyhow::bail!("{} requires an argument", args[1]);
-    }
-    if let Some(self_update_args) = niubash_runtime::repl::self_update_command_args(&args[2]) {
+/// `niu [-C|--repl-command] <command> [name [params...]]`: execute one
+/// REPL-style command and exit. `leading_options` are the shell option words
+/// that stood before the -C word (niubash#148); they are parsed with the
+/// engine's `ShellInvocation` — the same surface the engine route uses — so
+/// `niu --norc -C 'cmd'` and `niu -C 'cmd'` see one consistent option model,
+/// with rc-affecting fields applied before the startup rc runs.
+fn run_repl_command(flag: &str, leading_options: &[String], rest: &[String]) -> anyhow::Result<()> {
+    let Some(command) = rest.first() else {
+        anyhow::bail!("{flag} requires an argument");
+    };
+    if let Some(self_update_args) = niubash_runtime::repl::self_update_command_args(command) {
         if let Some(code) = niubash_runtime::repl::spawn_self_update(&self_update_args) {
             std::process::exit(code);
         }
     }
     let mut shell = niubash_runtime::Shell::new()?;
     niubash_runtime::startup_trace::tick("-C: Shell::new");
+    if !leading_options.is_empty() {
+        // Same option words, same GNU error surface as the engine route
+        // below (shell.c:874-881): a rejected option is a usage error under
+        // the engine's "bash" name, rc 2, with the usage block when the
+        // word is an invalid option.
+        let invocation = match ShellInvocation::parse(leading_options) {
+            Ok(invocation) => invocation,
+            Err(message) => {
+                eprintln!("bash: {message}");
+                if message.contains("invalid option") {
+                    show_shell_usage();
+                }
+                std::process::exit(2);
+            }
+        };
+        shell.no_rc = invocation.no_rc;
+        shell.no_profile = invocation.no_profile;
+        shell.rc_file = invocation.rc_file.clone().map(PathBuf::from);
+        shell.no_editing = invocation.no_editing;
+        invocation
+            .apply_to_executor(&mut shell.executor)
+            .map_err(|error| {
+                if error.contains("invalid shell option name") {
+                    eprintln!("bash: line 0: {error}");
+                    std::process::exit(2);
+                }
+                anyhow::anyhow!("{error}")
+            })?;
+    }
     shell.enter_interactive();
     shell.executor.inherit_process_stdin();
     shell.enable_process_stdin_pipeline_bridge();
-    if let Some(command_name) = args.get(3) {
+    if let Some(command_name) = rest.get(1) {
         shell.set_script_name(command_name);
-        shell.executor.set_positional_params(args[4..].to_vec());
+        shell.executor.set_positional_params(rest[2..].to_vec());
     }
     shell.run_startup_rc();
     niubash_runtime::startup_trace::tick("-C: startup rc");
     shell.run_precmd_hooks();
     niubash_runtime::startup_trace::tick("-C: precmd hooks");
-    let code = shell.execute_interactive_line(&args[2])?;
+    let code = shell.execute_interactive_line(command)?;
     niubash_runtime::startup_trace::tick("-C: execute_interactive_line");
     if code != 0 {
         std::process::exit(code);
@@ -1745,11 +1859,11 @@ fn setup_preset_arg(args: &[String]) -> Option<String> {
 }
 
 #[cfg(windows)]
-fn install_windows_terminal_profile(args: &[String]) -> anyhow::Result<()> {
+fn install_windows_terminal_profile(rest: &[String]) -> anyhow::Result<()> {
     let mut set_default = false;
     let mut quiet = false;
 
-    for arg in &args[2..] {
+    for arg in rest {
         match arg.as_str() {
             "--set-default" => set_default = true,
             "--quiet" => quiet = true,
@@ -1782,7 +1896,7 @@ fn install_windows_terminal_profile(args: &[String]) -> anyhow::Result<()> {
 /// Windows Terminal profile management is Windows-only; fail explicitly
 /// instead of silently succeeding on Unix.
 #[cfg(not(windows))]
-fn install_windows_terminal_profile(_args: &[String]) -> anyhow::Result<()> {
+fn install_windows_terminal_profile(_rest: &[String]) -> anyhow::Result<()> {
     anyhow::bail!("--install-wt-profile is only supported on Windows")
 }
 
@@ -1799,12 +1913,11 @@ fn windows_terminal_icon_path(commandline: &std::path::Path) -> Option<PathBuf> 
     .find(|path| path.is_file())
 }
 
-fn print_completion_probe(args: &[String]) -> anyhow::Result<()> {
-    if args.len() < 3 {
+fn print_completion_probe(rest: &[String]) -> anyhow::Result<()> {
+    let Some(line) = rest.first() else {
         anyhow::bail!("--completion-probe requires an input line");
-    }
-    let line = &args[2];
-    let cursor_pos = if let Some(raw) = args.get(3) {
+    };
+    let cursor_pos = if let Some(raw) = rest.get(1) {
         raw.parse::<usize>()
             .map_err(|_| anyhow::anyhow!("invalid cursor position '{}'", raw))?
     } else {

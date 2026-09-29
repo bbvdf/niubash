@@ -1,6 +1,7 @@
 //! Binary-level tests for the non-interactive REPL command surface.
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn niu_binary() -> PathBuf {
@@ -261,6 +262,195 @@ fn run_niu(args: &[&str], start: &Path, home: &Path) -> Output {
     command
         .output()
         .unwrap_or_else(|err| panic!("failed to run niubash {args:?}: {err}"))
+}
+
+/// Run niu with piped stdin (the interactive `-i` driver reads commands from
+/// the pipe until EOF; prompts go to stderr, rc/command output to stdout).
+fn run_niu_with_stdin(args: &[&str], stdin_data: &str, start: &Path, home: &Path) -> Output {
+    let mut child = Command::new(niu_binary())
+        .args(args)
+        .current_dir(start)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|err| panic!("failed to spawn niubash {args:?}: {err}"));
+    {
+        let stdin = child.stdin.as_mut().expect("piped stdin");
+        stdin
+            .write_all(stdin_data.as_bytes())
+            .and_then(|()| stdin.flush())
+            .expect("write niu stdin");
+    }
+    // Dropping stdin closes the pipe: the interactive stdin driver sees EOF
+    // and the shell exits like GNU `bash -i < file`.
+    drop(child.stdin.take());
+    child
+        .wait_with_output()
+        .unwrap_or_else(|err| panic!("failed to wait for niubash {args:?}: {err}"))
+}
+
+// ---------------------------------------------------------------------------
+// niubash#146: GNU decides "interactive" from the -i flag, never from the
+// shape of stdin (shell.c option parsing sets forced_interactive before
+// run_startup_files sources ~/.bashrc). `printf 'cmd\n' | niu -i` must load
+// the interactive rc exactly like a terminal session does.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn piped_dash_i_sources_startup_rc() {
+    let temp = unique_temp_dir("niubash-piped-i-rc");
+    let home = temp.join("home");
+    let start = temp.join("start");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&start).unwrap();
+    std::fs::write(home.join(".niubashrc"), "echo RC_146_MARK\n").unwrap();
+
+    let output = run_niu_with_stdin(&["-i"], "echo RC_146_DONE\n", &start, &home);
+
+    assert_success(&output, "piped -i rc loading");
+    let stdout = stdout_text(&output);
+    assert!(
+        stdout.contains("RC_146_MARK"),
+        "piped -i skipped ~/.niubashrc (niubash#146): {stdout:?}"
+    );
+    assert!(
+        stdout.contains("RC_146_DONE"),
+        "piped -i did not run the piped command: {stdout:?}"
+    );
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
+fn piped_dash_i_norc_and_rcfile_options_apply() {
+    let temp = unique_temp_dir("niubash-piped-i-rcfile");
+    let home = temp.join("home");
+    let start = temp.join("start");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&start).unwrap();
+    std::fs::write(home.join(".niubashrc"), "echo RC_146_DEFAULT\n").unwrap();
+    let rcfile = home.join("alt-rc");
+    std::fs::write(&rcfile, "export RC_146_ALTFROM=altfile\n").unwrap();
+    let rcfile = rcfile.to_string_lossy().replace('\\', "/").to_string();
+
+    // --norc: neither the default rc nor anything else runs.
+    let output = run_niu_with_stdin(
+        &["--norc", "-i"],
+        "echo n:${RC_146_DEFAULT-set}\n",
+        &start,
+        &home,
+    );
+    assert_success(&output, "piped --norc -i");
+    let stdout = stdout_text(&output);
+    assert!(
+        !stdout.contains("RC_146_DEFAULT"),
+        "--norc -i still sourced ~/.niubashrc: {stdout:?}"
+    );
+
+    // --rcfile: the alternate file is sourced instead.
+    let output = run_niu_with_stdin(
+        &["--rcfile", &rcfile, "-i"],
+        "echo alt:[$RC_146_ALTFROM]\n",
+        &start,
+        &home,
+    );
+    assert_success(&output, "piped --rcfile -i");
+    let stdout = stdout_text(&output);
+    assert!(
+        stdout.contains("alt:[altfile]"),
+        "--rcfile -i did not source the alternate rc (niubash#146): {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("RC_146_DEFAULT"),
+        "--rcfile -i also sourced the default rc: {stdout:?}"
+    );
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+// ---------------------------------------------------------------------------
+// niubash#148: launcher words keep their meaning wherever they stand among
+// the leading option words (GNU parse_shell_options is one left-to-right
+// pass). `niu --norc -C 'cmd'` used to fall to the engine parser, which has
+// no -C REPL-command flag (GNU -C is noclobber), and then treated the
+// command string as a missing script file.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn repl_command_accepts_leading_options_in_any_order() {
+    let temp = unique_temp_dir("niubash-repl-command-leading-options");
+    let home = temp.join("home");
+    let start = temp.join("start");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&start).unwrap();
+    std::fs::write(home.join(".niubashrc"), "echo RC_148_DEFAULT_RAN\n").unwrap();
+    let rcfile = home.join("alt148");
+    std::fs::write(&rcfile, "export RC_148_ALTFROM=altfile\n").unwrap();
+    let rcfile = rcfile.to_string_lossy().replace('\\', "/").to_string();
+
+    // --norc before -C: dispatches to the REPL command, rc suppressed.
+    let output = run_niu(
+        &["--norc", "-C", "echo order:[$RC_148_ALTFROM]"],
+        &start,
+        &home,
+    );
+    assert_success(&output, "--norc before -C");
+    let stdout = stdout_text(&output);
+    assert_eq!(
+        stdout.trim(),
+        "order:[]",
+        "--norc -C must dispatch to the REPL command without sourcing rc: {stdout:?}"
+    );
+
+    // --rcfile before -C: the alternate rc is sourced for the command.
+    let output = run_niu(
+        &["--rcfile", &rcfile, "-C", "echo order:[$RC_148_ALTFROM]"],
+        &start,
+        &home,
+    );
+    assert_success(&output, "--rcfile before -C");
+    let stdout = stdout_text(&output);
+    assert!(
+        stdout.contains("order:[altfile]"),
+        "--rcfile before -C did not apply to the REPL command: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("RC_148_DEFAULT_RAN"),
+        "--rcfile before -C also sourced the default rc: {stdout:?}"
+    );
+
+    // Plain -C still loads the default rc (baseline, unchanged).
+    let output = run_niu(&["-C", "echo plain:[$RC_148_ALTFROM]"], &start, &home);
+    assert_success(&output, "plain -C rc");
+    assert!(
+        stdout_text(&output).contains("RC_148_DEFAULT_RAN"),
+        "plain -C stopped sourcing ~/.niubashrc"
+    );
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
+fn invalid_leading_option_before_repl_command_keeps_gnu_usage_surface() {
+    let temp = unique_temp_dir("niubash-repl-command-invalid-option");
+    let home = temp.join("home");
+    let start = temp.join("start");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&start).unwrap();
+
+    let output = run_niu(&["--bogus-flag", "-C", "echo x"], &start, &home);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "invalid option before -C must be a usage error (EX_BADUSAGE), got {:?}",
+        output.status.code()
+    );
+    let stderr = stderr_text(&output);
+    assert!(
+        stderr.contains("bash: --bogus-flag: invalid option"),
+        "missing GNU invalid-option diagnostic: {stderr:?}"
+    );
+    let _ = std::fs::remove_dir_all(temp);
 }
 
 fn assert_success(output: &Output, context: &str) {
