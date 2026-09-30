@@ -78,10 +78,20 @@ impl std::fmt::Debug for RubashHistoryProvider {
 }
 
 impl RubashHistoryProvider {
-    pub(crate) fn with_file(capacity: usize, path: PathBuf, mode: HistoryMode) -> Result<Self> {
-        Ok(Self {
-            inner: LiveFileBackedHistory::with_mode(capacity, path, mode)?,
-        })
+    /// Build the host history provider.
+    ///
+    /// Infallible by contract: a history file that cannot be opened (denied
+    /// ACL, sandboxed restricted token, path is a directory, unwritable
+    /// parent) degrades to an in-memory history with a `log::warn!`
+    /// diagnostic instead of aborting shell startup. GNU bash treats the
+    /// history file the same way: `bashhist.c:320 load_history()` reads the
+    /// file only when `file_exists()` succeeds and tolerates every other
+    /// I/O failure (it retries `read_history` only on `EINTR`), so an
+    /// unreadable `HISTFILE` never stops the shell.
+    pub(crate) fn with_file(capacity: usize, path: PathBuf, mode: HistoryMode) -> Self {
+        Self {
+            inner: LiveFileBackedHistory::with_mode(capacity, path, mode),
+        }
     }
 }
 
@@ -196,6 +206,13 @@ struct FileSignature {
 struct HistoryState {
     history: FileBackedHistory,
     signature: FileSignature,
+    /// File backing for this history. `None` once the shell degraded to a
+    /// memory-only history because the file was or became inaccessible.
+    path: Option<PathBuf>,
+    /// Set once an I/O failure has been reported for the current file
+    /// backing, so a degraded session does not warn on every command. GNU
+    /// bash stays silent about history file I/O failures.
+    warned_io_failure: bool,
 }
 
 /// A Reedline file history that is visible across concurrently running shells.
@@ -204,20 +221,64 @@ struct HistoryState {
 /// That is fine for a single process, but makes another terminal invisible
 /// until one of the shells exits. This wrapper syncs after saves and reloads
 /// the file before queries when another process has changed it.
+///
+/// The history file is auxiliary state: a sandboxed restricted token may be
+/// able to execute commands while being unable to open, stat, or update the
+/// user's profile history file. Every file failure therefore degrades the
+/// backing to memory-only with a `log::warn!` diagnostic instead of failing
+/// the operation or the shell, mirroring GNU bash's tolerance in
+/// `bashhist.c:320 load_history()`.
 pub(crate) struct LiveFileBackedHistory {
     capacity: usize,
-    path: Option<PathBuf>,
     state: Mutex<HistoryState>,
     mode: HistoryMode,
 }
 
+/// `FileBackedHistory::new` only rejects `capacity == usize::MAX`; clamp so
+/// the memory-only fallback is always constructible.
+fn in_memory_history(capacity: usize) -> FileBackedHistory {
+    let clamped = capacity.min(usize::MAX - 1);
+    FileBackedHistory::new(clamped)
+        .unwrap_or_else(|_| FileBackedHistory::new(reedline::HISTORY_SIZE).expect("history"))
+}
+
+/// Report a history-file I/O failure once per file backing. The message goes
+/// through `log::warn!` so `-c`/script stdout and stderr stay byte-stable.
+fn warn_io_failure(state: &mut HistoryState, context: &str, error: impl std::fmt::Display) {
+    if !state.warned_io_failure {
+        state.warned_io_failure = true;
+        log::warn!("{context}: {error}");
+    }
+}
+
+/// Best-effort staleness signature: an inaccessible file yields the default
+/// (nonexistent) signature instead of an error, with a one-time warning.
+fn file_signature_lossy(path: &Path, state: &mut HistoryState) -> FileSignature {
+    match file_signature(path) {
+        Ok(signature) => signature,
+        Err(error) => {
+            warn_io_failure(
+                state,
+                &format!("history file {} is not accessible", path.display()),
+                error,
+            );
+            FileSignature::default()
+        }
+    }
+}
+
 impl LiveFileBackedHistory {
     #[cfg(test)]
-    pub(crate) fn with_file(capacity: usize, path: PathBuf) -> Result<Self> {
+    pub(crate) fn with_file(capacity: usize, path: PathBuf) -> Self {
         Self::with_mode(capacity, path, HistoryMode::Shared)
     }
 
-    pub(crate) fn with_mode(capacity: usize, path: PathBuf, mode: HistoryMode) -> Result<Self> {
+    /// Build the live history. Infallible: a history file that cannot be
+    /// opened degrades to an in-memory history (see the struct docs for the
+    /// GNU citation). A file that opens but cannot be stat-ed (restricted
+    /// token denying `metadata` while `CreateFileW` succeeded) degrades the
+    /// same way instead of aborting shell startup with `os error 5`.
+    pub(crate) fn with_mode(capacity: usize, path: PathBuf, mode: HistoryMode) -> Self {
         // On Windows, ensure the history file has accessible ACLs before opening.
         // Codex sandbox and similar environments may create files with restrictive
         // permissions that block read access (os error 5).
@@ -228,35 +289,46 @@ impl LiveFileBackedHistory {
         } else {
             capacity
         };
-        let (history, path, signature) =
-            match FileBackedHistory::with_file(history_capacity, path.clone()) {
-                Ok(history) => {
-                    let signature = file_signature(&path)?;
-                    (history, Some(path), signature)
-                }
-                Err(error) => {
-                    // History is auxiliary state. A restricted token may be
-                    // able to execute in the workspace while being unable to
-                    // update the user's profile history file. Keep the shell
-                    // usable with an in-memory history in that case.
-                    log::debug!(
-                        "history file {} unavailable; using in-memory history: {}",
-                        path.display(),
-                        error
-                    );
-                    (
-                        FileBackedHistory::new(history_capacity)?,
-                        None,
-                        FileSignature::default(),
-                    )
-                }
-            };
-        Ok(Self {
+        let state = match FileBackedHistory::with_file(history_capacity, path.clone()) {
+            Ok(history) => {
+                let mut state = HistoryState {
+                    history,
+                    signature: FileSignature::default(),
+                    path: Some(path.clone()),
+                    warned_io_failure: false,
+                };
+                // The file opened, but a restricted token can still deny the
+                // metadata read; never let that abort the shell.
+                state.signature = file_signature_lossy(&path, &mut state);
+                state
+            }
+            Err(error) => {
+                // History is auxiliary state. A restricted token may be
+                // able to execute in the workspace while being unable to
+                // open or update the user's profile history file. Keep the
+                // shell usable with an in-memory history in that case.
+                let mut state = HistoryState {
+                    history: in_memory_history(history_capacity),
+                    signature: FileSignature::default(),
+                    path: None,
+                    warned_io_failure: true,
+                };
+                warn_io_failure(
+                    &mut state,
+                    &format!(
+                        "history file {} unavailable; using in-memory history",
+                        path.display()
+                    ),
+                    error,
+                );
+                state
+            }
+        };
+        Self {
             capacity,
-            path,
-            state: Mutex::new(HistoryState { history, signature }),
+            state: Mutex::new(state),
             mode,
-        })
+        }
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, HistoryState>> {
@@ -271,39 +343,66 @@ impl LiveFileBackedHistory {
             .map_err(|_| ReedlineError::from(history_lock_error()))
     }
 
-    fn refresh_if_stale(
-        capacity: usize,
-        path: Option<&Path>,
-        state: &mut HistoryState,
-        mode: HistoryMode,
-    ) -> Result<()> {
-        let Some(path) = path else {
-            return Ok(());
+    fn refresh_if_stale(capacity: usize, state: &mut HistoryState, mode: HistoryMode) {
+        let Some(path) = state.path.clone() else {
+            return;
         };
         if mode != HistoryMode::Shared {
-            return Ok(());
+            return;
         }
 
         // On Windows, fix ACLs before re-reading the file from disk.
-        ensure_history_file_accessible(path);
+        ensure_history_file_accessible(&path);
 
-        let signature = file_signature(path)?;
+        let signature = match file_signature(&path) {
+            Ok(signature) => signature,
+            Err(error) => {
+                warn_io_failure(
+                    state,
+                    &format!("history file {} became inaccessible", path.display()),
+                    error,
+                );
+                return;
+            }
+        };
         if signature == state.signature {
-            return Ok(());
+            return;
         }
 
         // Preserve commands submitted by this process before replacing the
         // in-memory view with the latest file contents.
-        state.history.sync()?;
-        state.history = FileBackedHistory::with_file(capacity, path.to_path_buf())?;
-        state.signature = file_signature(path)?;
-        Ok(())
+        if let Err(error) = state.history.sync() {
+            warn_io_failure(state, "history flush before reload failed", error);
+        }
+        match FileBackedHistory::with_file(capacity, path.clone()) {
+            Ok(history) => {
+                state.history = history;
+                state.signature = file_signature_lossy(&path, state);
+            }
+            Err(error) => {
+                // Keep the current in-memory view; the file stays stale for
+                // this session instead of failing history operations.
+                warn_io_failure(
+                    state,
+                    &format!("history file {} could not be reloaded", path.display()),
+                    error,
+                );
+            }
+        }
     }
 
-    fn sync_state(path: Option<&Path>, state: &mut HistoryState) -> io::Result<()> {
-        state.history.sync()?;
-        state.signature = match path {
-            Some(path) => file_signature(path)?,
+    fn sync_state(state: &mut HistoryState) -> io::Result<()> {
+        if let Err(error) = state.history.sync() {
+            // GNU bash never fails a command because the history file
+            // cannot be written: append/exit writes report nothing
+            // (bashhist.c), and only the explicit `history -w`/`-a`
+            // builtins surface I/O errors. Keep the entries in memory,
+            // warn once, and let later reads still see them.
+            warn_io_failure(state, "history file sync failed", error);
+        }
+        let path = state.path.clone();
+        state.signature = match path.as_deref() {
+            Some(path) => file_signature_lossy(path, state),
             None => FileSignature::default(),
         };
         Ok(())
@@ -313,39 +412,35 @@ impl LiveFileBackedHistory {
 impl History for LiveFileBackedHistory {
     fn save(&mut self, item: HistoryItem) -> Result<HistoryItem> {
         let capacity = self.capacity;
-        let path = self.path.clone();
         let mode = self.mode;
         let mut state = self.lock_mut()?;
-        Self::refresh_if_stale(capacity, path.as_deref(), &mut state, mode)?;
+        Self::refresh_if_stale(capacity, &mut state, mode);
         let saved = state.history.save(item)?;
-        Self::sync_state(path.as_deref(), &mut state)?;
+        Self::sync_state(&mut state)?;
         Ok(saved)
     }
 
     fn load(&self, id: HistoryItemId) -> Result<HistoryItem> {
         let capacity = self.capacity;
-        let path = self.path.clone();
         let mode = self.mode;
         let mut state = self.lock()?;
-        Self::refresh_if_stale(capacity, path.as_deref(), &mut state, mode)?;
+        Self::refresh_if_stale(capacity, &mut state, mode);
         state.history.load(id)
     }
 
     fn count(&self, query: SearchQuery) -> Result<i64> {
         let capacity = self.capacity;
-        let path = self.path.clone();
         let mode = self.mode;
         let mut state = self.lock()?;
-        Self::refresh_if_stale(capacity, path.as_deref(), &mut state, mode)?;
+        Self::refresh_if_stale(capacity, &mut state, mode);
         state.history.count(query)
     }
 
     fn search(&self, query: SearchQuery) -> Result<Vec<HistoryItem>> {
         let capacity = self.capacity;
-        let path = self.path.clone();
         let mode = self.mode;
         let mut state = self.lock()?;
-        Self::refresh_if_stale(capacity, path.as_deref(), &mut state, mode)?;
+        Self::refresh_if_stale(capacity, &mut state, mode);
         state.history.search(query)
     }
 
@@ -355,22 +450,21 @@ impl History for LiveFileBackedHistory {
         updater: &dyn Fn(HistoryItem) -> HistoryItem,
     ) -> Result<()> {
         let capacity = self.capacity;
-        let path = self.path.clone();
         let mode = self.mode;
         let mut state = self.lock_mut()?;
-        Self::refresh_if_stale(capacity, path.as_deref(), &mut state, mode)?;
+        Self::refresh_if_stale(capacity, &mut state, mode);
         state.history.update(id, updater)
     }
 
     fn clear(&mut self) -> Result<()> {
         let capacity = self.capacity;
-        let path = self.path.clone();
         let mode = self.mode;
         let mut state = self.lock_mut()?;
-        Self::refresh_if_stale(capacity, path.as_deref(), &mut state, mode)?;
+        Self::refresh_if_stale(capacity, &mut state, mode);
         state.history.clear()?;
+        let path = state.path.clone();
         state.signature = match path.as_deref() {
-            Some(path) => file_signature(path)?,
+            Some(path) => file_signature_lossy(path, &mut state),
             None => FileSignature::default(),
         };
         Ok(())
@@ -378,16 +472,15 @@ impl History for LiveFileBackedHistory {
 
     fn delete(&mut self, id: HistoryItemId) -> Result<()> {
         let capacity = self.capacity;
-        let path = self.path.clone();
         let mode = self.mode;
         let mut state = self.lock_mut()?;
-        Self::refresh_if_stale(capacity, path.as_deref(), &mut state, mode)?;
+        Self::refresh_if_stale(capacity, &mut state, mode);
         state.history.delete(id)
     }
 
     fn sync(&mut self) -> io::Result<()> {
         let state = self.state.get_mut().map_err(|_| history_lock_error())?;
-        Self::sync_state(self.path.as_deref(), state)
+        Self::sync_state(state)
     }
 
     fn session(&self) -> Option<HistorySessionId> {
@@ -441,6 +534,7 @@ fn file_signature(path: &Path) -> io::Result<FileSignature> {
 mod tests {
     use super::*;
     use reedline::{HistoryItem, SearchQuery};
+    use rubash::history::HistoryProvider;
 
     #[test]
     fn unavailable_history_file_falls_back_to_memory() {
@@ -449,8 +543,7 @@ mod tests {
         std::fs::write(&parent, "not a directory").unwrap();
         let path = parent.join("history");
 
-        let mut history = LiveFileBackedHistory::with_mode(100, path, HistoryMode::Shared)
-            .expect("unavailable history file should fall back to memory");
+        let mut history = LiveFileBackedHistory::with_mode(100, path, HistoryMode::Shared);
         history
             .save(HistoryItem::from_command_line("echo fallback"))
             .unwrap();
@@ -466,11 +559,54 @@ mod tests {
     }
 
     #[test]
+    fn directory_history_path_degrades_to_memory() {
+        // A directory where the history file should be is the classic
+        // restricted-token / misconfigured-profile shape: the file cannot be
+        // opened at all. The shell must still get a working in-memory
+        // history (niubash#134: construction must never fail).
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("history-dir");
+        std::fs::create_dir_all(&path).unwrap();
+
+        let mut history = LiveFileBackedHistory::with_mode(100, path.clone(), HistoryMode::Shared);
+        history
+            .save(HistoryItem::from_command_line("echo dir"))
+            .unwrap();
+
+        let commands = history
+            .search(SearchQuery::all_that_contain_rev(String::new()))
+            .unwrap()
+            .into_iter()
+            .map(|item| item.command_line)
+            .collect::<Vec<_>>();
+        assert_eq!(commands, vec!["echo dir"]);
+        assert!(path.is_dir(), "directory must be left untouched");
+    }
+
+    #[test]
+    fn provider_construction_is_infallible_for_unopenable_files() {
+        // The `-c` one-shot contract (README/dsh agents): the history
+        // provider must construct even when the history path is unusable.
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("blocker");
+        std::fs::write(&parent, "file, not a dir").unwrap();
+        let mut provider = RubashHistoryProvider::with_file(
+            100,
+            parent.join(".niubash_history"),
+            HistoryMode::Shared,
+        );
+        let entries = provider.entries().unwrap();
+        assert!(entries.is_empty());
+        provider.append("memory only".to_string()).unwrap();
+        assert_eq!(provider.entries().unwrap(), vec!["memory only"]);
+    }
+
+    #[test]
     fn saved_entries_are_visible_to_another_history_instance() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("history");
-        let mut first = LiveFileBackedHistory::with_file(100, path.clone()).unwrap();
-        let second = LiveFileBackedHistory::with_file(100, path).unwrap();
+        let mut first = LiveFileBackedHistory::with_file(100, path.clone());
+        let second = LiveFileBackedHistory::with_file(100, path);
 
         first
             .save(HistoryItem::from_command_line("cd first"))
@@ -493,7 +629,7 @@ mod tests {
     fn saving_history_updates_the_file_before_drop() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("history");
-        let mut history = LiveFileBackedHistory::with_file(100, path.clone()).unwrap();
+        let mut history = LiveFileBackedHistory::with_file(100, path.clone());
 
         history
             .save(HistoryItem::from_command_line("echo live"))
@@ -508,7 +644,7 @@ mod tests {
         let path = temp.path().join("history");
         std::fs::write(&path, "old-one\nold-two\n").unwrap();
 
-        let mut first = LiveFileBackedHistory::with_mode(100, path, HistoryMode::Private).unwrap();
+        let mut first = LiveFileBackedHistory::with_mode(100, path, HistoryMode::Private);
         first
             .save(HistoryItem::from_command_line("this-session"))
             .unwrap();

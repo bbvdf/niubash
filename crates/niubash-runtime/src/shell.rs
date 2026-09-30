@@ -321,18 +321,18 @@ impl Shell {
             .path
             .clone()
             .unwrap_or_else(|| home_dir.join(".niubash_history"));
+        // The history provider is infallible (niubash#134): an unopenable
+        // history file — restricted-token sandbox (os error 5), path is a
+        // directory, unwritable profile — degrades to an in-memory history
+        // with a log::warn diagnostic. GNU bash likewise never aborts
+        // startup over the history file (bashhist.c:320 load_history()
+        // tolerates every read failure), so `niu -c` stays byte-stable for
+        // agent one-shot use.
         let history_provider = crate::history::RubashHistoryProvider::with_file(
             config.history.max_size,
             history_path.clone(),
             config.history.mode,
-        )
-        .map_err(|error| {
-            anyhow::anyhow!(
-                "failed to open history provider {}: {}",
-                history_path.display(),
-                error
-            )
-        })?;
+        );
         executor.set_history_provider(Rc::new(RefCell::new(history_provider)));
         crate::startup_trace::tick("history provider");
 
@@ -657,6 +657,19 @@ impl Shell {
     /// stack is retired (niubash#145), so NIU_PLUGINS / NIU_THEME lines in
     /// an old rc are inert assignments the host no longer reads.
     pub fn run_startup_rc(&mut self) {
+        self.run_startup_files(true);
+    }
+
+    /// Interactive startup files for a non-REPL interactive dispatch
+    /// (`niu -i -c 'cmd'`, `niu -i script`). GNU shell.c: `-i` sets
+    /// forced_interactive during option parsing, so run_startup_files
+    /// (shell.c:1147) takes the interactive branch — rc file, not BASH_ENV —
+    /// without any of the REPL-only markers.
+    pub fn run_interactive_startup_rc(&mut self) {
+        self.run_startup_files(false);
+    }
+
+    fn run_startup_files(&mut self, repl: bool) {
         normalize_executor_home_env(&mut self.executor, &self.home_dir);
         ensure_windows_profile_env(&mut self.executor, &self.home_dir);
         ensure_prompt_terminal_env(&mut self.executor);
@@ -665,6 +678,15 @@ impl Shell {
             // no separate profile file, so skip the legacy migration pass.
         } else {
             migrate_legacy_winuxsh_rc(&self.home_dir);
+        }
+        // GNU shell.c:1241-1246 (bash --posix) and shell.c:1238-1239 (invoked
+        // as sh, which Shell::new turns into posix mode): the interactive
+        // startup file is `$ENV`, not the bash rc file, and an unset `$ENV`
+        // sources nothing. --rcfile is a bashrc_file concept and is ignored
+        // in this branch.
+        if self.posix_mode_active() {
+            self.execute_env_file("ENV");
+            return;
         }
         if self.no_rc {
             return;
@@ -676,8 +698,25 @@ impl Shell {
             return;
         }
 
-        self.executor.set_env("NIU_REPL_STARTUP", "1");
-        match self.source_file_into_current_shell(&path) {
+        if repl {
+            self.executor.set_env("NIU_REPL_STARTUP", "1");
+        }
+        self.source_startup_file(&path);
+        if repl {
+            let _ = self.execute_script("unset NIU_REPL_STARTUP");
+        }
+
+        self.update_completion_state();
+        if repl {
+            self.run_greeting_hooks();
+        }
+    }
+
+    /// Source one startup file with GNU maybe_execute_file semantics:
+    /// failures warn but never abort the shell (evalfile.c:339; the callers
+    /// of run_startup_files ignore its return value).
+    fn source_startup_file(&mut self, path: &Path) {
+        match self.source_file_into_current_shell(path) {
             Ok(code) => {
                 if code != 0 {
                     log::warn!("{} exited with status {}", path.display(), code);
@@ -685,53 +724,102 @@ impl Shell {
             }
             Err(err) => log::warn!("{} failed: {}", path.display(), err),
         }
-        let _ = self.execute_script("unset NIU_REPL_STARTUP");
         self.sync_process_path_from_executor_path();
+    }
 
+    /// True when this shell runs in POSIX mode. All three sources flip it
+    /// before startup files run: invoked as sh/ash (Shell::new),
+    /// `--posix`, and `-o posix` (ShellInvocation::apply_to_executor).
+    fn posix_mode_active(&self) -> bool {
+        self.executor.get_env("__RUBASH_POSIX_MODE").as_deref() == Some("1")
+    }
+
+    /// GNU shell.c:1103 execute_env_file: an unset or empty variable sources
+    /// nothing; otherwise the value is expanded and the file executed with
+    /// FEVAL_ENOENTOK (a missing file is silently skipped, evalfile.c:120).
+    fn execute_env_file(&mut self, name: &str) {
+        // GNU get_string_value reads the shell variable table, which at
+        // startup-file time is the inherited environment; prefer the
+        // executor table so an earlier startup file could export it.
+        let raw = self
+            .executor
+            .get_env(name)
+            .map(str::to_owned)
+            .or_else(|| std::env::var(name).ok())
+            .filter(|value| !value.trim().is_empty());
+        let Some(raw) = raw else {
+            return;
+        };
+
+        normalize_executor_home_env(&mut self.executor, &self.home_dir);
+        let path = self.resolve_non_interactive_env_path(&raw);
+        if !path.exists() {
+            // GNU evalfile.c:120: ENOENT with FEVAL_ENOENTOK is silent.
+            return;
+        }
+        if !path.is_file() {
+            eprintln!("niu: {}: Is a directory", path.display());
+            return;
+        }
+        self.source_startup_file(&path);
         self.update_completion_state();
-        self.run_greeting_hooks();
     }
 
     /// Source the non-interactive environment file if one is configured.
     ///
-    /// Mirrors GNU bash's BASH_ENV behavior: a non-interactive shell
-    /// sources the file named by the environment variable before running its
-    /// command or script. Niubash adds a dedicated NIU_ENV variable that takes
-    /// precedence over BASH_ENV, so an agent shell can point at a dedicated
-    /// init file without touching the bash-compatible name.
+    /// Mirrors GNU bash's BASH_ENV behavior (shell.c:1214-1220): a
+    /// non-interactive, non-posix, bash-mode shell sources the file named by
+    /// the environment variable before running its command or script. POSIX
+    /// mode and sh-invoked shells source no environment file at all —
+    /// `$ENV` is interactive-only under POSIX (shell.c:1244). Niubash adds a
+    /// dedicated NIU_ENV variable that takes precedence over BASH_ENV in
+    /// every mode, so an agent shell can point at a dedicated init file
+    /// without touching the bash-compatible name.
+    ///
+    /// GNU's sshd/rshd special case (shell.c:1156-1180, `-c` over ssh
+    /// sourcing the bashrc file) does not apply: its `SSH_CLIENT`/
+    /// `SSH2_CLIENT` half is compiled out in the reference build
+    /// (`config-top.h:108`, `SSH_SOURCE_BASHRC` commented out, so
+    /// `run_by_ssh = 0`), and its other half needs isnetconn(stdin) — a
+    /// socket on stdin, which a Windows spawn never hands the shell.
+    /// Verified against the WSL GNU Bash 5.3.0 baseline: `SSH_CLIENT=...`
+    /// `bash -c` sources `$BASH_ENV`, not `~/.bashrc`.
     ///
     /// Neither variable set is a no-op, preserving the zero-load fast path
     /// that keeps `niu -c` fast and deterministic. Only the user's single init
     /// file is sourced: no plugins, prompts, or completion machinery is loaded,
     /// so interactive-only content stays out of the one-shot execution path.
     pub fn source_non_interactive_env(&mut self) {
-        let Some(raw) = std::env::var(NIU_ENV_VAR)
+        let niu_raw = std::env::var(NIU_ENV_VAR)
             .ok()
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| {
-                std::env::var(BASH_ENV_VAR)
-                    .ok()
-                    .filter(|value| !value.trim().is_empty())
-            })
-        else {
+            .filter(|value| !value.trim().is_empty());
+        // GNU shell.c:1216 gates BASH_ENV on posixly_correct == 0 and
+        // act_like_sh == 0; NIU_ENV stays available as the niubash extension
+        // (agents invoke `niu -c`, never the sh shim).
+        let bash_raw = if self.posix_mode_active() {
+            None
+        } else {
+            std::env::var(BASH_ENV_VAR)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        };
+        let Some(raw) = niu_raw.or(bash_raw) else {
             return;
         };
 
         normalize_executor_home_env(&mut self.executor, &self.home_dir);
         let path = self.resolve_non_interactive_env_path(&raw);
-        if !path.is_file() {
-            eprintln!("niubash: {}: No such file or directory", path.display());
+        if !path.exists() {
+            // GNU maybe_execute_file passes FEVAL_ENOENTOK (evalfile.c:345):
+            // a missing BASH_ENV file is skipped silently, keeping `-c`
+            // stdout/stderr byte-stable for one-shot agents.
             return;
         }
-        match self.source_file_into_current_shell(&path) {
-            Ok(code) => {
-                if code != 0 {
-                    log::warn!("{} exited with status {}", path.display(), code);
-                }
-            }
-            Err(err) => log::warn!("{} failed: {}", path.display(), err),
+        if !path.is_file() {
+            eprintln!("niu: {}: Is a directory", path.display());
+            return;
         }
-        self.sync_process_path_from_executor_path();
+        self.source_startup_file(&path);
         self.update_completion_state();
     }
 

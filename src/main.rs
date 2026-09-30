@@ -426,7 +426,17 @@ fn run_shell_invocation(args: &[String]) -> anyhow::Result<()> {
     shell.enable_process_stdin_pipeline_bridge();
 
     if let Some(command) = invocation.command {
-        shell.source_non_interactive_env();
+        // GNU shell.c: -i sets forced_interactive during option parsing, so
+        // `bash -i -c 'cmd'` takes run_startup_files' interactive branch
+        // (shell.c:1222: rc file) and never reads BASH_ENV; plain `-c` runs
+        // the shell.c:1214-1220 non-interactive BASH_ENV branch (the
+        // shell.c:1156 sshd bashrc case is compiled out of the reference
+        // build — see source_non_interactive_env).
+        if invocation.interactive {
+            shell.run_interactive_startup_rc();
+        } else {
+            shell.source_non_interactive_env();
+        }
         niubash_runtime::startup_trace::tick("invocation: setup done");
         // GNU shell.c: $0 for -c is the word after the command string, or
         // $BASH_ARGV0 from the environment when exported by the caller.
@@ -446,7 +456,14 @@ fn run_shell_invocation(args: &[String]) -> anyhow::Result<()> {
         return Ok(());
     }
     if let Some(script_name) = invocation.script {
-        shell.source_non_interactive_env();
+        // GNU: `bash -i script` is an interactive shell (forced_interactive)
+        // and sources the rc file, not BASH_ENV (shell.c:1214 checks
+        // interactive_shell == 0).
+        if invocation.interactive {
+            shell.run_interactive_startup_rc();
+        } else {
+            shell.source_non_interactive_env();
+        }
         shell.set_script_name(&script_name);
         let content = std::fs::read_to_string(script_arg_to_host_path(&script_name))?;
         let code = shell.execute_script(&content)?;

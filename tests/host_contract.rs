@@ -111,6 +111,36 @@ fn command_mode_runs_when_history_file_cannot_be_created() {
     let _ = std::fs::remove_dir_all(temp);
 }
 
+/// niubash#134: a history *file* that exists but cannot be opened (restricted
+/// token sandbox reports os error 5; a directory in its place fails the same
+/// way) must degrade to in-memory history instead of aborting startup. The
+/// `-c` one-shot contract — exact stdout, empty stderr, rc 0 — is what agent
+/// harnesses (dsh/DeepSeek) rely on. GNU citation: bashhist.c:320
+/// load_history() tolerates every history-file read failure.
+#[test]
+fn command_mode_runs_when_history_path_is_a_directory() {
+    let temp = unique_temp_dir("niubash-host-history-directory");
+    let home = temp.join("home");
+    let start = temp.join("start");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&start).unwrap();
+    // A directory where the history file should be: opening it for read+write
+    // fails with access denied on Windows (os error 5) and EISDIR elsewhere.
+    std::fs::create_dir_all(home.join(".niubash_history")).unwrap();
+
+    let output = run_niu("printf '%s' dir-ok; echo rc=$?", &start, &home, &[]);
+    assert_success(&output, "history directory fallback command mode");
+    assert_eq!(normalize_text(&output.stdout), "dir-okrc=0");
+    assert_eq!(
+        normalize_text(&output.stderr),
+        "",
+        "degradation must be log::warn only, never stderr"
+    );
+    assert!(home.join(".niubash_history").is_dir());
+
+    let _ = std::fs::remove_dir_all(temp);
+}
+
 #[test]
 fn script_mode_keeps_engine_history_data_plane() {
     // P2: non-interactive runs keep the engine's history machinery active so

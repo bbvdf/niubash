@@ -222,8 +222,8 @@ mod tests {
     fn autosuggest_sees_history_saved_by_another_session() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("history");
-        let mut writer = LiveFileBackedHistory::with_file(100, path.clone()).unwrap();
-        let reader = LiveFileBackedHistory::with_file(100, path).unwrap();
+        let mut writer = LiveFileBackedHistory::with_file(100, path.clone());
+        let reader = LiveFileBackedHistory::with_file(100, path);
 
         writer
             .save(HistoryItem::from_command_line("cd D:/projects"))

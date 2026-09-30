@@ -107,18 +107,14 @@ pub fn spawn_self_update(args: &[String]) -> Option<i32> {
 /// uses, so the completer can run shell-function completions in the engine.
 pub fn build_line_editor(shell: &Rc<RefCell<Shell>>) -> anyhow::Result<Reedline> {
     let shell_ref = shell.borrow();
+    // Infallible since niubash#134: a history file that cannot be opened
+    // (sandboxed restricted token, os error 5) degrades to an in-memory
+    // history instead of aborting the interactive session.
     let history = LiveFileBackedHistory::with_mode(
         shell_ref.history_max_size,
         shell_ref.history_path.clone(),
         shell_ref.history_mode,
-    )
-    .map_err(|e| {
-        anyhow::anyhow!(
-            "failed to open history file {}: {}",
-            shell_ref.history_path.display(),
-            e
-        )
-    })?;
+    );
 
     let completer = NiubashCompleter::new(shell_ref.completion_state.clone());
     // Shell-function completions reach the engine through the main-thread

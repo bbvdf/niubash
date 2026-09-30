@@ -1,0 +1,384 @@
+//! Startup-file coverage matrix (rc / BASH_ENV / NIU_ENV / ENV / --rcfile /
+//! --norc / --posix / ssh `-c`), exercised end-to-end against the built
+//! `niu` binary.
+//!
+//! GNU reference — bash 5.3 `shell.c:1147 run_startup_files()`:
+//! - shell.c:1156-1180: top-level non-interactive `-c` started by sshd
+//!   (`SSH_CLIENT`/`SSH2_CLIENT`) sources the bashrc file instead of
+//!   BASH_ENV and returns; `--norc` disables that branch.
+//! - shell.c:1214-1220: non-interactive, non-posix, bash-mode shells source
+//!   `$BASH_ENV`; posix/sh non-interactive shells source nothing.
+//! - shell.c:1235-1239 / 1241-1246: interactive bash sources the rc file
+//!   (`--rcfile` overrides); interactive posix/sh sources `$ENV` only.
+//! - shell.c:1103 execute_env_file + evalfile.c:120 (FEVAL_ENOENTOK): a
+//!   missing env file is skipped silently.
+//! - `-i` forces the interactive branch even with `-c` (shell.c option
+//!   parsing sets forced_interactive before run_startup_files).
+//! - The sshd/rshd `-c` bashrc case (shell.c:1156-1180) is compiled out of
+//!   the reference build (`config-top.h:108` leaves `SSH_SOURCE_BASHRC`
+//!   undefined, so `run_by_ssh = 0`) and its isnetconn(stdin) half needs a
+//!   socket on stdin — so `SSH_CLIENT` in the environment does NOT switch
+//!   the startup files. Pinned here against the WSL GNU Bash 5.3.0 oracle.
+//!
+//! These run in their own process per test with an explicit environment, so
+//! they stay independent of the ambient machine env and of the lib-test
+//! suite's process-state lock.
+
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+
+fn niu_binary() -> PathBuf {
+    let p = PathBuf::from(env!("CARGO_BIN_EXE_niu"));
+    if p.exists() {
+        return p;
+    }
+    let mut fallback = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    fallback.push("target");
+    fallback.push("debug");
+    fallback.push(if cfg!(windows) { "niu.exe" } else { "niu" });
+    fallback
+}
+
+struct Fixture {
+    home: PathBuf,
+    start: PathBuf,
+}
+
+impl Fixture {
+    fn new(label: &str) -> Self {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!(
+            "niu-startup-{label}-{}-{nanos}",
+            std::process::id()
+        ));
+        let home = base.join("home");
+        let start = base.join("start");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&start).unwrap();
+        Self { home, start }
+    }
+
+    fn write_rc(&self, marker: &str) {
+        std::fs::write(
+            self.home.join(".niubashrc"),
+            format!("export STARTUP_MARKER={marker}\n"),
+        )
+        .unwrap();
+    }
+
+    fn write_file(&self, name: &str, marker: &str) -> PathBuf {
+        let path = self.home.join(name);
+        std::fs::write(&path, format!("export STARTUP_MARKER={marker}\n")).unwrap();
+        path
+    }
+
+    fn path(&self) -> &Path {
+        &self.home
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(self.home.parent().unwrap());
+    }
+}
+
+/// Run `niu` with a clean startup-relevant environment: HOME/USERPROFILE
+/// point at the fixture home, and every startup-file variable the matrix
+/// exercises starts from a known state.
+fn run_niu(args: &[&str], home: &Path, cwd: &Path, envs: &[(&str, String)]) -> Output {
+    let mut command = Command::new(niu_binary());
+    command
+        .args(args)
+        .current_dir(cwd)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env_remove("SSH_CLIENT")
+        .env_remove("SSH2_CLIENT")
+        .env_remove("BASH_ENV")
+        .env_remove("NIU_ENV")
+        .env_remove("ENV")
+        .stdin(Stdio::null());
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    command
+        .output()
+        .unwrap_or_else(|err| panic!("spawn niu: {err}"))
+}
+
+fn stdout_of(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn stderr_of(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).trim().to_string()
+}
+
+fn assert_success(output: &Output, context: &str) {
+    assert!(
+        output.status.success(),
+        "{context} failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+const PROBE: &str = "echo ${STARTUP_MARKER:-unset}";
+
+/// Interactive REPL startup sources ~/.niubashrc located through $HOME.
+#[test]
+fn interactive_repl_sources_home_niubashrc() {
+    let fixture = Fixture::new("repl-home");
+    fixture.write_rc("from_rc");
+    let output = run_niu(&["-C", PROBE], fixture.path(), &fixture.start, &[]);
+    assert_success(&output, "repl rc");
+    assert_eq!(stdout_of(&output), "from_rc");
+}
+
+/// `--rcfile` overrides the default interactive rc file (GNU bashrc_file).
+#[test]
+fn rcfile_overrides_default_rc() {
+    let fixture = Fixture::new("rcfile");
+    fixture.write_rc("from_default_rc");
+    let alt = fixture.write_file("alt.rc", "from_rcfile");
+    let output = run_niu(
+        &["--rcfile", alt.to_string_lossy().as_ref(), "-C", PROBE],
+        fixture.path(),
+        &fixture.start,
+        &[],
+    );
+    assert_success(&output, "rcfile");
+    assert_eq!(stdout_of(&output), "from_rcfile");
+}
+
+/// `--norc` skips the interactive rc (GNU no_rc gates execute_bashrc_file).
+#[test]
+fn norc_skips_interactive_rc() {
+    let fixture = Fixture::new("norc");
+    fixture.write_rc("from_rc");
+    let output = run_niu(
+        &["--norc", "-C", PROBE],
+        fixture.path(),
+        &fixture.start,
+        &[],
+    );
+    assert_success(&output, "norc");
+    assert_eq!(stdout_of(&output), "unset");
+}
+
+/// Non-interactive `-c` sources $BASH_ENV (GNU shell.c:1218).
+#[test]
+fn bash_env_sourced_for_non_interactive_c() {
+    let fixture = Fixture::new("bashenv-c");
+    let env_file = fixture.write_file("agent.env", "from_bash_env");
+    let output = run_niu(
+        &["-c", PROBE],
+        fixture.path(),
+        &fixture.start,
+        &[("BASH_ENV", env_file.to_string_lossy().into_owned())],
+    );
+    assert_success(&output, "bash env -c");
+    assert_eq!(stdout_of(&output), "from_bash_env");
+}
+
+/// NIU_ENV takes precedence over BASH_ENV (niubash extension).
+#[test]
+fn niu_env_takes_precedence_over_bash_env() {
+    let fixture = Fixture::new("niuenv-precedence");
+    let niu = fixture.write_file("niu.env", "from_niu_env");
+    let bash = fixture.write_file("bash.env", "from_bash_env");
+    let output = run_niu(
+        &["-c", PROBE],
+        fixture.path(),
+        &fixture.start,
+        &[
+            ("NIU_ENV", niu.to_string_lossy().into_owned()),
+            ("BASH_ENV", bash.to_string_lossy().into_owned()),
+        ],
+    );
+    assert_success(&output, "niu env precedence");
+    assert_eq!(stdout_of(&output), "from_niu_env");
+}
+
+/// A missing BASH_ENV file is skipped silently (GNU evalfile.c:120
+/// FEVAL_ENOENTOK): `-c` stdout/stderr stay byte-stable for one-shot agents.
+#[test]
+fn missing_bash_env_is_silent() {
+    let fixture = Fixture::new("bashenv-missing");
+    let missing = fixture.home.join("does-not-exist.env");
+    let output = run_niu(
+        &["-c", "printf agent-ok"],
+        fixture.path(),
+        &fixture.start,
+        &[("BASH_ENV", missing.to_string_lossy().into_owned())],
+    );
+    assert_success(&output, "missing bash env");
+    assert_eq!(stdout_of(&output), "agent-ok");
+    assert_eq!(stderr_of(&output), "", "missing env file must be silent");
+}
+
+/// POSIX mode drops BASH_ENV for non-interactive shells (GNU shell.c:1216
+/// gates on posixly_correct == 0); NIU_ENV stays available as the niubash
+/// extension.
+#[test]
+fn posix_non_interactive_skips_bash_env() {
+    let fixture = Fixture::new("posix-bashenv");
+    let bash = fixture.write_file("bash.env", "from_bash_env");
+    let output = run_niu(
+        &["--posix", "-c", PROBE],
+        fixture.path(),
+        &fixture.start,
+        &[("BASH_ENV", bash.to_string_lossy().into_owned())],
+    );
+    assert_success(&output, "posix bash env suppression");
+    assert_eq!(stdout_of(&output), "unset");
+
+    let niu = fixture.write_file("niu.env", "from_niu_env");
+    let output = run_niu(
+        &["--posix", "-c", PROBE],
+        fixture.path(),
+        &fixture.start,
+        &[
+            ("BASH_ENV", bash.to_string_lossy().into_owned()),
+            ("NIU_ENV", niu.to_string_lossy().into_owned()),
+        ],
+    );
+    assert_success(&output, "posix niu env extension");
+    assert_eq!(stdout_of(&output), "from_niu_env");
+}
+
+/// Interactive POSIX shells source `$ENV` instead of the rc file (GNU
+/// shell.c:1244-1245); `--rcfile` is ignored in this branch.
+#[test]
+fn posix_interactive_sources_env_not_rc() {
+    let fixture = Fixture::new("posix-interactive");
+    fixture.write_rc("from_rc");
+    let env_file = fixture.write_file("posix.env", "from_env");
+    let output = run_niu(
+        &["--posix", "-C", PROBE],
+        fixture.path(),
+        &fixture.start,
+        &[("ENV", env_file.to_string_lossy().into_owned())],
+    );
+    assert_success(&output, "posix interactive env");
+    assert_eq!(stdout_of(&output), "from_env");
+}
+
+/// Interactive POSIX with `$ENV` unset sources nothing at all — the default
+/// rc file is a bash-mode concept (shell.c:1241-1246 has no bashrc branch).
+#[test]
+fn posix_interactive_without_env_sources_nothing() {
+    let fixture = Fixture::new("posix-no-env");
+    fixture.write_rc("from_rc");
+    let output = run_niu(
+        &["--posix", "-C", PROBE],
+        fixture.path(),
+        &fixture.start,
+        &[],
+    );
+    assert_success(&output, "posix interactive without env");
+    assert_eq!(stdout_of(&output), "unset");
+}
+
+/// `-i` forces the interactive startup branch even for `-c` (GNU
+/// forced_interactive): the rc file is sourced and BASH_ENV ignored.
+#[test]
+fn interactive_dash_c_sources_rc_not_bash_env() {
+    let fixture = Fixture::new("i-c");
+    fixture.write_rc("from_rc");
+    let bash = fixture.write_file("bash.env", "from_bash_env");
+    let output = run_niu(
+        &["-i", "-c", PROBE],
+        fixture.path(),
+        &fixture.start,
+        &[("BASH_ENV", bash.to_string_lossy().into_owned())],
+    );
+    assert_success(&output, "interactive -c rc");
+    assert_eq!(stdout_of(&output), "from_rc");
+}
+
+/// `SSH_CLIENT` in the environment does NOT switch the startup files: the
+/// shell.c:1156-1180 sshd branch is compiled out of the reference build
+/// (config-top.h:108, `SSH_SOURCE_BASHRC` undefined → `run_by_ssh = 0`) and
+/// the isnetconn(stdin) half needs a socket on stdin. Pinned against the
+/// WSL GNU Bash 5.3.0 oracle: `SSH_CLIENT=... bash -c` sources $BASH_ENV,
+/// not ~/.bashrc, top-level (SHLVL unset) or nested (SHLVL=2) alike.
+#[test]
+fn ssh_client_does_not_switch_startup_files() {
+    let fixture = Fixture::new("ssh-c");
+    fixture.write_rc("from_rc");
+    let bash = fixture.write_file("bash.env", "from_bash_env");
+
+    let output = run_niu(
+        &["-c", PROBE],
+        fixture.path(),
+        &fixture.start,
+        &[
+            ("SSH_CLIENT", "10.0.0.1 51234 22".to_string()),
+            ("BASH_ENV", bash.to_string_lossy().into_owned()),
+        ],
+    );
+    assert_success(&output, "ssh -c");
+    assert_eq!(stdout_of(&output), "from_bash_env");
+
+    let output = run_niu(
+        &["-c", PROBE],
+        fixture.path(),
+        &fixture.start,
+        &[
+            ("SSH_CLIENT", "10.0.0.1 51234 22".to_string()),
+            ("SHLVL", "2".to_string()),
+            ("BASH_ENV", bash.to_string_lossy().into_owned()),
+        ],
+    );
+    assert_success(&output, "nested ssh -c");
+    assert_eq!(stdout_of(&output), "from_bash_env");
+}
+
+/// Script files are non-interactive: BASH_ENV is sourced before the script
+/// body runs (GNU run_startup_files runs before the script executes).
+#[test]
+fn script_mode_sources_bash_env() {
+    let fixture = Fixture::new("script-bashenv");
+    let env_file = fixture.write_file("script.env", "from_bash_env");
+    let script = fixture.home.join("probe.sh");
+    let mut file = std::fs::File::create(&script).unwrap();
+    writeln!(file, "echo ${{STARTUP_MARKER:-unset}}").unwrap();
+    drop(file);
+    let output = run_niu(
+        &[script.to_string_lossy().as_ref()],
+        fixture.path(),
+        &fixture.start,
+        &[("BASH_ENV", env_file.to_string_lossy().into_owned())],
+    );
+    assert_success(&output, "script bash env");
+    assert_eq!(stdout_of(&output), "from_bash_env");
+}
+
+/// `$ENV` expands a leading `~` against the shell home (GNU
+/// execute_env_file runs the value through expand_string_unsplit, tilde
+/// included).
+#[test]
+fn env_value_expands_tilde() {
+    let fixture = Fixture::new("env-tilde");
+    fixture.write_rc("from_rc");
+    std::fs::write(
+        fixture.home.join("posix.env"),
+        "export STARTUP_MARKER=from_tilde_env\n",
+    )
+    .unwrap();
+    let output = run_niu(
+        &["--posix", "-C", PROBE],
+        fixture.path(),
+        &fixture.start,
+        &[("ENV", "~/posix.env".to_string())],
+    );
+    assert_success(&output, "env tilde");
+    assert_eq!(stdout_of(&output), "from_tilde_env");
+}
