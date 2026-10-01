@@ -382,3 +382,42 @@ fn env_value_expands_tilde() {
     assert_success(&output, "env tilde");
     assert_eq!(stdout_of(&output), "from_tilde_env");
 }
+
+/// niubash#157: the rc the setup wizard writes must parse cleanly under the
+/// engine. `niu setup --preset recommended` regressed to an unclosed
+/// `${USERPROFILE//\}` expansion in the HOME bootstrap, and because the file
+/// is parsed as a whole, every later alias silently died while each
+/// interactive startup printed two syntax-error lines. `niu -n` (noexec)
+/// parses the file without executing it — exit 0 with empty stderr is the
+/// syntax-validity contract for everything the wizard emits.
+#[test]
+fn setup_preset_rc_parses_clean_under_noexec() {
+    let fixture = Fixture::new("setup-rc-syntax");
+    let output = run_niu(
+        &["setup", "--preset", "recommended"],
+        fixture.path(),
+        &fixture.start,
+        &[],
+    );
+    assert_success(&output, "niu setup --preset recommended");
+    let rc = fixture.home.join(".niubashrc");
+    assert!(rc.is_file(), "setup must write {rc:?}");
+    let check = run_niu(
+        &["-n", rc.to_string_lossy().as_ref()],
+        fixture.path(),
+        &fixture.start,
+        &[],
+    );
+    assert!(
+        check.status.success(),
+        "`niu -n` on the generated rc must exit 0, got {:?}\nstdout:\n{}\nstderr:\n{}",
+        check.status.code(),
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+    assert!(
+        stderr_of(&check).is_empty(),
+        "generated rc must parse without diagnostics: {}",
+        stderr_of(&check)
+    );
+}

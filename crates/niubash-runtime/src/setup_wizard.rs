@@ -1214,7 +1214,7 @@ if [ -z "${{HOME:-}}" ] && [ -n "${{USERPROFILE:-}}" ]; then
       HOME="$__niubash_home_drive:/$__niubash_home_rest"
       ;;
     *)
-      HOME="${{USERPROFILE//\}}"
+      HOME="${{USERPROFILE//\\//}}"
       ;;
   esac
   export HOME
@@ -1484,6 +1484,26 @@ mod tests {
         cfg.aliases = vec![("ll".to_string(), "ls -la".to_string())];
         let rc = generate_rc(&cfg);
         assert!(rc.contains("alias ll='ls -la'"));
+    }
+
+    /// niubash#157: the HOME bootstrap's `*)` branch must emit the closed
+    /// backslash-to-slash substitution `${USERPROFILE//\\//}` (the form
+    /// `.niubashrc.example` carries). A single-backslash `${...//\}` uncloses
+    /// the parameter expansion — GNU parse.y:3877 parse_matched_pair() then
+    /// fails the whole file at parse time, silently disabling every alias in
+    /// the generated rc. The end-to-end parseability guard lives in
+    /// tests/startup_files.rs (setup_preset_rc_parses_clean_under_noexec).
+    #[test]
+    fn generated_rc_home_bootstrap_expansion_is_closed() {
+        let rc = generate_rc(&clean_cfg());
+        assert!(
+            rc.contains(r#"HOME="${USERPROFILE//\\//}""#),
+            "HOME bootstrap must rewrite backslashes to slashes, got:{rc}"
+        );
+        assert!(
+            !rc.contains(r#"//\}""#),
+            "rc must not contain an unclosed `${{...//}}` expansion:{rc}"
+        );
     }
 
     #[test]
