@@ -130,7 +130,7 @@ jobs:
 
       - name: Build niubash
         env:
-          RUSTFLAGS: ""
+          RUSTFLAGS: "-C target-feature=+crt-static"
         run: cargo build --locked --release --target ${{ matrix.rust_target }}
 
       - name: Download architecture-matched WinuxCmd release

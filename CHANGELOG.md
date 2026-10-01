@@ -2,6 +2,18 @@
 
 All notable changes to Niubash are documented in this file.
 
+## [1.2.4] - 2026-10-01
+
+### Fixes
+
+- **Distributable binaries no longer require VCRedist**: release builds
+  now statically link the CRT (`-C target-feature=+crt-static`). niu.exe
+  previously imported VCRUNTIME140.dll — not an OS component — so on a
+  clean Windows without VCRedist 2015+ the loader failed with
+  STATUS_DLL_NOT_FOUND (0xC0000135) before any shell code ran. This was
+  the winget validation sandbox failure on winget-pkgs#437563 (and the
+  same exit code had masked it behind the portable-tree issue in #150).
+  Imports are now OS in-box DLLs only (verified with objdump).
 ## [1.2.3] - 2026-10-01
 
 ### Fixes
