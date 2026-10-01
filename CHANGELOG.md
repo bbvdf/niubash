@@ -2,6 +2,33 @@
 
 All notable changes to Niubash are documented in this file.
 
+## [1.2.2] - 2026-10-01
+
+### Fixes
+
+- **Pipe data loss on external-to-external pipelines** (#141, #155): the
+  external-command stdio planner and the captured-output drain were
+  rewritten (rubash #370 family). On 1.2.1, `seq 200000 | wc -l` could
+  return ~24k-33k lines (or empty) with rc=0 while the writer took EPIPE;
+  compound bodies (`{ seq 200000; } | wc -l`) were unaffected. Engine
+  release builds now pass 8/8 at 200000 with empty stderr.
+- **bats-core self-suite hang** (rubash #364): an assignment value coming
+  from a parameter-expansion result no longer re-executes `<(cmd)` text
+  found in the EXPANDED value (GNU subst.c:11358-11381 semantics);
+  bats_pipe.bats 155/155 TAP byte-identical to GNU.
+- **Adjacent `$((...))` arithmetic substitutions mis-sliced** (rubash
+  #376, P0): `echo "$((1+1)):$((2+2))"` now prints `2:4` — the whole-word
+  admission uses a real paren-depth span scanner (GNU parse.y:3877
+  parse_matched_pair) instead of pairing the first `$((` with the last
+  `))`.
+- **Quoted compound-assignment elements globbed** (rubash #369):
+  `arr=("$x")` with `x='*'` stores the literal `*`; quoting state now
+  survives transport to the element glob gate.
+- **`exec N>&M` fds honored by external commands** (rubash #370):
+  `exec 3>&2; helper >&3` lands on stderr for external children, not
+  stdout.
+- Engine bump: niu 1.2.2 builds against rubash 1.2.2 (98bc65ba).
+
 ## [1.2.1] - 2026-10-01
 
 ### Fixes
