@@ -2,6 +2,25 @@
 
 All notable changes to Niubash are documented in this file.
 
+## [1.2.3] - 2026-10-01
+
+### Fixes
+
+- **External-pipeline data loss** (#141, #155, P0): the Windows
+  broken-pipe hard-kill window for non-final pipeline members armed
+  unconditionally at call time, killing healthy producers mid-stream
+  while their consumer was still reading (`seq 200000 | wc -l` returned
+  ~17k with rc=0, drift per run). The window now arms only after the
+  downstream member is observed to have exited, plus a 100ms natural-exit
+  grace (rubash 2c781657). Verified: seq 5000000 x5 full count;
+  `yes | head` lingerer termination intact.
+- **`$()` children see pre-opened fds 3/4** (rubash #368): the nvm-exec
+  `3>&1`/`1>&4` juggle protocol holds; fd-1 dup snapshots escape the
+  substitution to the real stdout.
+- **`${assoc[*]@A}` keeps the assignment body** (rubash #371);
+  **case-pattern keywords stay inert** (rubash #372, issue308 residue
+  green).
+- Engine bump: niu 1.2.3 builds against rubash 1.2.3 (a6eb8451).
 ## [1.2.2] - 2026-10-01
 
 ### Fixes
