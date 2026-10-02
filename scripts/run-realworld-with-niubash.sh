@@ -23,8 +23,8 @@ FAILED_NAMES=()
 
 WIN_HOME="${USERPROFILE:-$HOME}"
 WIN_HOME="${WIN_HOME//\//}"
-NIU_BUNDLE="${NIU_BUNDLE:-$WIN_HOME/AppData/Local/Programs/Winuxsh/bundles/oh-my-niu}"
-WINUXCMD_BIN="${WINUXCMD_BIN:-$WIN_HOME/AppData/Local/Programs/Winuxsh/winuxcmd/usr/bin}"
+NIU_BUNDLE="${NIU_BUNDLE:-$WIN_HOME/AppData/Local/Programs/Niubash/bundles/oh-my-niu}"
+WINUXCMD_BIN="${WINUXCMD_BIN:-$WIN_HOME/AppData/Local/Programs/Niubash/winuxcmd/usr/bin}"
 GIT_CORE="${GIT_CORE:-/mingw64/libexec/git-core}"
 
 pass() { PASSED=$((PASSED+1)); TOTAL=$((TOTAL+1)); }
