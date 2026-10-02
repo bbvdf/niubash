@@ -2,6 +2,38 @@
 
 All notable changes to Niubash are documented in this file.
 
+## [1.2.5] - 2026-10-02
+
+### Fixes
+
+- **`$(case y in (b|case) ...)` family** (rubash #380, P0): the comsub
+  body is a fresh command stream — its first word is at command position
+  — and the esac keyword rule looks at the PREVIOUS token, not forward
+  evidence. All paren-list keyword patterns now parse and run.
+
+- **posix round-trip stickiness** (rubash #383): the set_posix_mode
+  walk is ported — enable arms inherit_errexit and friends, disable
+  resets only the two GNU resets (inherit_errexit stays sticky).
+
+- **SIGPIPE-shaped lingerer status** (rubash #382): `yes | head -3;
+  echo ${PIPESTATUS[0]}` prints 141 like GNU.
+
+- **Fatal expansion inside $( ) under -c** (niubash #154): reports 1
+  (EXECUTION_FAILURE), not 127.
+
+- **Foreign Git Bash PS1 discarded** (niubash #117): a PS1 carrying
+  `__git_ps1`/MSYS title escapes is unset before rc — the own theme
+  renders, no more command-not-found per prompt.
+
+- **Test suites rebuilt against GNU 5.3.0 probes** (rubash #373:
+  88 reds -> 0; #374 first pass 174 -> ~119).
+
+### Performance
+
+- Pipeline-floor round 2 (rubash): __RUBASH_CURRENT_LINE single-writer
+  + $_ equal-skip rebind — p-null -4.7%, p-f1 -5.7%.
+
+- Engine bump: niu 1.2.5 builds against rubash 1.2.5 (c2f8e8a6).
 ## [1.2.4] - 2026-10-01
 
 ### Fixes
