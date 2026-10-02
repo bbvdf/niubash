@@ -564,6 +564,76 @@ impl Shell {
         self.execute_line_with_options(line, false)
     }
 
+    /// unixwin/rubash#365: interactive batches that are not a single simple
+    /// command run through the engine's grouped reader instead of the
+    /// whole-buffer tokenize+parse fast path.
+    ///
+    /// GNU expands aliases while READING, one complete command at a time:
+    /// the `read_token_word` tail checks `expand_aliases && quoted == 0`
+    /// before `alias_expand_token` (parse.y:5756; the `quoted` flag is set
+    /// by ANY backslash or quote in the word, parse.y:5321-5324 and the
+    /// backslash arm 5366-5397), and the reader parses each command before
+    /// executing it (shell.c reader_loop / evalstring.c parse_and_execute).
+    /// A function body is therefore alias-checked once, against the table
+    /// live at DEFINITION time, and never again when the body runs — so
+    /// `f() { \cd "$@"; }` followed by `alias cd=f` keeps calling the
+    /// builtin cd inside f, and `\`/`command` suppression is only the
+    /// explicit spelling of that read-time rule.
+    ///
+    /// rubash's tokenize+parse fast path cannot consult the table at parse
+    /// time, so the executor expands aliases at EXECUTION time against the
+    /// live table (`expand_aliases_with_raw` over bodies flagged
+    /// UNSTREAMED_FUNCTION_BODIES). For one simple command the table
+    /// cannot change between parse and execution, so the fast path is
+    /// equivalent. A batch with command separators (newline / `;` / `&&` /
+    /// `||` / `&`), compound syntax, or a function definition (the grammar
+    /// forces `;` or a newline before `}`) can diverge twice over: the
+    /// body's words are re-checked against a LATER table (plain `cd`
+    /// bodies recursed too, not just `\cd`), and the executor-level
+    /// quote test (`raw_word_is_quoted`) does not count a bare backslash
+    /// as quoting, so the `\cmd` suppression idiom (fnm/nvm/zoxide cd
+    /// hooks) expanded and recursed f -> f -> ... until the stack
+    /// overflowed (rubash#365, niu `-C` multi-line reproducer).
+    ///
+    /// Those batches take the same grouped driver rubash's own `-i -c`
+    /// uses (`script_driver::run_script_with_history`, selected by
+    /// `alias_live_at_start` in main.rs run_one_command): each command
+    /// group's text is alias-expanded against the table live at read time
+    /// (GNU parse-time semantics, including `\` suppression via
+    /// lexer::alias_stream scan_word) and the executed result is marked
+    /// `__RUBASH_ALIAS_STREAMED` so nothing expands a second time.
+    /// Whitelist admission, not a symptom blacklist (AGENTS
+    /// no-whack-a-mole): only input that is provably a single simple
+    /// command keeps the host fast path — anything with a separator or
+    /// compound token falls through to the real reader, and a false
+    /// positive in the whitelist only costs the driver's speed. The
+    /// winuxcmd grep shim and the Windows drive-arg AST normalizations
+    /// are host fast-path extras that this engine route does not apply;
+    /// single simple commands (the REPL's common case) keep them.
+    fn execute_interactive_reader_batch(&mut self, script: &str, tokens: &[Token]) -> Option<i32> {
+        if !self.interactive || !self.executor.alias_expansion_enabled() {
+            return None;
+        }
+        let single_simple_command = !tokens.iter().any(|token| {
+            matches!(
+                token.kind,
+                TokenKind::Semicolon
+                    | TokenKind::And
+                    | TokenKind::Or
+                    | TokenKind::Background
+                    | TokenKind::Keyword
+            )
+        });
+        if single_simple_command {
+            return None;
+        }
+        let code = rubash::script_driver::run_script_with_history(&mut self.executor, script, None);
+        self.sync_process_cwd_from_executor_pwd();
+        self.sync_process_path_from_executor_path();
+        self.sync_alias_mirror_from_executor();
+        Some(code)
+    }
+
     fn execute_line_with_options(
         &mut self,
         line: &str,
@@ -578,6 +648,12 @@ impl Shell {
         let mut tokens = tokenize(&line);
         if tokens.is_empty() {
             return Ok(0);
+        }
+        // rubash#365: alias-live interactive batches that are not a single
+        // simple command need GNU's read-time alias semantics — see
+        // execute_interactive_reader_batch.
+        if let Some(code) = self.execute_interactive_reader_batch(&line, &tokens) {
+            return Ok(code);
         }
         rewrite_winuxcmd_command_shims(&mut tokens, interactive_terminal_colors);
 
@@ -1427,7 +1503,10 @@ impl Shell {
         }
         if !self.interactive
             && (rubash::script_driver::script_uses_history(&script)
-                || rubash::script_driver::script_uses_aliases(&script))
+                || rubash::script_driver::script_uses_aliases(
+                    &script,
+                    self.executor.alias_expansion_enabled(),
+                ))
         {
             let code =
                 rubash::script_driver::run_script_with_history(&mut self.executor, &script, None);
@@ -1439,6 +1518,14 @@ impl Shell {
         let mut tokens = tokenize(&script);
         if tokens.is_empty() {
             return Ok(0);
+        }
+        // rubash#365: the interactive leg (REPL multi-line paste, and any
+        // interactive multi-command batch) needs GNU's read-time alias
+        // semantics for the same reasons as the line route above; the
+        // non-interactive legs above already use this driver for
+        // alias/history-bearing scripts.
+        if let Some(code) = self.execute_interactive_reader_batch(&script, &tokens) {
+            return Ok(code);
         }
         rewrite_winuxcmd_command_shims(&mut tokens, interactive_terminal_colors);
 
