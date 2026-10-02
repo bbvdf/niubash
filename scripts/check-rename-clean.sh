@@ -124,7 +124,7 @@ check "Cargo.lock pins niubash $root_version" lock_pins niubash "$root_version"
 check "Cargo.lock pins niubash-runtime $runtime_version" lock_pins niubash-runtime "$runtime_version"
 
 rubash_pinned=no
-for version in 0.1.0 1.0.0 1.0.1 1.0.2 1.1.0 1.2.0 2.0.0; do
+for version in 0.1.0 1.0.0 1.0.1 1.0.2 1.1.0 1.2.0 1.2.1 1.2.2 1.2.3 1.2.4 1.2.5 2.0.0; do
     if lock_pins rubash "$version"; then
         rubash_pinned=$version
         break
