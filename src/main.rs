@@ -482,6 +482,11 @@ fn run_shell_invocation(args: &[String]) -> anyhow::Result<()> {
     if invocation.interactive && !niubash_runtime::terminal::stdio_is_interactive() {
         shell.executor.set_env("__RUBASH_INTERACTIVE", "1");
         shell.executor.set_shopt_option("expand_aliases", true);
+        // This path renders prompts through the engine's interactive stdin
+        // driver (which expands executor-env PS1 itself), so the foreign
+        // inherited PS1 must be discarded here too, before run_startup_rc
+        // (unixwin/niubash#117; same rule as enter_interactive).
+        shell.discard_foreign_inherited_prompt();
         // GNU decides "interactive" from the -i flag, never from the shape
         // of stdin (shell.c:672 forced_interactive is set in option parsing,
         // before run_startup_files at shell.c:722 sources ~/.bashrc for an

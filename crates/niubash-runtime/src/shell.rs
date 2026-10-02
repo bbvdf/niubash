@@ -391,6 +391,20 @@ impl Shell {
         Ok(shell)
     }
 
+    /// Whether the PS1 currently in the executor environment is a foreign
+    /// Git Bash session value inherited from the process environment (see
+    /// `enter_interactive`). Detection is a class check over the session
+    /// machinery (`is_foreign_git_bash_ps1`), applied only before any user
+    /// startup file has run, so the value here is provenance-guaranteed to
+    /// be the inherited one.
+    pub fn discard_foreign_inherited_prompt(&mut self) {
+        if let Some(value) = self.executor.get_env("PS1") {
+            if !value.is_empty() && crate::prompt::is_foreign_git_bash_ps1(value) {
+                self.executor.unset_env("PS1");
+            }
+        }
+    }
+
     pub fn enable_process_stdin_pipeline_bridge(&mut self) {
         self.process_stdin_pipeline_bridge = true;
     }
@@ -497,6 +511,17 @@ impl Shell {
     pub fn enter_interactive(&mut self) {
         self.interactive = true;
         self.executor.set_env("__RUBASH_SHELL_NAME", "niu");
+        // unixwin/niubash#117: a PS1 inherited from the process environment
+        // (Git for Windows exports its session PS1 into every child) carries
+        // machinery that only exists inside that Git Bash session — the
+        // `__git_ps1` function, `$MSYSTEM`, the bracketed OSC title skeleton.
+        // Discard it before the startup files run so (a) the shell's own
+        // theme renders, and (b) the machinery is never expanded into a
+        // per-prompt "command not found" error. Runs before any rc so a PS1
+        // the user sets in their own startup file keeps full effect; `niu -c`
+        // and script mode never pass through here, so env-var visibility for
+        // non-interactive children stays GNU-identical.
+        self.discard_foreign_inherited_prompt();
         // `$-` must contain `i` while startup files run: GNU sets
         // forced_interactive before run_startup_files (shell.c:672; flags.c:174
         // renders it in `$-`), so rc-level `case $- in *i*)` guards
@@ -4305,6 +4330,37 @@ niu_git_comp() {
             }
             _ => panic!("expected Bash prompt backend"),
         }
+    }
+
+    #[test]
+    fn enter_interactive_discards_foreign_inherited_ps1() {
+        // unixwin/niubash#117 (reopened): the Git Bash session PS1 exported
+        // into child processes must not be adopted by an interactive shell.
+        // enter_interactive runs before the startup rc, so discarding there
+        // leaves a PS1 set by the user's own rc fully in charge.
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _cwd_guard = CwdGuard::capture();
+        let mut shell = test_shell(HookConfig::default());
+        shell
+            .executor
+            .set_env("PS1", r"\[\033]0;x\007\]`__git_ps1` $ ");
+
+        shell.enter_interactive();
+
+        // The foreign value is gone from the environment, so no prompt path
+        // (REPL sync or engine interactive stdin) can expand `__git_ps1`.
+        assert_eq!(shell.executor.get_env("PS1"), None);
+        // The shell's own theme backend is untouched by the discard.
+        assert!(matches!(shell.prompt, PromptBackend::Template(_)));
+
+        // A PS1 without Git Bash session machinery is user content and must
+        // survive into prompt adoption exactly as before.
+        let mut plain = test_shell(HookConfig::default());
+        plain.executor.set_env("PS1", r"\u@\h:\w\$ ");
+        plain.enter_interactive();
+        assert_eq!(plain.executor.get_env("PS1"), Some(r"\u@\h:\w\$ "));
+        plain.sync_bash_prompt_from_env();
+        assert!(matches!(plain.prompt, PromptBackend::Bash(_)));
     }
 
     #[test]

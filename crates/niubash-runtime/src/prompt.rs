@@ -359,6 +359,40 @@ pub enum PromptBackend {
     Bash(BashPrompt),
 }
 
+/// Whether a PS1 value carries Git Bash (MSYS2) session machinery that has no
+/// meaning inside this shell (unixwin/niubash#117).
+///
+/// Git for Windows exports its interactive-session PS1 into every child
+/// process. That value references machinery which only exists inside the Git
+/// Bash session that rendered it: the `__git_ps1` function from git-prompt.sh
+/// (loaded only into interactive Git Bash), the `$MSYSTEM`/`$TITLEPREFIX`
+/// session variables, and the OSC-title prefix bracket pair in Git Bash's
+/// default skeleton. Adopting it here means expanding `__git_ps1` on every
+/// prompt render (a "command not found" error line per prompt) and replacing
+/// the niubash theme with the foreign session's shape.
+///
+/// This is a class check over that machinery, deliberately NOT applied to
+/// later PS1 values: the caller gates it by provenance (only the value
+/// inherited from the process environment is eligible for discarding), so a
+/// PS1 the user sets in their own startup rc keeps full effect.
+pub(crate) fn is_foreign_git_bash_ps1(value: &str) -> bool {
+    const GIT_BASH_SESSION_MARKERS: &[&str] = &[
+        // git-prompt.sh function, only defined inside interactive Git Bash
+        "__git_ps1",
+        // Git Bash default PS1 skeleton: bash-bracketed OSC title prefix
+        r"\[\e]0;",
+        r"\[\033]0;",
+        // Git Bash session variables ($MSYSTEM renders "MINGW64"/"MSYS")
+        "$MSYSTEM",
+        "${MSYSTEM}",
+        "$TITLEPREFIX",
+        "${TITLEPREFIX}",
+    ];
+    GIT_BASH_SESSION_MARKERS
+        .iter()
+        .any(|marker| value.contains(marker))
+}
+
 impl Prompt for PromptBackend {
     fn render_prompt_left(&self) -> Cow<'_, str> {
         match self {
@@ -412,6 +446,33 @@ mod tests {
         let prompt = NiubashPrompt::new(Some("left> ".to_string()), Some("right".to_string()));
 
         assert_eq!(prompt.render_prompt_right(), "right");
+    }
+
+    #[test]
+    fn foreign_git_bash_ps1_detection_covers_session_machinery() {
+        // unixwin/niubash#117: the exact PS1 Git for Windows 2.54 exports
+        // into child processes (from the issue report).
+        let git_bash_default = concat!(
+            r"\[\033]0;$TITLEPREFIX:$PWD\007\]",
+            r"\n\[\033[32m\]\u@\h ",
+            r"\[\033[35m\]$MSYSTEM ",
+            r"\[\033[33m\]\w\[\033[36m\]`__git_ps1`\[\033[0m\]",
+            r"\n$ "
+        );
+        assert!(is_foreign_git_bash_ps1(git_bash_default));
+        // Minimal reproducers from the reopened issue (v1.2.4 retest).
+        assert!(is_foreign_git_bash_ps1(r"\[\033]0;x\007\]`__git_ps1` $ "));
+        assert!(is_foreign_git_bash_ps1(r"\[\e]0;$PWD\007\]\$ "));
+        assert!(is_foreign_git_bash_ps1(r"\u@\h $MSYSTEM \w $ "));
+        // A user's own (or plain GNU) PS1 carries none of the session
+        // machinery and must never be discarded.
+        assert!(!is_foreign_git_bash_ps1("\\s-\\v\\$ "));
+        assert!(!is_foreign_git_bash_ps1(r"\u@\h:\w\$ "));
+        assert!(!is_foreign_git_bash_ps1("niu> "));
+        assert!(!is_foreign_git_bash_ps1(""));
+        // A portable OSC title written directly (not in the Git Bash
+        // \[...] bracket skeleton) is user content, not session machinery.
+        assert!(!is_foreign_git_bash_ps1("\x1b]0;my title\x07$ "));
     }
 
     #[test]
