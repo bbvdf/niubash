@@ -847,3 +847,10 @@ rc 托管块用 `# >>> niu source <id> … >>>` 标记对包裹，块外内容�
   source）已绿并有引擎级测试钉住。canary 门控（§3.3）保留为 #251 修复后的
   点亮开关，未在本批实现。
 - 未做：bpkg 适配器（WP-S3）、federated index（WP-S4）、触发型懒加载（远期）。
+### 14.4 裁定（2026-10-03 owner）：omb-compat 垫片取消
+
+框架类资产（oh-my-bash/bash-it）**只经其原生 loader 启用**（OMB rc 数组 / bash-it
+enabled 文件）——不存在也不允许"绕过 loader 单独 source 框架插件"的产品路径；独立单文件
+插件直接 source（与 GNU bash 下手动 source 行为一致，含缺框架函数时的报错保真）。
+**不重实现任何上游 lib 函数**：垫片只在为错误路径（绕 loader）造补丁时才需要，
+方向作废。取而代之：启用路径 loader 保真守卫（含负向测试：无绕 loader 的启用路径）。
