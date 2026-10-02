@@ -786,3 +786,64 @@ discover`（含 source 状态 ready/untrusted 与可装管理器提示），主�
 （`plugin_theme_catalog`/`niu plugin themes`）按 §0 排序并带"built-in
 fallback 保底"标记。决策与细节记录于 `docs/planning/wizard-redesign.md`；
 §6 的分节设计保留为后续"单节重跑"（`niu setup --section …`）的素材。
+
+## 14. 设计附录 D：惯例对齐（vim-plug / lazy.nvim / zinit）与实施状态（2026-10-02，wt42/niu-plugin）
+
+### 14.1 Owner 三次裁定（2026-10-02，最终）
+
+1. **OMB/bash-it 一等公民**："我说的是bash那一套插件系统融入我们"——现成 bash
+   生态是插件系统的主体；niu 安装/启用/管理这些真实资产（主题/插件/补全），
+   原生只做保底。重写兼容不在范围（历史战役已验收）。
+2. **不 vendor，外部下载**："我的意思是我们这个不支持外部下载么 这样不是能绕过
+   许可证吗"——oh-my-bash / bash-it / bash-completion 以 curated catalog（名字
+   + 官方 URL + 简介 + 许可证标注）进产品；`niu plugin add <id>` 按用户指令
+   clone。niubash 不是再分发者，GPL（bash-completion）只落在用户目录。
+3. **惯例对齐 lazy.nvim/vim-plug**："参考 vim 那类插件管理器"——git-clone 安装
+   正统、GitHub 简写、lockfile 钉 commit、update/sync/clean/restore 动词集。
+
+### 14.2 落地形状（本附录的实现）
+
+前置事实：内置插件/主题栈已退役（niubash#145，2026-09-28），WP-S1 source
+协议与附录 C 向导已在 master。因此"三通道"收敛为单通道——**外部 source 即
+主体**，保底 = 产品自身默认（无主题/内置补全），§0 铁律语义不变。
+
+| 惯例 | lazy.nvim/vim-plug | niu 实现 |
+|---|---|---|
+| 简写安装 | `owner/repo` | `niu plugin add owner/repo` → `https://github.com/owner/repo.git`（`normalize_origin`） |
+| 预置清单 | LazyVim dist specs | curated catalog（`plugins/catalog.rs`）：oh-my-bash / bash-it / bash-completion，许可证如实标注 |
+| lockfile | lazy-lock.json | `sources/registry.toml`（schema `@0.2.0`）钉 `commit_sha` + `checksum_sha256` |
+| restore | `:Lazy restore` | `niu plugin restore [id]`：按 lock 钉重取（fetch-by-sha，失配即拒绝） |
+| update/sync | `:Lazy sync`/`:PlugUpdate` | `niu plugin update <id>` / `niu plugin sync`（全部刷到 ref tip；local 快照跳过并说明） |
+| clean | `:PlugClean` | `niu plugin clean`：清 `.staging-*` 与无主孤儿树（只删 detect 命中的管理器形状目录） |
+| 声明式启用清单 | plugin spec | OMB：rc 托管块里的 `plugins=(…)`/`aliases=(…)`/`completions=(…)` + `OSH_THEME`（oh-my-bash.sh 原生消费）；bash-it：`enabled/<prio>---<file>`（reloader 原生消费） |
+| 触发型懒加载 | `event=`/`cmd=` | **不做**（远期项：shell 等价物 = 按命令名/补全触发延迟 source；需引擎 complete -D 运行时桥，另立 WP） |
+
+信任协议分级（§12 落地）：`checksum`（hash 锁，add/trust/verify 全程强制，
+trust 拒绝篡改树）→ `local-sign`（`niu plugin source sign <id>`，机器本地
+ed25519 钥匙签树摘要；签名后任何换树 update 一律重新过执行闸，直到复审重签）。
+registry schema 从 `@0.1.0` 升 `@0.2.0`（§12.1 的 bump 纪律），旧档可读、
+策略字段缺省 checksum。
+
+资产级管理（本附录核心）：`niu plugin list`（真实资产 + 启用态 + 信任档位）、
+`niu plugin enable|disable <id|asset|id/asset>`（同名冲突要求限定形式）。
+rc 托管块用 `# >>> niu source <id> … >>>` 标记对包裹，块外内容永不改写。
+
+### 14.3 实施状态（wt42/niu-plugin，2026-10-02）
+
+- ✅ 资产级一等管理（`plugins/assets.rs` + `niu plugin list/enable/disable`）
+- ✅ bash-it 适配器（WP-S2：detect `bash_it.sh`+`lib/composure.bash`；
+  available/enabled 目录模型；enabled 条目按 `# BASH_IT_LOAD_PRIORITY` 定序，
+  副本而非符号链接——Windows 符号链接需特权，reloader 两者等价）
+- ✅ bash-completion 适配器（§4.1 收编为 source：整源激活模型）
+- ✅ curated catalog + GitHub 简写（`plugins/catalog.rs`）
+- ✅ 信任分级 + 本地 ed25519 签名（`plugins/trust.rs`，schema 0.2.0）
+- ✅ lockfile 钉 commit + `restore`/`sync`/`clean`
+- ✅ setup journal + 逐条 undo（`~/.niubash/setup-journal.toml`；完成屏打印
+  cp 备份/`niu plugin disable`/`niu plugin source remove` 三类命令）
+- ✅ doctor 生态行（sources 汇总 + degraded 行显式"fallback active + restore
+  指引"——铁律 2 的显式告知面）
+- ⏳ 引擎依赖项：OMB **交互**激活（`oh-my-bash.sh` 整链 source + PS1 接管）
+  仍由 rubash#251（13/326 交互函数）门控；脚本面（lib/theme/plugin 单文件
+  source）已绿并有引擎级测试钉住。canary 门控（§3.3）保留为 #251 修复后的
+  点亮开关，未在本批实现。
+- 未做：bpkg 适配器（WP-S3）、federated index（WP-S4）、触发型懒加载（远期）。
