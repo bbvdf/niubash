@@ -1384,6 +1384,47 @@ impl Shell {
         // recording), the same routing as rubash's main.rs — tokenize+parse
         // +execute_ast would lose pre_process_line semantics entirely.
         let script = normalize_native_windows_path_literals(script);
+        // unixwin/niubash#160: GNU parses every command string and script
+        // through the read-parse-execute loop, and an unterminated quote /
+        // backtick / `${` / `$(` / heredoc delimiter is a READ-TIME EOF
+        // diagnostic (parse.y:5419-5437 read_token_word -> yyerror
+        // "unexpected EOF while looking for matching X", exit status 2,
+        // error.c:324) — `bash -c 'echo "x'` prints the diagnostic and
+        // exits 2 without running anything. The tokenize+parse fast path
+        // below folds an unclosed quote into the word and executed
+        // `echo "x` as `echo x` with rc=0, silently. Fast-path admission
+        // is inverted to a whitelist (AGENTS no-whack-a-mole move 2): only
+        // provably-closed input keeps the local route; read-time EOF
+        // shapes fall through to the engine's real driver. The gate below
+        // is the engine's own run_source_impl gate, verbatim (script_
+        // driver.rs:2017-2076): the heredoc-delimiter arm runs first and
+        // unconditionally; the generic unclosed arm excludes `<<`-bearing
+        // text (heredoc bodies are literal data, and a closed delimiter
+        // after `<< "q` … is judged by arm 1 only). Both predicates are
+        // owned by the engine (script_driver / lexer), so this adds no
+        // second scanner — a false positive merely runs the engine's
+        // normal driver. Interactive input keeps the REPL continuation
+        // route — GNU interactive shells prompt PS2 instead of failing the
+        // read (the engine gate mirrors this with `!interactive`).
+        let parse_posix = self.executor.get_env("__RUBASH_POSIX_MODE").as_deref() == Some("1");
+        if !self.interactive
+            && (rubash::script_driver::heredoc_delimiter_unclosed_quote(&script).is_some()
+                || (rubash::lexer::has_unclosed_input_syntax_posix(&script, parse_posix)
+                    && !script.contains("<<")))
+        {
+            let code = rubash::script_driver::run_source_with_line_offset(
+                &mut self.executor,
+                &script,
+                false,
+                0,
+                None,
+                None,
+            );
+            self.sync_process_cwd_from_executor_pwd();
+            self.sync_process_path_from_executor_path();
+            self.sync_alias_mirror_from_executor();
+            return Ok(code);
+        }
         if !self.interactive
             && (rubash::script_driver::script_uses_history(&script)
                 || rubash::script_driver::script_uses_aliases(&script))

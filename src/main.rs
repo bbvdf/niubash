@@ -333,6 +333,9 @@ fn dispatch_launcher_word(args: &[String], index: usize) -> anyhow::Result<()> {
             shell
                 .executor
                 .set_env("BASH_EXECUTION_STRING", command_mode.command);
+            // Same -c diagnostic tag as the plain invocation route
+            // (niubash#160): `$0: -c: line N:` parser diagnostics.
+            shell.executor.set_env("__RUBASH_IS_C", "1");
             if let Some(command_name) = command_mode.command_name {
                 shell.set_script_name(command_name);
                 shell
@@ -446,6 +449,10 @@ fn run_shell_invocation(args: &[String]) -> anyhow::Result<()> {
             shell.set_script_name(&name);
         }
         shell.executor.set_env("BASH_EXECUTION_STRING", &command);
+        // __RUBASH_IS_C is already live here: invocation.apply_to_executor
+        // (rubash invocation.rs:273-275) sets it for every command string,
+        // so parser diagnostics take the `$0: -c: line N:` shape (error.c
+        // get_name_for_error; niubash#160).
         let code = shell.execute_script(&command)?;
         niubash_runtime::startup_trace::tick("invocation: execute_script");
         let code = shell.finish_with_exit_trap(code)?;
