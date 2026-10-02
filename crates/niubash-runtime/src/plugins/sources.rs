@@ -395,6 +395,15 @@ impl PluginSourceAdapter for OhMyBashAdapter {
         // NOT defaulted here: `OSH_THEME` comes from the managed rc block
         // when the user picked one; unset means "load plugins/aliases only,
         // keep the niubash prompt".
+        //
+        // wt44/niu365 (owner ruling: loader fidelity, no shim layer):
+        // framework assets are enabled ONLY through this native loader —
+        // the rc arrays are consumed by oh-my-bash.sh itself, which also
+        // provides the framework lib (`_omb_deprecate_*`, `_omb_util_*`).
+        // A user manually sourcing a framework plugin file outside the
+        // loader gets the same missing-function errors GNU bash would
+        // produce — that equivalence is the fidelity contract (design doc
+        // appendix D, "框架资产经 loader、独立资产直接 source，无垫片层").
         let base = format!(
             "${{NIU_PLUGIN_SOURCES_ROOT:-$HOME/.niubash/sources}}/{}",
             record.id

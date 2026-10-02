@@ -498,3 +498,179 @@ fn setup_writes_a_journal_for_the_noninteractive_run() {
 
     let _ = fs::remove_dir_all(&sandbox.home.parent().unwrap());
 }
+
+/// Run `niu -i` with piped stdin under sandbox envs (interactive rc loads,
+/// commands stream from the pipe; prompts go to stderr).
+fn run_niu_i_with_stdin(stdin_data: &str, envs: &[(&str, String)]) -> Output {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut command = Command::new(niu_binary());
+    command
+        .arg("-i")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let mut child = command
+        .spawn()
+        .unwrap_or_else(|err| panic!("failed to spawn niu -i: {err}"));
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(stdin_data.as_bytes())
+            .and_then(|()| stdin.flush())
+            .expect("write niu stdin");
+    }
+    drop(child.stdin.take());
+    child
+        .wait_with_output()
+        .unwrap_or_else(|err| panic!("failed to wait for niu -i: {err}"))
+}
+
+/// wt44/niu365 (owner ruling 2026-10-02: loader fidelity, no shim layer) —
+/// an oh-my-bash framework asset is enabled ONLY through its native
+/// loader: `niu plugin enable` writes the `plugins=(…)` array, the guarded
+/// rc-block loader sources oh-my-bash.sh, and the framework itself both
+/// consumes the array and provides its lib. The positive half proves the
+/// whole chain leaves the plugin's functions usable in an interactive
+/// session; the negative half proves no enable path bypasses the loader
+/// (no direct source of the asset file anywhere in the managed block).
+#[test]
+fn omb_framework_assets_enable_only_through_the_native_loader() {
+    let (sandbox, envs) = Sandbox::new("omb-loader-fidelity");
+    let add = run_niu_with_env(
+        &[
+            "plugin",
+            "add",
+            "oh-my-bash",
+            "--path",
+            &fixture("oh-my-bash").to_string_lossy(),
+        ],
+        &envs,
+    );
+    assert_success(&add, "plugin add oh-my-bash --path");
+    assert_success(
+        &run_niu_with_env(&["plugin", "trust", "oh-my-bash"], &envs),
+        "plugin trust oh-my-bash",
+    );
+    let enable = run_niu_with_env(&["plugin", "enable", "oh-my-bash/bashmarks"], &envs);
+    assert_success(&enable, "enable oh-my-bash/bashmarks");
+
+    // Negative half: the managed block selects the asset through the
+    // framework's own array and sources only the framework loader — never
+    // the asset file directly.
+    let rc = rc_of(&sandbox);
+    assert!(rc.contains("plugins=('bashmarks')"), "{rc}");
+    assert!(
+        rc.contains(". \"$OSH/oh-my-bash.sh\""),
+        "the block sources the native loader: {rc}"
+    );
+    assert!(
+        !rc.contains("plugins/bashmarks"),
+        "the block must not bypass the loader by sourcing the asset file: {rc}"
+    );
+    assert!(
+        !rc.contains("_omb_"),
+        "the block defines no framework-lib shim (owner ruling: no reimplementation): {rc}"
+    );
+
+    // Positive half: interactive session — the rc runs the guarded loader,
+    // the loader consumes plugins=('bashmarks') like the real one, and the
+    // plugin's functions are usable (dispatcher + save/list roundtrip).
+    let script = ". \"$HOME/.niubashrc\"\n\
+                  declare -F bm _bashmarks_save\n\
+                  bm -h\n\
+                  bm -a mark\n\
+                  bm -l\n\
+                  exit\n";
+    let output = run_niu_i_with_stdin(script, &envs);
+    assert_success(&output, "interactive bashmarks session");
+    let stdout = stdout_text(&output);
+    for expected in ["bm\n", "_bashmarks_save\n", "USAGE:\n", "mark="] {
+        assert!(
+            stdout.contains(expected),
+            "missing {expected:?} in stdout:\n{stdout}"
+        );
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        !stderr.contains("command not found"),
+        "loader-path session leaked a command-not-found:\n{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(&sandbox.home.parent().unwrap());
+}
+
+/// The independent-asset half of the same ruling: a plugin file with no
+/// framework-lib dependency is legally sourceable directly (the same
+/// `niu -c '. <file>'` engine proof the git fixture uses), while a file
+/// that DOES call framework-lib functions fails exactly like it would
+/// under GNU bash when sourced manually — niubash adds no compat layer,
+/// and the errors are the fidelity contract, not a bug.
+#[test]
+fn independent_assets_source_directly_and_framework_deps_stay_honest() {
+    let (sandbox, envs) = Sandbox::new("omb-independent-vs-framework");
+    let add = run_niu_with_env(
+        &[
+            "plugin",
+            "add",
+            "oh-my-bash",
+            "--path",
+            &fixture("oh-my-bash").to_string_lossy(),
+        ],
+        &envs,
+    );
+    assert_success(&add, "plugin add oh-my-bash --path");
+    assert_success(
+        &run_niu_with_env(&["plugin", "trust", "oh-my-bash"], &envs),
+        "plugin trust oh-my-bash",
+    );
+
+    // Lib-free asset (the fixture bashmarks core): manual direct source
+    // works — this is the sanctioned independent path.
+    let independent = sandbox
+        .sources_root
+        .join("oh-my-bash/plugins/bashmarks/bashmarks.plugin.sh");
+    let script = format!(". {}; declare -F bm", independent.to_string_lossy());
+    let direct = run_niu_with_env(&["-c", &script], &envs);
+    assert_success(&direct, "direct source of a lib-free asset");
+    assert_eq!(stdout_text(&direct).trim_end(), "bm");
+
+    // Framework-lib-dependent asset: a stand-in shaped like the REAL
+    // bashmarks deprecated-interface block, sourced manually without the
+    // loader. GNU bash reports `_omb_deprecate_declare: command not
+    // found` and continues; niubash must do the same (no shim, no silent
+    // success, no extra behavior).
+    let framework_dep = sandbox.home.join("framework-dep.plugin.sh");
+    fs::write(
+        &framework_dep,
+        "#! bash oh-my-bash.module\n\
+         _omb_deprecate_declare  20000 SDIRS BASHMARKS_SDIRS sync\n\
+         _omb_deprecate_function 20000 _l _bashmarks_list_names\n\
+         function _bashmarks_list_names { :; }\n",
+    )
+    .unwrap();
+    let script = format!(
+        ". {} 2>&1; printf 'sdirs-fn:%s\\n' \"$(declare -F _bashmarks_list_names >/dev/null && echo yes)\"
+",
+        framework_dep.to_string_lossy()
+    );
+    let manual = run_niu_with_env(&["-c", &script], &envs);
+    assert_success(&manual, "manual source of a framework-dependent file");
+    let manual_out = stdout_text(&manual);
+    assert!(
+        manual_out.contains("_omb_deprecate_declare: command not found"),
+        "GNU-fidelity: the missing framework lib must be reported, got:\n{manual_out}"
+    );
+    assert!(
+        manual_out.contains("_omb_deprecate_function: command not found"),
+        "GNU-fidelity: every missing lib call is reported, got:\n{manual_out}"
+    );
+    assert!(
+        manual_out.contains("sdirs-fn:yes"),
+        "like GNU bash, execution continues past the missing-lib errors:\n{manual_out}"
+    );
+
+    let _ = fs::remove_dir_all(&sandbox.home.parent().unwrap());
+}

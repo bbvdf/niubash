@@ -854,3 +854,36 @@ enabled 文件）——不存在也不允许"绕过 loader 单独 source 框架�
 插件直接 source（与 GNU bash 下手动 source 行为一致，含缺框架函数时的报错保真）。
 **不重实现任何上游 lib 函数**：垫片只在为错误路径（绕 loader）造补丁时才需要，
 方向作废。取而代之：启用路径 loader 保真守卫（含负向测试：无绕 loader 的启用路径）。
+
+### 14.5 加载保真守卫落地（wt44/niu365，2026-10-03）
+
+14.4 裁定的实施记录。wt42 车道原始发现：真实 OMB 插件（如 bashmarks）脱离 loader
+单独 source 时，其废弃接口块（`_omb_deprecate_declare 20000 SDIRS …`、
+`_omb_deprecate_function 20000 _echo_usage …`、`_omb_util_print` 等）依赖框架
+lib 链，裸 source 报 `command not found`。按裁定**不造垫片**，落地为：
+
+1. **审计结论**：产品内不存在任何绕过 loader 直接 source 框架插件文件的代码
+   路径——`niu plugin enable` 只写框架自身的选择状态（OMB：rc 托管块的
+   `plugins=(…)`/`aliases=(…)`/`completions=(…)`/`OSH_THEME`，由守卫块内
+   `. "$OSH/oh-my-bash.sh"` 整链消费，框架 lib 由框架 loader 自带；bash-it：
+   `enabled/<prio>---<file>` 条目；bash-completion：整源激活）；doctor /
+   discover 均只读；无 preview/try 旁路通道。
+2. **守卫测试**（`tests/plugin_assets.rs`）：
+   `omb_framework_assets_enable_only_through_the_native_loader`——正向：单插件
+   bashmarks 经 `niu plugin enable` → rc 数组 → 守卫 loader source 后，交互会话
+   中其函数可用（dispatcher + save/list 往返，stderr 零 command not found）；
+   负向：托管块内不得出现资产文件直 source（`plugins/bashmarks` 路径）、不得
+   出现任何 `_omb_` 垫片定义。
+3. **独立路径与保真**：`independent_assets_source_directly_and_framework_deps_
+   stay_honest`——无 lib 依赖资产直 source 成功（明示支持的独立路径）；带框架
+   依赖的文件被手动 source 时报与 GNU bash 5.3.0 相同的缺失错误（WSL 实测：
+   `_omb_deprecate_declare: command not found` 等报错后继续执行、后续函数照常
+   定义、rc 0）——不造兼容层，报错即保真。
+4. **夹具**：fixture loader 按 corpus `oh-my-bash.sh` 消费
+   `plugins=/aliases=/completions=` 数组；新增 fixture bashmarks 插件只镜像
+   真实插件的无 lib 面（废弃接口块属框架 lib，仅由真实 loader 提供，刻意不复现）。
+
+操作含义：要让 bashmarks 这类带框架依赖的插件工作，永远走
+`niu plugin enable oh-my-bash/bashmarks`（或整源 enable）经 loader 加载；裸
+source 一个框架插件文件得到的报错，与在 GNU bash 里做同样事情的报错一字不差
+——那是正确行为，不是缺口。
