@@ -125,6 +125,34 @@ pub fn run_doctor() -> anyhow::Result<()> {
     };
     writeln!(out, "  {info} terminal            {terminal}")?;
 
+    // ── Advisory: external plugin sources (iron law 2: fallback explicit) ──
+    // Degraded sources must be *visible*: the guarded loaders fell back to
+    // the niubash defaults at startup and the user deserves to know.
+    let sources = crate::plugins::sources::list_sources();
+    if sources.is_empty() {
+        writeln!(
+            out,
+            "  {info} plugin sources      none installed — browse with `niu plugin discover`"
+        )?;
+    } else {
+        let ready = sources.iter().filter(|s| s.state == "ready").count();
+        let untrusted = sources.iter().filter(|s| s.state == "untrusted").count();
+        let degraded = sources.iter().filter(|s| s.state == "degraded").count();
+        writeln!(
+            out,
+            "  {info} plugin sources      {ready} ready, {untrusted} untrusted, {degraded} degraded \
+             (`niu plugin list` for assets)"
+        )?;
+        for status in sources.iter().filter(|s| s.state == "degraded") {
+            writeln!(
+                out,
+                "  {warn} source degraded     '{}' tree missing — fallback active; \
+                 repair with `niu plugin restore {}`",
+                status.record.id, status.record.id
+            )?;
+        }
+    }
+
     if crate::setup_wizard::wizard_lang_is_chinese() {
         writeln!(
             out,

@@ -6,8 +6,16 @@
 //! NIU_THEME, NIU_THEME_PLUGIN and NIU_DISABLE_DEFAULT_PLUGINS lines in an
 //! existing rc stay legal shell assignments - nothing reads them any more.
 //!
-//! What remains is the external plugin-manager *source* protocol
-//! (`niu plugin source ...`): installing, reviewing, trusting and surfacing
-//! third-party plugin managers such as oh-my-bash as first-class origins.
+//! The plugin system is the external bash ecosystem as first-class
+//! content (owner rulings 2026-10-02): oh-my-bash, bash-it and
+//! bash-completion install over git clone on explicit user command
+//! ([`sources`], curated by [`catalog`]), earn activation only through the
+//! graded trust protocol ([`trust`]), and expose their real themes /
+//! plugins / aliases / completions to `niu plugin enable/disable` through
+//! each manager's own selection mechanism ([`assets`]). No vendoring: the
+//! license stays between the user and upstream.
 
+pub mod assets;
+pub mod catalog;
 pub mod sources;
+pub mod trust;

@@ -283,10 +283,9 @@ fn plugin_discover_is_read_only_and_lists_available_managers() {
     // oh-my-bash is a known manager that is not installed yet: the hint
     // shows the add command the user could run — nothing runs on its own.
     assert!(text.contains("oh-my-bash"), "{text}");
+    assert!(text.contains("niu plugin add oh-my-bash"), "{text}");
     assert!(
-        text.contains(
-            "niu plugin source add oh-my-bash --url https://github.com/ohmybash/oh-my-bash.git"
-        ),
+        text.contains("https://github.com/ohmybash/oh-my-bash.git"),
         "{text}"
     );
     assert!(
@@ -310,7 +309,7 @@ fn plugin_discover_is_read_only_and_lists_available_managers() {
     let text = stdout_text(&out);
     assert!(text.contains("untrusted"), "{text}");
     assert!(
-        !text.contains("niu plugin source add oh-my-bash --url"),
+        !text.contains("niu plugin add oh-my-bash"),
         "installed managers leave the available section: {text}"
     );
 

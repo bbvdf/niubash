@@ -18,6 +18,11 @@ toml = "0.8"
 dirs = "5.0"
 filetime = "0.2"
 sha2 = "0.10"
+# Local trust-signature tier for plugin sources (`niu plugin source sign`):
+# ed25519 over the tree digest with a machine-local key. rand_core (OS RNG)
+# is only used for one-time key generation.
+ed25519-dalek = { version = "2", default-features = false, features = ["rand_core", "fast"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 colored = "2.1"
 log = "0.4"

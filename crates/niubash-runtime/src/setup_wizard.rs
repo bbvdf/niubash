@@ -26,6 +26,90 @@ const SETUP_DONE_FILE: &str = ".setup-done";
 /// Schema marker for the wizard answers file (`~/.niubash/wizard-answers.toml`).
 const WIZARD_ANSWERS_SCHEMA: &str = "niubash:wizard-answers@0.1.0";
 
+/// Schema marker for the setup journal (`~/.niubash/setup-journal.toml`).
+const SETUP_JOURNAL_SCHEMA: &str = "niubash:setup-journal@0.1.0";
+
+/// What one applied setup run changed — the durable side of the undo
+/// contract (§0 iron law 3: every wizard write is reversible). The finish
+/// screen prints one undo command per entry; `niu plugin rollback` /
+/// `niu plugin source rollback` cover the bundle/source channels.
+#[derive(Debug, Default)]
+struct SetupJournal {
+    /// Backup of the previous rc (when one existed).
+    rc_backup: Option<PathBuf>,
+    /// Theme picked from an external source: (name, source id).
+    theme: Option<(String, String)>,
+    /// Preset name when `niu setup --preset` produced this rc.
+    preset: Option<String>,
+    /// Lasting niu-git answer ("never" / "installed").
+    niu_git: Option<String>,
+}
+
+fn setup_journal_path(home: &std::path::Path) -> PathBuf {
+    home.join(".niubash").join("setup-journal.toml")
+}
+
+/// Write the journal for the run that was just applied. Failures are
+/// reported but never fail the wizard (the rc write already succeeded).
+fn write_setup_journal(home: &std::path::Path, journal: &SetupJournal) {
+    let path = setup_journal_path(home);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut body = format!(
+        "# Applied setup run — the finish screen printed an undo command per entry.\n\
+         schema = \"{SETUP_JOURNAL_SCHEMA}\"\n\
+         applied_at = \"{}\"\n",
+        timestamp_id()
+    );
+    if let Some(backup) = &journal.rc_backup {
+        body.push_str(&format!(
+            "rc_backup = {}\n",
+            shell_quote(&backup.to_string_lossy())
+        ));
+    }
+    if let Some((theme, source)) = &journal.theme {
+        body.push_str(&format!(
+            "theme = {}\ntheme_source = {}\n",
+            shell_quote(theme),
+            shell_quote(source)
+        ));
+    }
+    if let Some(preset) = &journal.preset {
+        body.push_str(&format!("preset = {}\n", shell_quote(preset)));
+    }
+    if let Some(niu_git) = &journal.niu_git {
+        body.push_str(&format!("niu_git = {}\n", shell_quote(niu_git)));
+    }
+    if let Err(err) = std::fs::write(&path, body) {
+        println!(
+            "  \u{26a0}\u{fe0f}  {} {err}",
+            Lang::detect().tr("could not write the setup journal")
+        );
+    }
+}
+
+/// One undo command per journal entry (§6.3).
+fn setup_undo_lines(home: &std::path::Path, journal: &SetupJournal) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(backup) = &journal.rc_backup {
+        lines.push(format!(
+            "cp {} {}                  # restore the previous rc",
+            backup.display(),
+            home.join(PRIMARY_RC_FILE).display()
+        ));
+    }
+    if let Some((theme, source)) = &journal.theme {
+        lines.push(format!(
+            "niu plugin disable {theme}          # drop the theme pick"
+        ));
+        lines.push(format!(
+            "niu plugin source remove {source}   # optional: also delete the tree"
+        ));
+    }
+    lines
+}
+
 /// niu-git wpm package name and install command, taken read-only from the
 /// niu-git repo docs (`D:/repo/niu-git` README "WPM package" section and
 /// `wpm/niugit.json`, the official-index entry). The wizard only ever shows
@@ -637,7 +721,15 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
     if !io.interactive {
         let preset = Preset::builtin("minimal");
         let cfg = preset.to_config(&probe, &mut Vec::new(), lang);
-        write_rc_and_mark_done(&home, &cfg, lang)?;
+        let backup_path = write_rc_and_mark_done(&home, &cfg, lang)?;
+        write_setup_journal(
+            &home,
+            &SetupJournal {
+                rc_backup: backup_path,
+                preset: Some(preset.name.clone()),
+                ..SetupJournal::default()
+            },
+        );
         return Ok(());
     }
 
@@ -744,7 +836,25 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
         write_niu_git_answer(&home, "never");
     }
 
-    print_finish_screen(backup_path.as_deref(), lang);
+    // Setup journal + per-entry undo (iron law 3: 失败可回滚).
+    let journal = SetupJournal {
+        rc_backup: backup_path.clone(),
+        theme: match &theme_pick {
+            ThemePick::External { name, source_id } => Some((name.clone(), source_id.clone())),
+            ThemePick::Keep => None,
+        },
+        preset: None,
+        // Whatever lasting answer the run recorded ("never"/"installed");
+        // a plain Skip stays transient and journaled as none.
+        niu_git: read_niu_git_answer(&home),
+    };
+    write_setup_journal(&home, &journal);
+
+    print_finish_screen(
+        backup_path.as_deref(),
+        &setup_undo_lines(&home, &journal),
+        lang,
+    );
 
     Ok(())
 }
@@ -887,7 +997,6 @@ fn wizard_answers_path(home: &std::path::Path) -> PathBuf {
 /// or "installed" after a successful pick). While `None` the wizard may
 /// offer the choice again on the next explicit `niu setup` run — a wizard
 /// re-run is user-initiated, never a nag.
-#[cfg(windows)]
 fn read_niu_git_answer(home: &std::path::Path) -> Option<String> {
     let text = std::fs::read_to_string(wizard_answers_path(home)).ok()?;
     for raw in text.lines() {
@@ -961,7 +1070,7 @@ fn install_niu_git(home: &std::path::Path, lang: Lang) {
 
 /// The final "how to change things later" block — one compact screen, in the
 /// spirit of oh-my-zsh's post-install hints. Nothing here installs anything.
-fn print_finish_screen(backup_path: Option<&std::path::Path>, lang: Lang) {
+fn print_finish_screen(backup_path: Option<&std::path::Path>, undo: &[String], lang: Lang) {
     let t = lang;
     println!();
     if let Some(path) = backup_path {
@@ -970,11 +1079,18 @@ fn print_finish_screen(backup_path: Option<&std::path::Path>, lang: Lang) {
             fill(t.tr("Previous rc backed up to {}"), &[&path.display()])
         );
     }
+    if !undo.is_empty() {
+        println!();
+        println!("  \u{21a9}\u{fe0f}  {}", t.tr("Undo this run:"));
+        for line in undo {
+            println!("  \u{2502}    {line}");
+        }
+    }
     println!();
     println!("  \u{1f504}  {}", t.tr("Change things later:"));
     println!(
         "  \u{2502}    {}",
-        t.tr("theme      `niu plugin themes`  →  NIU_THEME=… in ~/.niubashrc")
+        t.tr("theme      `niu plugin list`  →  `niu plugin enable <name>`")
     );
     println!(
         "  \u{2502}    {}",
@@ -1017,6 +1133,12 @@ pub fn apply_preset(name: &str) -> anyhow::Result<()> {
         println!("  \u{2502}  {}", note);
     }
     let backup_path = write_rc_and_mark_done(&home, &cfg, lang)?;
+    let journal = SetupJournal {
+        rc_backup: backup_path.clone(),
+        preset: Some(preset.name.clone()),
+        ..SetupJournal::default()
+    };
+    write_setup_journal(&home, &journal);
     println!(
         "  \u{2705}  {}",
         format!("{} '{}'.", t.tr("Preset applied:"), preset.name)
@@ -1140,26 +1262,16 @@ fn setup_home_dir() -> PathBuf {
 }
 
 /// Guarded activation block for an external oh-my-bash theme (§3.3/§11.4):
-/// set `OSH_THEME` first, then reuse the adapter's canonical loader snippet
-/// (its `${OSH_THEME:-…}` default defers to ours). The existence guard keeps
-/// the native fallback layer alive when the source tree is missing.
+/// set `OSH_THEME` first, then the adapter's canonical loader snippet inside
+/// a managed block (`niu plugin enable/disable` edits the same markers).
+/// The existence guard keeps the fallback layer alive when the source tree
+/// is missing.
 fn external_theme_activation(cfg: &WizardConfig, theme: &str) -> Option<String> {
     let source_id = cfg.theme_source_id.as_deref()?;
     if theme.is_empty() {
         return None;
     }
-    let record = crate::plugins::sources::read_source_registry()
-        .into_iter()
-        .find(|record| record.id == source_id)?;
-    let adapter = crate::plugins::sources::adapter_for(&record.adapter)?;
-    let mut block = format!(
-        "# Theme '{theme}' — external source '{source_id}' (primary; native themes stay as fallback)\n\
-         OSH_THEME={}\n\
-         export OSH_THEME\n",
-        shell_quote(theme)
-    );
-    block.push_str(&adapter.loader_snippet(&record));
-    Some(block)
+    crate::plugins::assets::build_theme_block(source_id, theme)
 }
 
 fn generate_rc(cfg: &WizardConfig) -> String {
@@ -1380,6 +1492,10 @@ fn zh(en: &str) -> Option<&'static str> {
         "don't ask again" => "不再询问",
         "everything else stays untouched" => "其余一切保持原样",
 
+        // Setup journal / undo
+        "could not write the setup journal" => "无法写入设置日志",
+        "Undo this run:" => "撤销本次设置：",
+
         // Confirm + final messages
         "  \u{2705}  Apply this configuration?" => "  \u{2705}  应用此配置？",
         "Apply" => "应用",
@@ -1393,8 +1509,8 @@ fn zh(en: &str) -> Option<&'static str> {
 
         // Finish screen
         "Change things later:" => "之后想调整：",
-        "theme      `niu plugin themes`  →  NIU_THEME=… in ~/.niubashrc" =>
-            "主题       `niu plugin themes`  →  在 ~/.niubashrc 设 NIU_THEME=…",
+        "theme      `niu plugin list`  →  `niu plugin enable <name>`" =>
+            "主题       `niu plugin list`  →  `niu plugin enable <名称>`",
         "plugins    `niu plugin list`  ·  `niu plugin enable <name>`" =>
             "插件       `niu plugin list`  ·  `niu plugin enable <名称>`",
         "ecosystem  `niu plugin discover`  (sources & themes, read-only)" =>
@@ -1559,6 +1675,7 @@ mod tests {
             adapter: None,
             origin: omb_fixture_path().to_string_lossy().into_owned(),
             ref_name: None,
+            commit: None,
             expected_checksum: None,
         })
         .expect("fixture source add must succeed");
@@ -1654,13 +1771,57 @@ mod tests {
             rc.contains("${NIU_PLUGIN_SOURCES_ROOT:-$HOME/.niubash/sources}/oh-my-bash"),
             "{rc}"
         );
-        assert!(rc.contains("native themes stay as fallback"), "{rc}");
+        assert!(rc.contains("fallback stays active when absent"), "{rc}");
+        // The wizard-written block is the managed block: markers present so
+        // `niu plugin enable/disable` can edit it surgically.
+        assert!(
+            rc.contains(">>> niu source oh-my-bash (managed by `niu plugin enable/disable`) >>>"),
+            "{rc}"
+        );
         assert!(!rc.contains("NIU_THEME="), "{rc}");
         assert!(!rc.contains("NIU_THEME_PLUGIN="), "{rc}");
         assert!(!rc.contains("niubash_prompt_use_template"), "{rc}");
         assert!(rc.contains("bash-compatible channel"), "{rc}");
 
         crate::plugins::sources::remove_source("oh-my-bash").unwrap();
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn setup_journal_records_entries_and_undo_commands() {
+        let temp = unique_temp_dir("setup-journal");
+        let backup = temp.join("backups/.niubashrc.1-2.bak");
+        let journal = SetupJournal {
+            rc_backup: Some(backup.clone()),
+            theme: Some(("robbyrussell".to_string(), "oh-my-bash".to_string())),
+            preset: None,
+            niu_git: None,
+        };
+        write_setup_journal(&temp, &journal);
+        let text = std::fs::read_to_string(setup_journal_path(&temp)).unwrap();
+        assert!(text.contains(SETUP_JOURNAL_SCHEMA), "{text}");
+        assert!(text.contains("rc_backup = "), "{text}");
+        assert!(text.contains("theme = 'robbyrussell'"), "{text}");
+        assert!(text.contains("theme_source = 'oh-my-bash'"), "{text}");
+
+        // One undo command per entry: rc restore, theme disable, and the
+        // optional source removal hint.
+        let undo = setup_undo_lines(&temp, &journal);
+        assert!(undo.len() == 3, "{undo:?}");
+        assert!(undo[0].starts_with("cp "), "{undo:?}");
+        assert!(undo[0].contains(".niubashrc"), "{undo:?}");
+        assert!(
+            undo[1].contains("niu plugin disable robbyrussell"),
+            "{undo:?}"
+        );
+        assert!(
+            undo[2].contains("niu plugin source remove oh-my-bash"),
+            "{undo:?}"
+        );
+
+        // A skip run (no theme, no backup) undoes nothing.
+        let empty = SetupJournal::default();
+        assert!(setup_undo_lines(&temp, &empty).is_empty());
         let _ = std::fs::remove_dir_all(&temp);
     }
 
