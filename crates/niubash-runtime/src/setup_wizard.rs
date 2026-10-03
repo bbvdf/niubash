@@ -50,7 +50,14 @@ struct SetupJournal {
 #[derive(Debug, Default)]
 struct CollectionJournal {
     name: String,
+    /// Source ids that actually landed (undo targets).
     sources: Vec<String>,
+    /// Entries that failed to install (recipe ids), plus a
+    /// `"apply failed: <error>"` row when the whole apply errored — the
+    /// journal tells the truth about partial and total failure alike
+    /// (journey run-13 observation: a failed apply was journaled as a
+    /// bare success line and the finish screen said nothing).
+    failed: Vec<String>,
 }
 
 fn setup_journal_path(home: &std::path::Path) -> PathBuf {
@@ -99,6 +106,12 @@ fn write_setup_journal(home: &std::path::Path, journal: &SetupJournal) {
                 .collect();
             body.push_str(&format!("collection_sources = [{}]\n", ids.join(", ")));
         }
+        // Honesty (journey run-13): a collection whose entries failed — or
+        // whose whole apply errored — must never read back as a success.
+        if !collection.failed.is_empty() {
+            let ids: Vec<String> = collection.failed.iter().map(|id| shell_quote(id)).collect();
+            body.push_str(&format!("collection_failed = [{}]\n", ids.join(", ")));
+        }
     }
     if let Err(err) = std::fs::write(&path, body) {
         println!(
@@ -135,6 +148,30 @@ fn setup_undo_lines(home: &std::path::Path, journal: &SetupJournal) -> Vec<Strin
         }
     }
     lines
+}
+
+/// One retry command per failed collection entry: the exact verb the apply
+/// itself named mid-run (`niu plugin distro apply <name>` — verified verb,
+/// wired in `run_plugin_distro_command`). Only the failed entries are
+/// called out; a healthy apply prints nothing here.
+fn setup_retry_lines(journal: &SetupJournal) -> Vec<String> {
+    let Some(collection) = &journal.collection else {
+        return Vec::new();
+    };
+    if collection.failed.is_empty() {
+        return Vec::new();
+    }
+    vec![format!(
+        "niu plugin distro apply {}     # collection '{}': {} entr{} failed",
+        collection.name,
+        collection.name,
+        collection.failed.len(),
+        if collection.failed.len() == 1 {
+            "y"
+        } else {
+            "ies"
+        }
+    )]
 }
 
 /// niu-git recipe id in the compiled-in plugin recipe index. The wizard
@@ -1001,7 +1038,12 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
     // The collection apply installs through the recipe drivers; in 1.3.0
     // that left the spec unwritten, so every later startup nagged
     // "installed but not declared" with no working migration verb.
-    if collection_journal.is_some() {
+    // Skipped when the apply landed nothing (total failure): adopting an
+    // empty set would only materialize an empty spec file.
+    if collection_journal
+        .as_ref()
+        .is_some_and(|journal| !journal.sources.is_empty())
+    {
         adopt_installed_sources_into_spec(lang);
     }
 
@@ -1024,12 +1066,17 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
     print_finish_screen(
         backup_path.as_deref(),
         &setup_undo_lines(&home, &journal),
+        &setup_retry_lines(&journal),
         lang,
     );
 
     Ok(())
 }
 
+/// Apply the picked collection after the Apply gate (study §8/§10.2).
+/// Failures are collected per entry (lazy.nvim Spec:log pattern): each one
+/// is printed with its repair verb and the run continues — the function
+/// itself never fails.
 fn apply_plugin_collection(name: &str, lang: Lang) -> Option<CollectionJournal> {
     println!();
     match crate::plugins::distros::apply(name) {
@@ -1055,9 +1102,16 @@ fn apply_plugin_collection(name: &str, lang: Lang) -> Option<CollectionJournal> 
                     format!("`niu plugin distro apply {name}`")
                 );
             }
+            // The journal records what ACTUALLY landed plus every failed
+            // entry — never a bare success line over a partial failure.
             Some(CollectionJournal {
                 name: outcome.name,
                 sources: outcome.installed_sources,
+                failed: outcome
+                    .failures
+                    .iter()
+                    .map(|(recipe, _)| recipe.clone())
+                    .collect(),
             })
         }
         Err(err) => {
@@ -1065,7 +1119,14 @@ fn apply_plugin_collection(name: &str, lang: Lang) -> Option<CollectionJournal> 
                 "  \u{26a0}\u{fe0f}  {} '{name}': {err:#}",
                 lang.tr("plugin collection")
             );
-            None
+            // A totally failed apply is journaled too (zero sources, the
+            // error recorded) — the run's history must not silently forget
+            // that a collection was picked and failed.
+            Some(CollectionJournal {
+                name: name.to_string(),
+                sources: Vec::new(),
+                failed: vec![format!("apply failed: {err:#}")],
+            })
         }
     }
 }
@@ -1535,7 +1596,15 @@ fn recommend_niu_git(home: &std::path::Path, lang: Lang) {
 
 /// The final "how to change things later" block — one compact screen, in the
 /// spirit of oh-my-zsh's post-install hints. Nothing here installs anything.
-fn print_finish_screen(backup_path: Option<&std::path::Path>, undo: &[String], lang: Lang) {
+/// `failed` carries the retry lines for collection entries that did not
+/// install, so a red apply cannot hide behind a green-looking finish
+/// (journey run-13 observation: 1 entry failed, the finish screen silent).
+fn print_finish_screen(
+    backup_path: Option<&std::path::Path>,
+    undo: &[String],
+    failed: &[String],
+    lang: Lang,
+) {
     let t = lang;
     println!();
     if let Some(path) = backup_path {
@@ -1543,6 +1612,16 @@ fn print_finish_screen(backup_path: Option<&std::path::Path>, undo: &[String], l
             "  \u{1f4e6}  {}",
             fill(t.tr("Previous rc backed up to {}"), &[&path.display()])
         );
+    }
+    if !failed.is_empty() {
+        println!();
+        println!(
+            "  \u{26a0}\u{fe0f}  {}",
+            t.tr("Collection entries failed — retry with:")
+        );
+        for line in failed {
+            println!("  \u{2502}    {line}");
+        }
     }
     if !undo.is_empty() {
         println!();
@@ -2029,6 +2108,7 @@ fn zh(en: &str) -> Option<&'static str> {
         // Setup journal / undo
         "could not write the setup journal" => "无法写入设置日志",
         "Undo this run:" => "撤销本次设置：",
+        "Collection entries failed — retry with:" => "合集条目安装失败 —— 重试：",
 
         // Confirm + final messages
         "  \u{2705}  Apply this configuration?" => "  \u{2705}  应用此配置？",
@@ -2201,6 +2281,7 @@ mod tests {
             "then re-run `niu setup` (or `niu plugin enable <theme>`)",
             "plugin spec written — {} source(s) declared; `niu plugin sync` keeps them in sync",
             "could not write the plugin spec",
+            "Collection entries failed — retry with:",
             "  \u{1f9e9}  niu-git — Windows-native git experience?",
             "Apply",
             "Cancel",
@@ -2374,6 +2455,114 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp);
     }
 
+    /// G3 (journey run-13 observation): a collection apply with failures —
+    /// or a totally failed apply — must journal what ACTUALLY installed and
+    /// feed the finish screen a retry line; a green-looking finish over a
+    /// red apply is dishonest. Offline: the collection imports from a local
+    /// directory and rides the fixture manager (one healthy asset-theme
+    /// entry, one compiled-in entry whose asset the fixture does not carry).
+    #[test]
+    fn failed_collection_apply_is_journaled_and_reported_honestly() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp = unique_temp_dir("wizard-g3-journal");
+        let home = temp.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        // Full sandbox: apply → assets::enable writes the spec and the rc.
+        let _home = EnvGuard::set("HOME", &host_to_shell_style_path(&home));
+        let _userprofile = EnvGuard::set("USERPROFILE", &home.to_string_lossy());
+        let _spec = EnvGuard::set(
+            "NIU_PLUGIN_SPEC",
+            &temp.join("plugins.toml").to_string_lossy(),
+        );
+        let _sources = EnvGuard::set(
+            "NIU_PLUGIN_SOURCES_ROOT",
+            &temp.join("sources").to_string_lossy(),
+        );
+        let _distros = EnvGuard::set(
+            "NIU_PLUGIN_DISTROS_ROOT",
+            &temp.join("distros").to_string_lossy(),
+        );
+        install_trusted_omb_fixture(&temp.join("sources"));
+
+        let source = temp.join("collection-src");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            source.join("niu-collection.toml"),
+            "schema = \"niubash:plugin-collection@1\"\nname = \"g3test\"\n\n\
+             [[entry]]\nrecipe = \"omb-theme-agnoster\"\n\n\
+             [[entry]]\nrecipe = \"omb-theme-90210\"\n",
+        )
+        .unwrap();
+        crate::plugins::distros::import(source.to_string_lossy().as_ref()).expect("import g3test");
+
+        // Partial failure: journal records the collection, no phantom
+        // sources, and the failed entry by name.
+        let journal = apply_plugin_collection("g3test", Lang::En)
+            .expect("a picked collection always journals");
+        assert_eq!(journal.name, "g3test");
+        assert!(journal.sources.is_empty(), "{:?}", journal.sources);
+        assert_eq!(journal.failed, ["omb-theme-90210"], "{:?}", journal.failed);
+        let full = SetupJournal {
+            collection: Some(journal),
+            ..SetupJournal::default()
+        };
+        write_setup_journal(&home, &full);
+        let text = std::fs::read_to_string(home.join(".niubash/setup-journal.toml"))
+            .expect("journal written");
+        assert!(text.contains("collection = 'g3test'"), "{text}");
+        assert!(
+            !text.contains("collection_sources"),
+            "no source landed; the journal must not invent any: {text}"
+        );
+        assert!(
+            text.contains("collection_failed = ['omb-theme-90210']"),
+            "{text}"
+        );
+        // The finish screen's retry block names the exact verb.
+        let retry = setup_retry_lines(&full);
+        assert_eq!(retry.len(), 1, "{retry:?}");
+        assert!(
+            retry[0].starts_with("niu plugin distro apply g3test"),
+            "{}",
+            retry[0]
+        );
+        // A healthy apply prints no retry line.
+        let healthy = SetupJournal {
+            collection: Some(CollectionJournal {
+                name: "g3test".to_string(),
+                sources: vec!["oh-my-bash".to_string()],
+                failed: Vec::new(),
+            }),
+            ..SetupJournal::default()
+        };
+        assert!(setup_retry_lines(&healthy).is_empty());
+
+        // Total failure (unknown collection): still journaled, still retried.
+        let failed_apply = apply_plugin_collection("no-such-collection", Lang::En)
+            .expect("even a failed apply journals itself");
+        assert_eq!(failed_apply.name, "no-such-collection");
+        assert!(failed_apply.sources.is_empty());
+        assert_eq!(failed_apply.failed.len(), 1, "{:?}", failed_apply.failed);
+        assert!(
+            failed_apply.failed[0].starts_with("apply failed:"),
+            "{}",
+            failed_apply.failed[0]
+        );
+        let retry = setup_retry_lines(&SetupJournal {
+            collection: Some(failed_apply),
+            ..SetupJournal::default()
+        });
+        assert!(
+            retry
+                .iter()
+                .any(|line| line.contains("niu plugin distro apply no-such-collection")),
+            "{retry:?}"
+        );
+
+        let _ = crate::plugins::sources::remove_source("oh-my-bash");
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
     #[test]
     fn wizard_skip_answers_leave_zero_rc_overrides() {
         let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -2496,6 +2685,7 @@ mod tests {
         let candidates = post_install_theme_candidates(Some(&CollectionJournal {
             name: "recommended".to_string(),
             sources: vec!["oh-my-bash".to_string()],
+            failed: Vec::new(),
         }));
         assert_eq!(candidates, vec!["oh-my-bash".to_string()], "{candidates:?}");
 
@@ -2532,6 +2722,7 @@ mod tests {
             collection: Some(CollectionJournal {
                 name: "recommended".to_string(),
                 sources: vec!["oh-my-bash".to_string()],
+                failed: Vec::new(),
             }),
         };
         let undo = setup_undo_lines(&home, &journal);
@@ -2571,6 +2762,7 @@ mod tests {
         let candidates = post_install_theme_candidates(Some(&CollectionJournal {
             name: "recommended".to_string(),
             sources: vec!["oh-my-bash".to_string()],
+            failed: Vec::new(),
         }));
 
         // Skip (0): the default answer — the wizard convention that every
@@ -2696,6 +2888,7 @@ mod tests {
         let candidates = post_install_theme_candidates(Some(&CollectionJournal {
             name: "minimal".to_string(),
             sources: vec!["bash-completion".to_string()],
+            failed: Vec::new(),
         }));
         assert!(candidates.is_empty(), "{candidates:?}");
 
@@ -2715,6 +2908,7 @@ mod tests {
             collection: Some(CollectionJournal {
                 name: "recommended".to_string(),
                 sources: vec!["oh-my-bash".to_string()],
+                failed: Vec::new(),
             }),
         };
         write_setup_journal(&temp, &journal);
