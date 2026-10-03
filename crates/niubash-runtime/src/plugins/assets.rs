@@ -738,6 +738,24 @@ fn current_theme(record: &SourceRecord, model: &SelectionModel) -> Option<String
         .unwrap_or(None)
 }
 
+/// The live activation snapshot of a record — (enabled asset names, active
+/// theme) as the manager's own selection mechanism currently has it. This
+/// is what spec adoption (`niu plugin sync --adopt`, the wizard's
+/// collection apply, `niu plugin enable <source>`) snapshots into a spec
+/// entry so the adopted spec round-trips: a plain sync afterwards
+/// re-materializes exactly this state (byte-stable rc block, unchanged
+/// registry `spec_enabled`/`spec_theme`).
+pub fn live_selection(record: &SourceRecord) -> (Vec<String>, Option<String>) {
+    let Some(adapter) = adapter_for(&record.adapter) else {
+        return (Vec::new(), None);
+    };
+    let model = adapter.selection_model();
+    (
+        current_selection(record, &model),
+        current_theme(record, &model).filter(|theme| !theme.is_empty()),
+    )
+}
+
 /// `niu plugin enable <target>` — spec sugar (§14.6.3): declare the source
 /// and/or asset in `~/.niubash/plugins.toml`, then sync, which materializes
 /// the manager's own selection mechanism (rc arrays, enabled/ entries, or

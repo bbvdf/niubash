@@ -969,6 +969,14 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
         }
     }
 
+    // --- Spec adoption: the run ends spec-managed (1.3.1) ---
+    // The collection apply installs through the recipe drivers; in 1.3.0
+    // that left the spec unwritten, so every later startup nagged
+    // "installed but not declared" with no working migration verb.
+    if collection_journal.is_some() {
+        adopt_installed_sources_into_spec(lang);
+    }
+
     // Setup journal + per-entry undo (iron law 3: 失败可回滚). A theme
     // picked either at Q1 or post-install lands in the same field.
     let journal = SetupJournal {
@@ -1035,6 +1043,41 @@ fn apply_plugin_collection(name: &str, lang: Lang) -> Option<CollectionJournal> 
             );
             None
         }
+    }
+}
+
+/// The end-of-run spec adoption (1.3.1): after a collection apply — and
+/// the post-install theme pick, so the chosen theme is part of the
+/// snapshot — declare every installed source into
+/// `~/.niubash/plugins.toml` by snapshotting the live selection
+/// (`plugins::sync::adopt_installed_sources`, a defensive merge that never
+/// clobbers pre-existing entries), then reconcile once so the run ends in
+/// the exact state a plain `niu plugin sync` keeps. 1.3.0 left the spec
+/// unwritten here and every later startup nagged "installed but not
+/// declared" with no working migration verb; the wizard now ends
+/// spec-managed (the spec is the single source of truth).
+fn adopt_installed_sources_into_spec(lang: Lang) {
+    match crate::plugins::sync::adopt_installed_sources() {
+        Ok(adopted) if !adopted.is_empty() => {
+            // Rows are informational here — the install reports were
+            // printed above; this pass settles the registry's
+            // spec_enabled/spec_theme so the next sync is a no-op.
+            let _ = crate::plugins::sync::sync_spec(crate::plugins::sync::SyncOptions::default());
+            println!();
+            println!(
+                "  \u{1f4dd}  {}",
+                fill(
+                    lang.tr("plugin spec written — {} source(s) declared; \
+                         `niu plugin sync` keeps them in sync",),
+                    &[&adopted.len().to_string()]
+                )
+            );
+        }
+        Ok(_) => {}
+        Err(err) => println!(
+            "  \u{26a0}\u{fe0f}  {}: {err:#}",
+            lang.tr("could not write the plugin spec")
+        ),
     }
 }
 
@@ -1945,6 +1988,9 @@ fn zh(en: &str) -> Option<&'static str> {
         "plugin collection" => "插件合集",
         "installed — review with `niu plugin trust <id>`" =>
             "已安装 —— 用 `niu plugin trust <id>` 审阅启用",
+        "plugin spec written — {} source(s) declared; `niu plugin sync` keeps them in sync" =>
+            "插件规格已写入 —— 已声明 {} 个源；`niu plugin sync` 保持同步",
+        "could not write the plugin spec" => "无法写入插件规格",
         "entries failed — retry with" => "个条目失败 —— 可重试：",
         "failed" => "失败",
         "completions" => "补全",
@@ -2128,6 +2174,8 @@ mod tests {
             "default — stay untrusted; nothing changes",
             "Theme pick skipped — trust later, then pick:",
             "then re-run `niu setup` (or `niu plugin enable <theme>`)",
+            "plugin spec written — {} source(s) declared; `niu plugin sync` keeps them in sync",
+            "could not write the plugin spec",
             "  \u{1f9e9}  niu-git — Windows-native git experience?",
             "Apply",
             "Cancel",
@@ -2429,6 +2477,59 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(home.join(PRIMARY_RC_FILE)).unwrap(),
             rc_before
+        );
+
+        crate::plugins::sources::remove_source("oh-my-bash").unwrap();
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    /// F4 (1.3.1): a collection apply ends SPEC-MANAGED. The journey state
+    /// after the post-install theme pick — trusted oh-my-bash with the
+    /// guarded theme block in the rc, no spec — is declared by the same
+    /// adoption `niu plugin sync --adopt` runs, so a fresh wizard user
+    /// never lands in the 1.3.0 nag state and no migration verb is needed.
+    #[test]
+    fn collection_apply_ends_spec_managed() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let temp = unique_temp_dir("wizard-spec-managed");
+        let root = temp.join("sources");
+        let home = temp.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let _sources = EnvGuard::set("NIU_PLUGIN_SOURCES_ROOT", &root.to_string_lossy());
+        let _home = EnvGuard::set("HOME", &host_to_shell_style_path(&home));
+        let _userprofile = EnvGuard::unset("USERPROFILE");
+        let _spec = EnvGuard::set(
+            "NIU_PLUGIN_SPEC",
+            &home.join(".niubash/plugins.toml").to_string_lossy(),
+        );
+
+        // The journey's end state: collection installed the fixture
+        // (untrusted), the trust question trusted it, the theme pick wrote
+        // the guarded block through generate_rc.
+        install_untrusted_omb_fixture();
+        crate::plugins::sources::trust_source("oh-my-bash").expect("fixture trust");
+        let cfg = WizardConfig {
+            theme: "agnoster".to_string(),
+            theme_source_id: Some("oh-my-bash".to_string()),
+            ..WizardConfig::default()
+        };
+        std::fs::write(home.join(PRIMARY_RC_FILE), generate_rc(&cfg)).unwrap();
+
+        adopt_installed_sources_into_spec(Lang::En);
+
+        let spec_text = std::fs::read_to_string(home.join(".niubash/plugins.toml"))
+            .expect("the wizard wrote the spec");
+        assert!(spec_text.contains("id = 'oh-my-bash'"), "{spec_text}");
+        assert!(spec_text.contains("theme = 'agnoster'"), "{spec_text}");
+        // The settled state round-trips: a plain sync is a no-op for the rc.
+        let rc_before = std::fs::read_to_string(home.join(PRIMARY_RC_FILE)).unwrap();
+        let report =
+            crate::plugins::sync::sync_spec(crate::plugins::sync::SyncOptions::default()).unwrap();
+        assert!(report.clean, "{:?}", report);
+        assert_eq!(
+            std::fs::read_to_string(home.join(PRIMARY_RC_FILE)).unwrap(),
+            rc_before,
+            "sync after the wizard must not move the rc"
         );
 
         crate::plugins::sources::remove_source("oh-my-bash").unwrap();

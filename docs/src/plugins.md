@@ -47,6 +47,28 @@ spec `~/.niubash/plugins.toml` — the single source of truth for what is
 declared; `niu plugin sync` reconciles the spec with what is installed,
 and `niu plugin update <id>` (no id = all) moves sources to their ref tips.
 
+### Imperative mode → adoption (1.3.1)
+
+A machine with installed sources but no spec is in *imperative mode*: the
+startup form stays silent (nothing to reconcile), and
+`niu plugin sync` lists the state with the migration one-liner:
+
+```console
+$ niu plugin sync --adopt
+declared oh-my-bash (installed; adopted into the spec)
+...
+```
+
+`--adopt` declares every installed-but-undeclared source, snapshotting the
+live enablement (`enable = [...]`) and the active theme (`theme = ...`)
+from the machine's current state, so the adopted spec round-trips — a
+plain `niu plugin sync` afterwards is a no-op. `niu plugin add <target>`
+on an already-installed source declares it (never the old "remove it
+first" refusal), and the first-run wizard's collection apply now ends
+spec-managed (the run itself adopts, picked theme included). Startup
+installs that fail are memoized and not retried on every terminal —
+explicit verbs retry.
+
 Undo is printed with every mutating command (`disable`, `source remove`,
 `source rollback`) and the setup wizard journals one undo
 command per thing it changed.

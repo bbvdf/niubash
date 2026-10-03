@@ -2071,7 +2071,17 @@ fn run_plugin_add_command(args: &[String]) -> anyhow::Result<()> {
         });
     niubash_runtime::plugins::spec::save_spec(&spec)?;
 
-    // Fetch gate notice, then the reconciliation that installs it.
+    // Fetch gate notice, then the reconciliation that installs it. The
+    // registry snapshot taken first is how "declared (already installed)"
+    // stays honest: a record whose (id, installed_at) predates this add was
+    // adopted, never fetched — whatever spelling matched it (catalog id,
+    // url, path) and whichever path found it (entry resolution or the
+    // reconciler's identity adoption).
+    let registry_before: Vec<(String, String)> =
+        niubash_runtime::plugins::sources::read_source_registry()
+            .into_iter()
+            .map(|record| (record.id, record.installed_at))
+            .collect();
     let display_id = request
         .adapter
         .clone()
@@ -2080,6 +2090,7 @@ fn run_plugin_add_command(args: &[String]) -> anyhow::Result<()> {
     let report =
         niubash_runtime::plugins::sync::sync_spec(niubash_runtime::plugins::sync::SyncOptions {
             prune: false,
+            ..niubash_runtime::plugins::sync::SyncOptions::default()
         })?;
     print_sync_rows(&report.rows);
     // The add must fail honestly when the new entry could not install (an
@@ -2095,41 +2106,70 @@ fn run_plugin_add_command(args: &[String]) -> anyhow::Result<()> {
         .rows
         .iter()
         .rev()
-        .find(|row| row.action == "awaiting-trust" || row.action == "activated")
+        .find(|row| {
+            row.action == "awaiting-trust" || row.action == "activated" || row.action == "unchanged"
+        })
         .map(|row| row.id.clone());
-    if let Some(id) = new_id {
+    let adopted_existing = new_id
+        .as_ref()
+        .map(|id| {
+            let adopted_by_report = report.adopted.iter().any(|adopted| adopted == id);
+            let installed_before = niubash_runtime::plugins::sources::read_source_registry()
+                .into_iter()
+                .any(|record| {
+                    record.id == *id
+                        && registry_before
+                            .contains(&(record.id.clone(), record.installed_at.clone()))
+                });
+            adopted_by_report || installed_before
+        })
+        .unwrap_or(false);
+    if let Some(id) = &new_id {
         if let Some(record) = niubash_runtime::plugins::sources::read_source_registry()
             .into_iter()
-            .find(|record| record.id == id)
+            .find(|record| record.id == *id)
         {
-            println!(
-                "{} source '{}' ({}) into {}",
-                niubash_runtime::text_style::green("Installed"),
-                record.id,
-                niubash_runtime::text_style::dim(&record.version),
-                niubash_runtime::text_style::dim(&record.path.display().to_string())
-            );
-            println!(
-                "license {} | tree sha256 {}",
-                record.license, record.checksum_sha256
-            );
-            if let Some(commit) = &record.commit_sha {
+            if adopted_existing {
                 println!(
-                    "pinned commit {} ({})",
-                    niubash_runtime::text_style::dim(commit),
-                    niubash_runtime::text_style::dim("niu plugin restore restores exactly this")
+                    "{} source '{}' — declared in the spec (already installed at {})",
+                    niubash_runtime::text_style::green("Declared"),
+                    record.id,
+                    niubash_runtime::text_style::dim(&record.path.display().to_string())
+                );
+            } else {
+                println!(
+                    "{} source '{}' ({}) into {}",
+                    niubash_runtime::text_style::green("Installed"),
+                    record.id,
+                    niubash_runtime::text_style::dim(&record.version),
+                    niubash_runtime::text_style::dim(&record.path.display().to_string())
+                );
+                println!(
+                    "license {} | tree sha256 {}",
+                    record.license, record.checksum_sha256
+                );
+                if let Some(commit) = &record.commit_sha {
+                    println!(
+                        "pinned commit {} ({})",
+                        niubash_runtime::text_style::dim(commit),
+                        niubash_runtime::text_style::dim(
+                            "niu plugin restore restores exactly this"
+                        )
+                    );
+                }
+            }
+            if !record.trusted {
+                println!("the source is untrusted; review it, then run:");
+                println!("  niu plugin trust {}", record.id);
+                println!(
+                    "  {}",
+                    niubash_runtime::text_style::dim(&format!(
+                        "then activate it (or single assets) with `niu plugin enable {}` \
+                         (wild sources pick files: `niu plugin enable {}/<file>.bash`)",
+                        record.id, record.id
+                    ))
                 );
             }
-            println!("the source is untrusted; review it, then run:");
-            println!("  niu plugin trust {}", record.id);
-            println!(
-                "  {}",
-                niubash_runtime::text_style::dim(&format!(
-                    "then activate it (or single assets) with `niu plugin enable {}` \
-                     (wild sources pick files: `niu plugin enable {}/<file>.bash`)",
-                    record.id, record.id
-                ))
-            );
         }
     }
     print_undeclared_hints(&report);
@@ -2143,10 +2183,11 @@ fn print_sync_rows(rows: &[niubash_runtime::plugins::sync::SyncRow]) {
             "installed" | "activated" | "removed" => {
                 niubash_runtime::text_style::green(&row.action)
             }
-            "awaiting-trust" | "deactivated" | "unchanged" => {
+            "awaiting-trust" | "deactivated" | "unchanged" | "merged" => {
                 niubash_runtime::text_style::yellow(&row.action)
             }
             "degraded" => niubash_runtime::text_style::yellow(&row.action),
+            "deferred" => niubash_runtime::text_style::dim(&row.action),
             _ => niubash_runtime::text_style::red(&row.action),
         };
         println!("  {marker} {:<18} {}", row.id, row.detail);
@@ -2798,10 +2839,12 @@ fn run_plugin_restore_command(args: &[String]) -> anyhow::Result<()> {
 fn run_plugin_sync_command(args: &[String]) -> anyhow::Result<()> {
     let mut prune = false;
     let mut bootstrap = false;
+    let mut adopt = false;
     for arg in args {
         match arg.as_str() {
             "--prune" => prune = true,
             "--bootstrap" => bootstrap = true,
+            "--adopt" => adopt = true,
             unknown => anyhow::bail!("unknown plugin sync option '{}'", unknown),
         }
     }
@@ -2813,10 +2856,15 @@ fn run_plugin_sync_command(args: &[String]) -> anyhow::Result<()> {
     let report =
         niubash_runtime::plugins::sync::sync_spec(niubash_runtime::plugins::sync::SyncOptions {
             prune,
+            adopt,
+            startup: bootstrap,
         })?;
     if bootstrap {
         // Startup form: silent when clean; install notices only otherwise
-        // (iron law 2 keeps degraded state visible).
+        // (iron law 2 keeps degraded state visible). In imperative mode
+        // (no spec) there is nothing to reconcile — undeclared sources are
+        // the LEGACY state, not drift, and startup must stay silent about
+        // them (sync.rs §4; the 1.3.0 startup nag printed them forever).
         for row in &report.rows {
             if row.action == "unchanged" {
                 continue;
@@ -2826,26 +2874,68 @@ fn run_plugin_sync_command(args: &[String]) -> anyhow::Result<()> {
                 row.action, row.id, row.detail
             );
         }
-        for id in &report.undeclared {
-            eprintln!(
-                "niu plugin sync: {id} installed but not declared \
-                 (`niu plugin sync` for details)"
-            );
+        if report.spec_present {
+            for id in &report.undeclared {
+                eprintln!(
+                    "niu plugin sync: {id} installed but not declared \
+                     (`niu plugin sync` for details)"
+                );
+            }
         }
         return Ok(());
     }
     if !report.spec_present {
+        // Imperative mode (no spec): the 1.3.0 dead end printed an advice
+        // line its own verb could not fulfill. List what is installed and
+        // the exact migration one-liner, plus the hand-write alternative.
         println!(
-            "(no spec at {} — imperative mode; create it with `niu plugin add <target>` \
-             or hand-write it, then sync)",
+            "(no spec at {} — imperative mode)",
             niubash_runtime::plugins::spec::spec_path().display()
         );
         for id in &report.undeclared {
-            println!("  {id}  (installed; declare it in the spec to manage it)");
+            println!("  {id}  (installed; undeclared)");
+        }
+        if !report.undeclared.is_empty() {
+            println!("declare everything installed in one move (snapshots the live selection):");
+            println!("  niu plugin sync --adopt");
+            println!("or hand-write the spec, then sync:");
+            println!(
+                "  {}",
+                niubash_runtime::text_style::dim(&format!(
+                    "schema = \"{}\"\n\n[[sources]]\ntarget = \"oh-my-bash\"{}\
+                     \nenable = [\"git\", \"npm\"]\ntheme  = \"agnoster\"",
+                    niubash_runtime::plugins::spec::PLUGIN_SPEC_SCHEMA,
+                    "            # catalog id | owner/repo | url | path"
+                ))
+            );
+            println!(
+                "  {}",
+                niubash_runtime::text_style::dim(
+                    "a single source can also be declared with `niu plugin add <target>`"
+                )
+            );
         }
         return Ok(());
     }
-    if report.rows.is_empty() && report.undeclared.is_empty() {
+    for id in &report.adopted {
+        println!(
+            "{} {} {}",
+            niubash_runtime::text_style::green("declared"),
+            id,
+            niubash_runtime::text_style::dim("(installed; adopted into the spec)")
+        );
+    }
+    if !report.adopted.is_empty() {
+        println!(
+            "{}",
+            niubash_runtime::text_style::dim(&format!(
+                "adopted {} source(s) into {} — a plain `niu plugin sync` is now a no-op",
+                report.adopted.len(),
+                niubash_runtime::plugins::spec::spec_path().display()
+            ))
+        );
+    }
+    if report.rows.is_empty() && report.undeclared.is_empty() && report.adopted.is_empty() {
         println!("(spec declares nothing — every source listed is undeclared)");
         return Ok(());
     }
@@ -2901,9 +2991,11 @@ fn print_plugin_usage() {
     println!("  enable <target>          Activate a source or asset (wild sources");
     println!("                           pick files: <id>/<file>.bash)");
     println!("  disable <target>         Deactivate a source or asset");
-    println!("  sync [--prune]           Reconcile the spec: install declared,");
+    println!("  sync [--prune] [--adopt] Reconcile the spec: install declared,");
     println!("                           materialize rc blocks, suggest cleanup");
-    println!("                           (--prune removes undeclared sources)");
+    println!("                           (--prune removes undeclared sources;");
+    println!("                           --adopt declares installed sources into");
+    println!("                           the spec, snapshotting the live state)");
     println!("  sync --bootstrap         Same, quiet startup form (rc one-liner)");
     println!("  update [<id>]            Update source(s) to the ref tip (no id =");
     println!("                           all); the lockfile pin moves");
@@ -2939,6 +3031,9 @@ fn print_plugin_usage() {
     println!("  niu plugin enable bash-preexec/bash-preexec.sh   # pick the file");
     println!("  niu plugin add bpkg --path <dir> # adopt a bpkg-installed tree");
     println!("  niu plugin sync                  # reconcile spec <-> machine");
+    println!("  niu plugin sync --adopt          # declare installed sources into");
+    println!("                           # the spec (imperative -> declarative;");
+    println!("                           # snapshots the live enable/theme)");
     println!("  niu plugin sync --bootstrap      # quiet startup form (rc line)");
 }
 

@@ -420,7 +420,7 @@ pub(crate) fn write_source_registry(sources: &[SourceRecord]) -> anyhow::Result<
     Ok(())
 }
 
-fn now_timestamp() -> String {
+pub(crate) fn now_timestamp() -> String {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs().to_string())
@@ -745,14 +745,59 @@ fn promote_staging(staging: &Path, dest: &Path) -> anyhow::Result<()> {
 /// Install an external plugin-manager source. The fetched tree is verified,
 /// promoted to `sources/<adapter-id>/`, and registered **untrusted** — none
 /// of its assets activate until `trust_source` (§12.2 execution gate).
+/// A source whose install identity is already registered is refused: this
+/// is the imperative verb (`niu plugin source add`); the declarative path
+/// ([`install_or_adopt`]) adopts the existing install instead.
 pub fn add_source(request: SourceInstallRequest) -> anyhow::Result<SourceRecord> {
+    let (record, adopted) = install_or_adopt(request)?;
+    if adopted {
+        anyhow::bail!(
+            "source '{id}' is already registered; remove it first with niu plugin source remove {id}",
+            id = record.id
+        );
+    }
+    Ok(record)
+}
+
+/// Install a source, or **adopt** the existing install when its identity is
+/// already registered — the declarative path's answer to "already
+/// registered" (§14.6.3): `niu plugin add <target>` on an installed source
+/// must declare it in the spec, never dead-end on the imperative refusal
+/// above. Identity is, in order: the install id derivable without fetching
+/// (explicit id, manager id, or the origin tail for a kind-pinned entry),
+/// the recorded origin, and finally the id the fetched tree derives — a
+/// duplicate detected only after fetch adopts without a second fetch ever
+/// promoting. Returns the record plus `true` when an existing install was
+/// adopted (nothing fetched into place, nothing written).
+pub fn install_or_adopt(request: SourceInstallRequest) -> anyhow::Result<(SourceRecord, bool)> {
+    // Cheap pre-checks (no fetch): derived id, then recorded origin.
+    if let Some(kind) = request.adapter.as_deref() {
+        if let Some(adapter) = super::descriptors::adapter_for(kind) {
+            if let Ok(id) = super::descriptors::derive_install_id(
+                adapter,
+                &request.origin,
+                request.id.as_deref(),
+            ) {
+                if let Some(record) = registered_by_id(&id) {
+                    return Ok((record, true));
+                }
+            }
+        }
+    }
+    if let Some(record) = read_source_registry()
+        .into_iter()
+        .find(|record| record.url.trim() == request.origin.trim())
+    {
+        return Ok((record, true));
+    }
+
     let fetched = fetch_source_to_staging(&request)?;
     let id = fetched.id.clone();
-    let mut registry = read_source_registry();
-    if registry.iter().any(|record| record.id == id) {
-        anyhow::bail!(
-            "source '{id}' is already registered; remove it first with niu plugin source remove {id}"
-        );
+    // The fetch detected/derived an identity that is already registered:
+    // drop the staging tree and adopt the existing install.
+    if let Some(record) = registered_by_id(&id) {
+        let _ = remove_tree_if_present(&fetched.staging);
+        return Ok((record, true));
     }
     let dest = sources_root().join(&id);
     if dest.exists() {
@@ -781,9 +826,17 @@ pub fn add_source(request: SourceInstallRequest) -> anyhow::Result<SourceRecord>
         spec_enabled: None,
         spec_theme: None,
     };
+    let mut registry = read_source_registry();
     registry.push(record.clone());
     write_source_registry(&registry)?;
-    Ok(record)
+    Ok((record, false))
+}
+
+/// The registered record for an install id, when present.
+fn registered_by_id(id: &str) -> Option<SourceRecord> {
+    read_source_registry()
+        .into_iter()
+        .find(|record| record.id == id)
 }
 
 /// Update a registered source to a new ref/tree. The previous state is
@@ -987,7 +1040,10 @@ pub fn sign_source(id: &str) -> anyhow::Result<SourceRecord> {
 }
 
 /// Uninstall: delete the tree (only directories we placed under the sources
-/// root) and the registry entry. Trust state is irrelevant for removal.
+/// root) and the registry entry, plus the spec declaration naming it — the
+/// spec is the truth, so an uninstall that left the entry would have the
+/// next sync resurrect the source (the wizard's undo receipts name this
+/// verb). Trust state is irrelevant for removal.
 pub fn remove_source(id: &str) -> anyhow::Result<PathBuf> {
     let mut registry = read_source_registry();
     let index = registry
@@ -996,6 +1052,17 @@ pub fn remove_source(id: &str) -> anyhow::Result<PathBuf> {
         .ok_or_else(|| anyhow!("unknown source '{id}'"))?;
     let record = registry.remove(index);
     write_source_registry(&registry)?;
+    if let Some(mut spec) = super::spec::load_spec()? {
+        let before = spec.sources.len();
+        spec.sources.retain(|entry| {
+            super::spec::resolve_entry_id(entry).as_deref() != Some(id)
+                && entry.id.as_deref() != Some(id)
+                && entry.target.trim() != record.url.trim()
+        });
+        if spec.sources.len() != before {
+            super::spec::save_spec(&spec)?;
+        }
+    }
 
     let root = sources_root();
     if record.path.starts_with(&root)
@@ -1482,6 +1549,9 @@ mod tests {
         let root = temp.join("sources");
         write_omb_fixture(&origin, "v1");
         let _guard = EnvVarGuard::set("NIU_PLUGIN_SOURCES_ROOT", &root);
+        // Removal is spec-aware since 1.3.1 (an uninstall drops the
+        // declaration); keep the test off the real ~/.niubash spec.
+        let _spec = EnvVarGuard::set("NIU_PLUGIN_SPEC", &temp.join("plugins.toml"));
 
         let record = add_source(local_request(&origin)).expect("add must succeed");
         assert_eq!(record.id, "oh-my-bash");
@@ -1823,6 +1893,75 @@ mod tests {
         add_source(local_request(&origin)).unwrap();
         let err = add_source(local_request(&origin)).expect_err("duplicate must fail");
         assert!(err.to_string().contains("already registered"), "{err}");
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    /// The declarative pipeline's answer to "already registered" (1.3.1):
+    /// [`install_or_adopt`] adopts the existing install — by recorded
+    /// origin, and by the identity a differently-spelled origin derives —
+    /// so `niu plugin add <target>` on an installed source declares it
+    /// instead of dead-ending on the imperative refusal.
+    #[test]
+    fn install_or_adopt_adopts_a_registered_identity() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let temp = unique_temp_dir("adopt");
+        let origin = temp.join("origin");
+        let root = temp.join("sources");
+        write_omb_fixture(&origin, "v1");
+        let _guard = EnvVarGuard::set("NIU_PLUGIN_SOURCES_ROOT", &root);
+        add_source(local_request(&origin)).unwrap();
+
+        // Same request again: adopted, no second fetch, registry unchanged.
+        let (record, adopted) = install_or_adopt(local_request(&origin)).unwrap();
+        assert!(adopted, "registered identity must adopt");
+        assert_eq!(record.id, "oh-my-bash");
+        assert_eq!(read_source_registry().len(), 1);
+
+        // A different spelling of the same tree (separator style) derives
+        // the same id after fetch and adopts instead of colliding.
+        let alt = origin.to_string_lossy().replace('\\', "/");
+        let request = SourceInstallRequest {
+            origin: alt,
+            ..local_request(&origin)
+        };
+        let (record, adopted) = install_or_adopt(request).unwrap();
+        assert!(adopted, "alternate spelling must adopt, not re-install");
+        assert_eq!(record.id, "oh-my-bash");
+        assert_eq!(read_source_registry().len(), 1, "no second tree promoted");
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    /// Uninstall drops the spec declaration naming the source (1.3.1): a
+    /// leftover entry would have the next sync resurrect the source — the
+    /// wizard's undo receipts name this verb, so it must be complete.
+    #[test]
+    fn remove_source_drops_the_spec_declaration() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let temp = unique_temp_dir("remove-spec");
+        let origin = temp.join("origin");
+        let root = temp.join("sources");
+        write_omb_fixture(&origin, "v1");
+        let _guard = EnvVarGuard::set("NIU_PLUGIN_SOURCES_ROOT", &root);
+        let _spec = EnvVarGuard::set("NIU_PLUGIN_SPEC", &temp.join("plugins.toml"));
+        add_source(local_request(&origin)).unwrap();
+        use crate::plugins::spec;
+        spec::save_spec(&spec::PluginSpec {
+            schema: None,
+            sources: vec![spec::SpecSource {
+                target: origin.to_string_lossy().into_owned(),
+                id: Some("oh-my-bash".to_string()),
+                kind: None,
+                ref_name: None,
+                theme: None,
+                enable: vec!["git".to_string()],
+            }],
+        })
+        .unwrap();
+
+        remove_source("oh-my-bash").expect("remove");
+        let spec = spec::load_spec().unwrap().expect("spec present");
+        assert!(spec.sources.is_empty(), "{:?}", spec.sources);
+        assert!(read_source_registry().is_empty());
         let _ = fs::remove_dir_all(&temp);
     }
 

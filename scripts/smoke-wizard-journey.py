@@ -220,6 +220,14 @@ def run_journey(exe: Path, root: Path) -> None:
     assert "theme = 'agnoster'" in journal, journal
     assert "collection = 'recommended'" in journal, journal
 
+    # 1.3.1: the journey ends spec-managed — the post-pick adoption
+    # declared the collection's sources (canonical origins; the mirror is
+    # transport-only) with the picked theme snapshotted.
+    spec = (home / ".niubash" / "plugins.toml").read_text(encoding="utf-8")
+    assert "https://github.com/ohmybash/oh-my-bash.git" in spec, spec
+    assert "https://github.com/scop/bash-completion.git" in spec, spec
+    assert "theme = 'agnoster'" in spec, spec
+
     # And a fresh shell sees the theme.
     probe = subprocess.run(
         [str(exe), "-c", ". ~/.niubashrc; echo $OSH_THEME"],

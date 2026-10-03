@@ -101,6 +101,45 @@ line, silent when everything is in sync. Disable it by setting
 `NIU_PLUGIN_BOOTSTRAP=off`. `niu doctor` carries an advisory line showing
 the spec reconciliation state (declared / missing / undeclared / no spec).
 
+Two 1.3.1 guarantees for the startup form:
+
+- **No spec → no startup nag.** Imperative mode (no `plugins.toml`) means
+  *nothing to reconcile*: installed-but-undeclared sources are the legacy
+  state, not drift, and `sync --bootstrap` stays silent about them. The
+  interactive `niu plugin sync` still lists them — with the migration verb.
+- **Failed startup installs are memoized.** When a declared source cannot
+  install at startup (offline, a moved origin, a fingerprint the adapter
+  rejects), the failure is recorded under the sources root
+  (`bootstrap-failures.toml`) and later startups defer the retry with one
+  line instead of re-fetching on every terminal. An explicit
+  `niu plugin sync` / `niu plugin add` clears the memo and retries.
+
+### Imperative mode → spec adoption (`niu plugin sync --adopt`)
+
+Machines that installed sources before the spec existed (1.3.0's wizard
+collection apply, `niu plugin source add`) land in *imperative mode*: the
+registry has sources, `plugins.toml` does not exist. `niu plugin sync`
+then reports the state and names the one-line migration:
+
+```
+niu plugin sync --adopt
+```
+
+`--adopt` declares **every installed-but-undeclared source** into the
+spec, snapshotting the current live enablement into `enable = [...]` and
+the active theme into `theme = ...` (targets are the recorded origins,
+ids pinned). The adopted spec **round-trips**: the `--adopt` run itself
+reconciles, and a plain `niu plugin sync` afterwards is a no-op —
+byte-stable rc blocks, unchanged registry state. Existing entries are
+never touched (a defensive merge), and `niu plugin add <target>` on a
+source that is already installed declares it too (printed as `Declared …
+(already installed)`) instead of refusing.
+
+The setup wizard does the same adoption at the end of a collection apply
+(after the post-install theme pick), so a fresh 1.3.1+ wizard run ends
+**spec-managed**: sources, trust state and the picked theme are all
+described by `~/.niubash/plugins.toml`, and no migration verb is needed.
+
 ### Merge semantics: spec vs your hand edits
 
 `sync` computes `prev` (the selection the spec last materialized — the
@@ -163,8 +202,13 @@ niu plugin enable <id>[/<asset>]   # declare + materialize
 - **`no supported plugin manager detected ... no sourceable *.sh/*.bash
   files either`** — the repo has nothing niubash could honestly source.
 - **`installed but not declared in the spec`** — an imperative install
-  (`niu plugin source add`) with no spec entry; declare it or prune it
-  explicitly.
+  (`niu plugin source add`) with no spec entry; run `niu plugin sync
+  --adopt` to declare everything installed (snapshots the live state), or
+  prune it explicitly. With no spec at all this is imperative mode and the
+  startup form stays silent about it.
+- **`deferred` rows at startup** — a declared source's install failed at a
+  previous startup and is not retried there; run `niu plugin sync` (the
+  explicit verb) to retry and see the failure.
 - **`awaiting-trust` rows after sync** — sync never flips the trust gate;
   run the printed `niu plugin trust <id>` after reviewing.
 - **`tree missing — repair with niu plugin restore <id>`** — the guarded
