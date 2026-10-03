@@ -1,72 +1,61 @@
-# Hook Contract
+# Hooks
 
-Niubash runs shell functions at fixed lifecycle points, the same way zsh/fish
-run their hooks. Hooks only fire in **interactive** sessions, and they need
-the oh-my-niu framework loaded (source `oh-my-niu.winux` from
-`~/.niubashrc`), which provides the registration helpers and the runners the
-host calls.
+Status (2026-10, niubash#161): the **niu-native named-hook registry described
+by the previous version of this page is not implemented**. The
+`niubash_add_*_hook` registration helpers were part of the `oh-my-niu`
+framework, which retired with the built-in plugin/theme stack
+(niubash#145); there is currently no runtime registration path — the host
+loads an empty hook configuration, so the internal `run_*_hooks` runners
+have nothing to run. Whether (and how) hooks return for the
+external-ecosystem world — e.g. registration builtins over the shell's own
+function namespace — is an open owner ruling.
 
-## Registering a hook
+What exists today is the **bash-native hook surface**. External frameworks
+(oh-my-bash, starship, your own rc) already use it, and it behaves exactly
+as in GNU bash:
 
-Register the **name of a shell function** — not code:
+| Lifecycle point | Bash-native mechanism | Notes |
+| --- | --- | --- |
+| before every prompt | `PROMPT_COMMAND` (function or string) | runs each prompt cycle, before the prompt is rendered |
+| before a command executes | `PS0` (expanded, printed) | after you press Enter, before execution |
+| prompt identity | `PS1` assignment | claims the prompt slot (defaults-as-floor: the product floor never fights an active claim; `unset PS1` restores it) |
+| directory change | `chpwd`-style: `cd` hooks via `PROMPT_COMMAND` + `PWD` diffing in your own function | no dedicated `chpwd` hook yet |
+| signals / exit | `trap 'handler' INT TERM EXIT DEBUG ERR` | full bash trap semantics, via the engine |
+| terminal title | write OSC escapes from `PROMPT_COMMAND` (or set `NIU_TITLE`) | `NIU_TITLE`, when set, is the value title logic sees |
+
+Example — the starship shape (a `PROMPT_COMMAND` hook that claims `PS1` in
+the same render cycle):
 
 ```bash
 # ~/.niubashrc
-function notify_on_dir_change {
-  echo "now in $NIU_PWD"
+starship_precmd() { PS1="$(starship prompt)"; }
+PROMPT_COMMAND="starship_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+eval "$(starship init bash)"
+```
+
+Example — time every command from `PROMPT_COMMAND` (start-of-command stamp
+plus end-of-command report):
+
+```bash
+# ~/.niubashrc
+__niu_t0=$SECONDS
+__niu_timer_report() {
+  echo "last command took $((SECONDS - __niu_t0))s"
+  __niu_t0=$SECONDS
 }
-niubash_add_chpwd_hook notify_on_dir_change
+PROMPT_COMMAND="__niu_timer_report${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 ```
 
-Registration is idempotent: adding the same function twice registers it once.
-
-## Lifecycle hooks
-
-| Hook             | Fires                          | Context variables         |
-| ---------------- | ------------------------------ | ------------------------- |
-| `startup`        | once, after rc is loaded       | —                         |
-| `precmd`         | before every prompt draw       | —                         |
-| `preexec`        | before a command executes      | `NIU_PREEXEC_COMMAND`     |
-| `postcmd`        | after a command finishes       | `NIU_LAST_EXIT_CODE`      |
-| `chpwd`          | after the directory changes    | `NIU_OLDPWD`, `NIU_PWD`   |
-| `period`         | every `NIU_PERIOD_SECONDS` s   | —                         |
-| `zshaddhistory`  | after a command enters history | `NIU_HISTORY_COMMAND`     |
-| `zshexit`        | when the shell exits           | —                         |
-| `greeting`       | at startup (fish-style hello)  | —                         |
-| `title`          | terminal title update          | `NIU_TITLE`               |
-
-Example — time every command with `preexec`/`postcmd`:
+Example — `PS0` is expanded and printed right after you press Enter, before
+execution (same expansion rules as `PS1`):
 
 ```bash
-function __timer_start { NIU_CMD_START=$SECONDS; }
-function __timer_stop  { echo "last command took $((SECONDS - NIU_CMD_START))s (exit $NIU_LAST_EXIT_CODE)"; }
-niubash_add_preexec_hook __timer_start
-niubash_add_postcmd_hook __timer_stop
+PS0='[running...] '
 ```
 
-Periodic work (battery check, git fetch, …):
-
-```bash
-NIU_PERIOD_SECONDS=60
-function fetch_reminders { date; }
-niubash_add_period_hook fetch_reminders
-```
-
-## Trap hooks
-
-Signal-flavoured hooks mirror zsh traps and register the same way:
-
-`trapdebug`, `traperr`, `trapint`, `trapwinch`, `trapusr1`, `trapusr2`,
-`trappipe`, `trapterm`, `trapchld`, `trapzerr`.
-
-## Practical notes
-
-- Hook functions run in the current shell: they can read the real
-  environment, set variables, and change the prompt, but heavy work belongs
-  in background jobs so prompt drawing stays fast.
-- The host keeps the cold-start budget (~170 ms) — avoid slow work in
-  `startup`/`greeting`.
-- `precmd` runs before every prompt: keep it cheap, and prefer `chpwd` over
-  re-statting the directory on every prompt.
-- Framework plugins register their own hooks through the same helpers, so a
-  plugin pack and your `.niubashrc` compose cleanly.
+The internal runners (`precmd`/`preexec`/`title`/… cycle calls in
+`shell.rs`) are retained: they carry the live machinery above
+(`PROMPT_COMMAND` execution, `PS0` rendering, `PS1` claim/release sync,
+title resolution) and keep the call sites for the eventual
+external-ecosystem hook model. They are intentionally not a user-facing
+surface until that model is ruled on.

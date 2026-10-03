@@ -6,8 +6,6 @@ param(
     [string]$Arch,
     [string]$BashShimPath,
     [string]$ShShimPath,
-    [string]$OhMyNiubashBundlePath,
-    [switch]$SkipOhMyNiubashBundle,
     [switch]$AllowPathWinuxCmd
 )
 
@@ -135,45 +133,10 @@ try {
         }
     }
 
-    $resolvedOhMyNiubashBundlePath = $null
-    if (-not $SkipOhMyNiubashBundle) {
-        if ($OhMyNiubashBundlePath) {
-            $bundleCandidates = @($OhMyNiubashBundlePath)
-        }
-        else {
-            $bundleCandidates = @(
-                (Join-Path $RepoRoot "..\oh-my-niu")
-                (Join-Path $RepoRoot "bundles\oh-my-niu")
-                (Join-Path $RepoRoot "vendor\oh-my-niu")
-            )
-        }
-
-        foreach ($candidate in $bundleCandidates) {
-            if ((Test-Path -LiteralPath $candidate) -and (Test-Path -LiteralPath (Join-Path $candidate "bundle.toml"))) {
-                $resolvedOhMyNiubashBundlePath = (Resolve-Path -LiteralPath $candidate).Path
-                break
-            }
-        }
-
-        if (-not $resolvedOhMyNiubashBundlePath) {
-            throw "oh-my-niu bundle not found. Pass -OhMyNiubashBundlePath C:\path\to\oh-my-niu or -SkipOhMyNiubashBundle."
-        }
-
-        $bundleToml = Get-Content -LiteralPath (Join-Path $resolvedOhMyNiubashBundlePath "bundle.toml") -Raw
-        $availableMatch = [regex]::Match($bundleToml, '(?ms)^\s*available\s*=\s*\[(.*?)\]')
-        if (-not $availableMatch.Success) {
-            throw "oh-my-niu bundle manifest has no [packs].available list: $resolvedOhMyNiubashBundlePath"
-        }
-        $availablePacks = [regex]::Matches($availableMatch.Groups[1].Value, '"([^"]+)"') |
-            ForEach-Object { $_.Groups[1].Value }
-        foreach ($packName in $availablePacks) {
-            $packManifest = Join-Path $resolvedOhMyNiubashBundlePath (Join-Path "packs\$packName" "plugin.toml")
-            $frameworkManifest = Join-Path $resolvedOhMyNiubashBundlePath (Join-Path "plugins\$packName" "plugin.toml")
-            if (-not (Test-Path -LiteralPath $packManifest) -and -not (Test-Path -LiteralPath $frameworkManifest)) {
-                throw "oh-my-niu bundle pack '$packName' is listed in bundle.toml but missing from packs/ and plugins/: $packManifest"
-            }
-        }
-    }
+    # The built-in plugin/theme stack — including the oh-my-niu bundle —
+    # is retired (niubash#145/#161): the product's plugin verbs hard-bail
+    # on bundles, so release packages no longer stage one. The external
+    # bash ecosystem installs on demand through `niu plugin add` sources.
 
     $distDir = Join-Path $RepoRoot "dist"
     if ($Arch) {
@@ -200,53 +163,6 @@ try {
     Copy-Item -LiteralPath $activationScript -Destination (Join-Path $stageDir "winuxcmd\usr\bin\activate-winuxcmd.sh") -Force
     foreach ($iconFile in $iconFiles) {
         Copy-Item -LiteralPath $iconFile -Destination (Join-Path $stageDir "assets") -Force
-    }
-    if ($resolvedOhMyNiubashBundlePath) {
-        $bundleStageDir = Join-Path $stageDir "bundles\oh-my-niu"
-        New-Item -ItemType Directory -Force -Path $bundleStageDir | Out-Null
-        $requiredBundleEntries = @(
-            "oh-my-niu.niu"
-            "bundle.toml"
-            "index.toml"
-            "lib"
-            "plugins"
-            "packs"
-            "themes"
-        )
-        $bundleEntries = @(
-            "oh-my-niu.niu"
-            "bundle.toml"
-            "index.toml"
-            "README.md"
-            "CHANGELOG.md"
-            "lib"
-            "plugins"
-            "packs"
-            "aliases"
-            "completions"
-            "prompts"
-            "keybindings"
-            "themes"
-            "wasm"
-            "docs"
-            "templates"
-            "tools"
-        )
-        foreach ($entry in $bundleEntries) {
-            $source = Join-Path $resolvedOhMyNiubashBundlePath $entry
-            if (Test-Path -LiteralPath $source) {
-                Copy-Item -LiteralPath $source -Destination $bundleStageDir -Recurse -Force
-            }
-            elseif ($requiredBundleEntries -contains $entry) {
-                throw "Required oh-my-niu bundle entry missing: $source"
-            }
-        }
-        # NOTE: filter with Where-Object, not -Include. On Windows PowerShell
-        # 5.1, -Include is ignored for -LiteralPath -Recurse listings and this
-        # cleanup would delete every staged bundle file.
-        Get-ChildItem -LiteralPath $bundleStageDir -Recurse -File |
-            Where-Object { $_.Extension -in ".pyc", ".pyo" } |
-            Remove-Item -Force
     }
 
     Compress-Archive -LiteralPath $stageDir -DestinationPath $zipPath -Force

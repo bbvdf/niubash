@@ -9,7 +9,7 @@ humans and agents. It does **not implement the shell language itself** — it is
 the interactive front end to the **rubash lib** (the bash-compatible engine)
 plus the routing layer onto **winuxcmd** (coreutils). Its core value is the
 Windows-native process/environment experience: a reedline REPL, the
-completion system, the theme system, Ctrl+C handling, terminal integration,
+completion system, the prompt floor, Ctrl+C handling, terminal integration,
 and a stable non-interactive agent execution contract.
 
 Niubash is not an MSYS2, Git Bash, Cygwin, or WSL-style isolated
@@ -25,9 +25,9 @@ niu.exe
 │   ├── rubash::Executor         ← shell language engine (lexer/parser/execution/builtins)
 │   ├── reedline REPL            ← line editing, history, completion
 │   ├── completion/              ← shell definitions + bash auto-import + 3-level cache
-│   ├── theme/                   ← theme API / schema / bundle loader
+│   ├── prompt/                  ← prompt floor (defaults-as-floor, §14.5 of the ecosystem design)
 │   ├── config                   ← legacy/managed machine-state reads
-│   ├── plugins                  ← official Niubash plugin registry / bundle control plane
+│   ├── plugins                  ← external bash-ecosystem sources (add/trust/enable, no bundles)
 │   └── ctrl_c                   ← Win32 Ctrl+C handling
 ├── rubash lib (Rust)
 │   ├── lexer/parser/ast
@@ -108,10 +108,10 @@ differentiators.
   `export`, `alias`, functions, and local startup logic.
 - `~/.winshrc` is the compatibility fallback; it is read as the legacy user
   rc only when `~/.niubashrc` does not exist.
-- Machine state — plugin CLI enable/disable records, permissions, bundle
-  versions, legacy managed blocks, test isolation, completion directories —
-  is maintained by the internal managed-state mechanism and is not a user
-  configuration entry point.
+- Machine state — plugin CLI enable/disable records, permissions, source
+  registry/trust state, legacy managed blocks, test isolation, completion
+  directories — is maintained by the internal managed-state mechanism and is
+  not a user configuration entry point.
 - When `~/.niubashrc` exists, it is the single entry point for sourcing
   plugins/frameworks; the host no longer silently sources the official
   source plugins a second time from managed-state defaults, avoiding double
@@ -125,22 +125,26 @@ users never need to edit its storage format.
 
 ### 6. Plugin system
 
-The v3 plugin system is Niubash-native.
+The built-in plugin/theme stack (and the `oh-my-niu` bundle format) is
+retired (niubash#145): the plugin verbs hard-bail on bundles, and release
+packages stage no plugin content (niubash#161). The plugin system is the
+**external bash ecosystem as first-class content**.
 
-- `oh-my-niu` ships as the official bundled plugin distribution.
-- Shell helpers such as git/docker/kubectl/npm can ship as first-party
-  `kind = "source"` packs, loaded from a bundle-local `init.winux`.
-- Capabilities that need stronger host behavior (zoxide, direnv, dotenv,
-  fzf, ...) continue to be served by `kind = "builtin"` or a future explicit
-  effect/runtime API.
-- Third-party plugins currently enter through reviewed source packs and
-  process adapters; the permission model is declared uniformly in the
-  manifest.
-- Process/IPC plugins are bridges for external tools and debug backends.
+- Sources are real upstream projects — oh-my-bash, bash-it,
+  bash-completion, any wild plugin repo or single file — installed over
+  git clone on explicit user command (`niu plugin add`), never vendored
+  into the product.
+- Sources land **untrusted** and activate only through the graded trust
+  protocol (`niu plugin trust`); framework assets enable through each
+  manager's own selection mechanism (rc arrays, `enabled/` entries), never
+  through shims that re-implement upstream library functions.
+- The declarative spec `~/.niubash/plugins.toml` is the source of truth
+  for what is declared; the registry pins installed trees (commit +
+  checksum), and `niu plugin sync` reconciles the two without ever
+  granting trust automatically.
 - Plugins cannot extend the rubash parser/executor, and cannot source
   arbitrary legacy `.winsh` files or rc fragments found in user
-  directories. A source pack may only load manifest-declared bundle-local
-  `.winux` files, and requires the `shell:source` permission.
+  directories beyond what the enabled sources themselves declare.
 - Editor capabilities come from reedline and Niubash-native keybinding
   presets.
 
@@ -164,8 +168,8 @@ niubash/
 │           ├── ctrl_c.rs     # Win32 Ctrl+C
 │           ├── config.rs     # config parsing
 │           ├── winuxcmd.rs   # winuxcmd discovery
-│           ├── prompt.rs     # prompt rendering
-│           ├── theme.rs      # theme system
+│           ├── prompt.rs     # prompt rendering (floor)
+│           ├── prompt_segments.rs # segment presets
 │           └── completion/   # completion system
 ├── src/
 │   └── main.rs               # binary entry
@@ -209,8 +213,8 @@ user types "ls -la | grep foo"
 | Command routing | command_router.rs classification table | rubash-internal find_user_command |
 | Built-ins | self-implemented builtins.rs | rubash::builtins |
 | Completion | src/completion/ | fully preserved, migrated |
-| Themes | theme.rs (8 themes) | trimmed to 4 built-in themes |
-| Plugins | Plugin trait + Oh-My-Niubash | moved out of v1, iterated later |
+| Themes | theme.rs (8 themes) | built-in stack retired (niubash#145); themes come from external sources |
+| Plugins | Plugin trait + Oh-My-Niubash | external bash ecosystem as sources (add/trust/enable; no bundles) |
 | License | MIT | GPL-3.0-or-later |
 
 ## Version planning
@@ -220,10 +224,10 @@ user types "ls -la | grep foo"
 - v2.3: Windows-native terminal contract, agent-friendly non-interactive
   behavior, history/prompt/completion UX
 - v2.4: interactive polish (right prompt, hints, completion menu, defaults)
-- v3: Niubash-native plugin system; `oh-my-niu` as the official bundled
-  plugin distribution; first unify existing first-party packs under the
-  `builtin` registry, then bring third-party plugins in through source/
-  process runtimes
+- v3: the external-ecosystem plugin system — first-party packs replaced by
+  real upstream sources (oh-my-bash, bash-it, bash-completion, wild
+  plugins) under the trust protocol; the `oh-my-niu` bundle format was
+  retired along the way (niubash#145/#161)
 - Non-goals: Linux/macOS native shell products; rubash itself is reusable
   across platforms, but the niubash product targets Windows
 

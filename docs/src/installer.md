@@ -120,22 +120,15 @@ This repository does not create the command links. The installation provider
 currently needs to implement this contract; do not replace it with a
 `current_exe()` heuristic in Niubash.
 
-## Bundled Plugin Baseline
+## Plugin Ecosystem In Packages
 
-Release packages also stage the official `oh-my-niu` bundle under:
+Release packages ship no plugin content. The built-in plugin/theme stack —
+including the `oh-my-niu` bundle — is retired (niubash#145), and the plugin
+verbs hard-bail on bundles, so staging one would lay down a tree the product
+refuses to use (niubash#161). Packages contain the shell, the WinuxCmd
+command set, and the command links.
 
-```text
-bundles\oh-my-niu
-```
-
-The runtime checks that app-bundled path after user-managed bundle locations:
-
-```text
-%LOCALAPPDATA%\Niubash\bundles\oh-my-niu\current
-%LOCALAPPDATA%\Niubash\bundles\oh-my-niu\<version>
-bundles\oh-my-niu
-```
-
-Fresh offline installs can still list and use official plugins, while
-`niu plugin update oh-my-niu ...` can replace the baseline without
-rewriting the application install directory.
+The external bash ecosystem (oh-my-bash, bash-it, bash-completion, wild
+plugins) installs on explicit user command — `niu plugin add <id>` clones
+from upstream into the user profile, under the trust protocol. There is
+nothing to pre-stage and nothing to update with the shell.
