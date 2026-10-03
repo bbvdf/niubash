@@ -609,6 +609,228 @@ fn d1_setup_preset_recommended_writes_a_clean_parseable_rc() {
     assert!(journal.contains("preset = 'recommended'"), "{journal}");
 }
 
+// ── D. setup wizard (continued): the one-run out-of-box journey ─────────────
+
+/// Shared ConPTY driver (portable-pty) — the same expect-style session the
+/// interactive target uses, extended with `spawn_cli` for CLI subcommands.
+/// `allow(dead_code)`: only a slice of the driver's surface is used here;
+/// the interactive target keeps full dead-code strictness.
+#[path = "interactive/driver.rs"]
+#[allow(dead_code)]
+mod journey_driver;
+
+/// Recursively copy a fixture tree (the mirror seeder; git's own clone is
+/// what niu exercises, this only stages the mirror's source).
+fn copy_dir(src: &std::path::Path, dest: &std::path::Path) {
+    fs::create_dir_all(dest).unwrap();
+    for entry in fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let target = dest.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// Seed `<dest>` as a real git repository holding the fixture tree at
+/// `src` — the offline mirror niu's `git clone` resolves to.
+fn seed_mirror_repo(git: &std::path::Path, src: &std::path::Path, dest: &std::path::Path) {
+    copy_dir(src, dest);
+    for args in [
+        vec!["init", "-q"],
+        vec![
+            "-c",
+            "user.email=smoke@niu",
+            "-c",
+            "user.name=niu-smoke",
+            "add",
+            "-A",
+        ],
+        vec![
+            "-c",
+            "user.email=smoke@niu",
+            "-c",
+            "user.name=niu-smoke",
+            "commit",
+            "-qm",
+            "seed",
+        ],
+    ] {
+        let status = Command::new(git)
+            .arg("-C")
+            .arg(dest)
+            .args(&args)
+            .output()
+            .expect("git mirror seed command");
+        assert!(
+            status.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&status.stderr)
+        );
+    }
+}
+
+/// d2 — owner ruling 2026-10-03 (装完即选主题): a fresh user picks the
+/// recommended collection and gets the theme pick in the SAME `niu setup`
+/// run — empty gallery at Q1 → recommended → Apply → untrusted install →
+/// trust-now question → pick agnoster → rc rewritten → a fresh `niu -c`
+/// shows OSH_THEME=agnoster. Drives the real interactive wizard under a
+/// pseudo terminal (ConPTY). Fully offline: the collection's git clones
+/// resolve through a seeded local mirror (`NIU_MIRRORS` insteadOf — the
+/// documented §14.8 transport layer), never the network.
+#[test]
+fn d2_wizard_one_run_theme_journey() {
+    if !journey_driver::require_pty_or_skip("d2_wizard_one_run_theme_journey") {
+        return;
+    }
+    let Some(git) = which("git") else {
+        eprintln!("skipping: git not on PATH for the offline collection mirror");
+        return;
+    };
+    let git_dir = git
+        .parent()
+        .expect("git exe has a parent dir")
+        .to_path_buf();
+
+    // The offline GitHub mirror: repo layout matches the canonical origins
+    // the recipes declare (ohmybash/oh-my-bash.git, scop/bash-completion.git).
+    let root = temp_dir("d2-journey");
+    let home = root.join("home");
+    let sources = root.join("sources");
+    let mirror = root.join("mirror");
+    fs::create_dir_all(home.join(".niubash")).unwrap();
+    fs::create_dir_all(&sources).unwrap();
+    seed_mirror_repo(
+        &git,
+        &fixture("oh-my-bash"),
+        &mirror.join("ohmybash").join("oh-my-bash.git"),
+    );
+    seed_mirror_repo(
+        &git,
+        &fixture("bash-completion"),
+        &mirror.join("scop").join("bash-completion.git"),
+    );
+    let mirror_base = format!(
+        "file:///{}",
+        mirror.display().to_string().replace('\\', "/")
+    );
+    fs::write(
+        home.join(".niubash").join("mirrors.toml"),
+        format!(
+            "# smoke journey: rewrite GitHub fetches to the seeded local mirror\n\
+             schema = \"niubash:mirrors@0.1.0\"\n\
+             active = \"custom\"\n\n\
+             [github]\n\
+             git_instead_of = \"{mirror_base}/\"\n"
+        ),
+    )
+    .unwrap();
+
+    let extra_env = vec![
+        (
+            "NIU_PLUGIN_SOURCES_ROOT".to_string(),
+            sources.to_string_lossy().into_owned(),
+        ),
+        (
+            "NIU_PLUGIN_SPEC".to_string(),
+            home.join(".niubash")
+                .join("plugins.toml")
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        (
+            "NIU_MIRRORS".to_string(),
+            home.join(".niubash")
+                .join("mirrors.toml")
+                .to_string_lossy()
+                .into_owned(),
+        ),
+    ];
+
+    // One wizard run, driven like a user drives it. PATH carries git (the
+    // collection install clones through it) on top of the system dirs.
+    let system_root = std::env::var_os("SystemRoot")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
+    let path_dirs = vec![system_root.join("System32"), system_root.clone(), git_dir];
+    let mut s = journey_driver::NiuSession::spawn_cli(
+        "d2-journey",
+        &["setup".to_string()],
+        &extra_env,
+        &path_dirs,
+        (120, 34),
+        Duration::from_secs(120),
+    );
+    // Menus drop input queued while they draw (interactive_menu drains the
+    // console queue after `cursor::position()` returns), so every answer
+    // waits out the draw before pressing a key — send-too-early keys are
+    // silently discarded and the menu would hang.
+    let answer = |s: &mut journey_driver::NiuSession, keys: &str| {
+        std::thread::sleep(Duration::from_millis(250));
+        s.send(keys);
+    };
+    // Q1: the empty-ecosystem gallery note (no menu).
+    s.expect("No external themes installed yet");
+    // Q2.5: pick the recommended collection (displayed option 3).
+    s.expect("Plugin collection?");
+    answer(&mut s, "3\r");
+    // Q3 (Windows only): niu-git — the default (Skip) is highlighted.
+    #[cfg(windows)]
+    {
+        s.expect("niu-git");
+        answer(&mut s, "\r");
+    }
+    // Apply gate: Apply is the highlighted default.
+    s.expect("Apply this configuration?");
+    answer(&mut s, "\r");
+    // Post-install trust question (the wizard question IS the trust verb).
+    s.expect("to list its themes?");
+    answer(&mut s, "2\r"); // Trust now
+                           // The gallery built from the freshly trusted source: agnoster is the
+                           // first entry after Skip.
+    s.expect("Pick a theme");
+    answer(&mut s, "2\r"); // agnoster
+    let finish = s.expect("Change things later:");
+    assert!(finish.contains("niu plugin disable agnoster"), "{finish}");
+    let code = s.wait_exit();
+    assert_eq!(code, 0, "the wizard run must exit 0");
+
+    // The same run wrote the guarded activation block into the rc.
+    let rc = fs::read_to_string(s.home().join(".niubashrc")).unwrap();
+    assert!(rc.contains("OSH_THEME='agnoster'"), "{rc}");
+    assert!(rc.contains(">>> niu source oh-my-bash"), "{rc}");
+    let journal = fs::read_to_string(s.home().join(".niubash").join("setup-journal.toml")).unwrap();
+    assert!(journal.contains("theme = 'agnoster'"), "{journal}");
+    assert!(journal.contains("collection = 'recommended'"), "{journal}");
+
+    // And a fresh shell sees the theme.
+    let home_str = s.home().to_string_lossy().into_owned();
+    let sources_str = sources.to_string_lossy().into_owned();
+    let spec_str = home
+        .join(".niubash")
+        .join("plugins.toml")
+        .to_string_lossy()
+        .into_owned();
+    let probe_env: Vec<(&str, String)> = vec![
+        ("HOME", home_str),
+        ("USERPROFILE", s.home().to_string_lossy().into_owned()),
+        ("NIU_PLUGIN_SOURCES_ROOT", sources_str),
+        ("NIU_PLUGIN_SPEC", spec_str),
+    ];
+    let probe = run_niu(&["-c", ". ~/.niubashrc; echo $OSH_THEME"], &probe_env);
+    assert_success(&probe, "fresh shell sourcing the journey rc");
+    assert_eq!(
+        normalized(&probe),
+        "agnoster",
+        "the one-run journey must leave OSH_THEME=agnoster active"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
 // ── E. basics ────────────────────────────────────────────────────────────────
 
 #[test]

@@ -321,6 +321,70 @@ fn theme_gallery() -> ThemeGallery {
     ThemeGallery { entries: external }
 }
 
+/// The theme question itself: option 0 is Skip — described by whatever
+/// `current` is — then one row per gallery entry with a live preview. Q1
+/// and the post-install pick (owner ruling 2026-10-03) share this exact
+/// presentation, so both land in the rc through the same ThemePick path.
+/// `None` = Ctrl-C.
+fn ask_theme_question(
+    io: &mut WizardIo,
+    t: &Lang,
+    gallery: &ThemeGallery,
+    current: &ThemePick,
+) -> Option<ThemePick> {
+    let mut options = vec![match current {
+        ThemePick::Keep => t.tr("Skip - keep my current theme").to_string(),
+        pick @ ThemePick::External { .. } => format!(
+            "{} ({})",
+            t.tr("Skip - keep my current theme"),
+            describe_theme_pick(pick, *t)
+        ),
+    }];
+    for entry in &gallery.entries {
+        options.push(entry.name.clone());
+    }
+    let theme_refs: Vec<&str> = options.iter().map(String::as_str).collect();
+    let preview = |i: usize| -> Vec<String> {
+        if i == 0 {
+            return match current {
+                ThemePick::Keep => vec![t.tr("current look unchanged").to_string()],
+                pick => vec![format!(
+                    "{} {}",
+                    t.tr("keep"),
+                    describe_theme_pick(pick, *t)
+                )],
+            };
+        }
+        let entry = &gallery.entries[i - 1];
+        vec![
+            format!(
+                "{} - {} {}",
+                entry.name,
+                entry.adapter,
+                t.tr("theme (external source)")
+            ),
+            t.tr("renders via the bash-compatible PS1 channel")
+                .to_string(),
+        ]
+    };
+    let hint = t.tr("  │  external themes from your trusted plugin sources; Skip changes nothing");
+    let idx = io.choice_preview(
+        t.tr("  \u{1f3a8}  Pick a theme"),
+        0,
+        &theme_refs,
+        hint,
+        &preview,
+    )?;
+    if idx > 0 {
+        let entry = &gallery.entries[idx - 1];
+        return Some(ThemePick::External {
+            name: entry.name.clone(),
+            source_id: entry.source_id.clone(),
+        });
+    }
+    Some(ThemePick::Keep)
+}
+
 /// A curated setup preset: an alias-comfort level for `niu setup --preset`.
 /// The plugin/theme parts of presets retired with the built-in stack
 /// (niubash#145); what remains is aliases plus display preferences.
@@ -541,6 +605,12 @@ impl EnvProbe {
 struct WizardIo {
     interactive: bool,
     fast_forward: bool,
+    /// Tests only: queued answers consumed by [`WizardIo::choice_inner`]
+    /// before any console interaction — the wizard's test IO seam, so unit
+    /// tests drive question flows (including the post-install theme pick)
+    /// without a terminal.
+    #[cfg(test)]
+    script: std::collections::VecDeque<usize>,
 }
 
 impl WizardIo {
@@ -548,6 +618,19 @@ impl WizardIo {
         WizardIo {
             interactive,
             fast_forward: false,
+            #[cfg(test)]
+            script: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// Tests only: an "interactive" io whose answers come from `answers`
+    /// (one per question, in order).
+    #[cfg(test)]
+    fn scripted(answers: &[usize]) -> Self {
+        WizardIo {
+            interactive: true,
+            fast_forward: false,
+            script: answers.iter().copied().collect(),
         }
     }
 
@@ -580,6 +663,16 @@ impl WizardIo {
         help: &str,
         preview: Option<&dyn Fn(usize) -> Vec<String>>,
     ) -> Option<usize> {
+        // Test seam: a queued answer wins before any console interaction.
+        // `usize::MAX` scripts a Ctrl-C (None).
+        #[cfg(test)]
+        if let Some(idx) = self.script.pop_front() {
+            return if idx == usize::MAX {
+                None
+            } else {
+                Some(idx.min(options.len().saturating_sub(1)))
+            };
+        }
         if !self.interactive || self.fast_forward || options.is_empty() {
             return Some(default_idx.min(options.len().saturating_sub(1)));
         }
@@ -796,53 +889,7 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
             t.tr("Browse the ecosystem any time with `niu plugin discover` (read-only).")
         );
     } else {
-        let mut options = vec![match &current {
-            ThemePick::Keep => t.tr("Skip - keep my current theme").to_string(),
-            pick @ ThemePick::External { .. } => format!(
-                "{} ({})",
-                t.tr("Skip - keep my current theme"),
-                describe_theme_pick(pick, t)
-            ),
-        }];
-        for entry in &gallery.entries {
-            options.push(entry.name.clone());
-        }
-        let theme_refs: Vec<&str> = options.iter().map(String::as_str).collect();
-        let preview = |i: usize| -> Vec<String> {
-            if i == 0 {
-                return match &current {
-                    ThemePick::Keep => vec![t.tr("current look unchanged").to_string()],
-                    pick => vec![format!("{} {}", t.tr("keep"), describe_theme_pick(pick, t))],
-                };
-            }
-            let entry = &gallery.entries[i - 1];
-            vec![
-                format!(
-                    "{} - {} {}",
-                    entry.name,
-                    entry.adapter,
-                    t.tr("theme (external source)")
-                ),
-                t.tr("renders via the bash-compatible PS1 channel")
-                    .to_string(),
-            ]
-        };
-        let hint =
-            t.tr("  |  external themes from your trusted plugin sources; Skip changes nothing");
-        let idx = ask!(io.choice_preview(
-            t.tr("  \u{1f3a8}  Pick a theme"),
-            0,
-            &theme_refs,
-            hint,
-            &preview,
-        ));
-        if idx > 0 {
-            let entry = &gallery.entries[idx - 1];
-            theme_pick = ThemePick::External {
-                name: entry.name.clone(),
-                source_id: entry.source_id.clone(),
-            };
-        }
+        theme_pick = ask!(ask_theme_question(&mut io, &t, &gallery, &current));
     }
 
     // --- Q2.5: plugin collection (only when the ecosystem is empty) ---
@@ -864,7 +911,7 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
     };
 
     // --- Summary + explicit Apply gate ---
-    let cfg = build_config(&theme_pick);
+    let mut cfg = build_config(&theme_pick);
     print_config_summary(
         &cfg,
         &theme_pick,
@@ -907,7 +954,23 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
         .flatten()
         .and_then(|name| apply_plugin_collection(&name, lang));
 
-    // Setup journal + per-entry undo (iron law 3: 失败可回滚).
+    // --- Post-install theme pick (owner ruling 2026-10-03) ---
+    // Sits between the collection apply and the journal write, so the run
+    // still produces ONE journal + ONE finish screen whose undo lines
+    // cover everything (collection sources + the theme pick through the
+    // shared journal.theme entry). Asked only when the apply installed a
+    // theme-bearing source; minimal/Skip collections ask nothing.
+    let fresh_themes = post_install_theme_candidates(collection_journal.as_ref());
+    if !fresh_themes.is_empty() {
+        if let Some((name, source_id)) =
+            run_post_install_theme_pick(&mut io, lang, &home, &fresh_themes, &mut cfg)
+        {
+            theme_pick = ThemePick::External { name, source_id };
+        }
+    }
+
+    // Setup journal + per-entry undo (iron law 3: 失败可回滚). A theme
+    // picked either at Q1 or post-install lands in the same field.
     let journal = SetupJournal {
         rc_backup: backup_path.clone(),
         theme: match &theme_pick {
@@ -973,6 +1036,185 @@ fn apply_plugin_collection(name: &str, lang: Lang) -> Option<CollectionJournal> 
             None
         }
     }
+}
+
+// ── Post-install theme pick (owner ruling 2026-10-03: 装完即选主题) ──────────
+//
+// After the wizard applies a collection that installs theme-bearing
+// sources, the SAME run offers the theme gallery built from the fresh
+// source — one run, out-of-the-box. Trust stays explicit: the gallery
+// lists trusted sources only, so the flow first asks the trust question
+// (the wizard question IS the trust verb, same checksum tier as
+// `niu plugin trust <id>`); declined → the exact one-liner to run later,
+// nothing changes. The pick then goes through the same ThemePick →
+// build_config → rc path as a Q1 pick, so the journal/undo contract
+// covers it identically.
+
+/// The freshly installed sources that can bear themes: untrusted, healthy,
+/// and their adapter lists at least one theme asset (`asset_kinds` carries
+/// `SourceAssetKind::as_str()` values — "theme"). Only these are named by
+/// the trust question; bash-completion and friends stay out of it.
+fn theme_bearing_untrusted_sources(installed: &[String]) -> Vec<String> {
+    crate::plugins::sources::list_sources()
+        .into_iter()
+        .filter(|status| installed.contains(&status.record.id))
+        .filter(|status| !status.degraded && !status.record.trusted)
+        .filter(|status| status.asset_kinds.iter().any(|kind| kind == "theme"))
+        .map(|status| status.record.id)
+        .collect()
+}
+
+/// Whether the post-install theme question applies to a collection apply
+/// (`None` = no collection, Skip, or an apply that failed — ask nothing).
+fn post_install_theme_candidates(collection: Option<&CollectionJournal>) -> Vec<String> {
+    let Some(collection) = collection else {
+        return Vec::new();
+    };
+    theme_bearing_untrusted_sources(&collection.sources)
+}
+
+/// Run the post-install flow: the trust question, then (when trusted) the
+/// theme gallery built from the freshly installed source. On a pick the
+/// rc is rewritten through the same [`write_rc_and_mark_done`] path as a
+/// Q1 pick (the intermediate backup of the theme-less rc is additive
+/// history; the journal keeps pointing at the pre-run backup) and the
+/// caller folds the returned `(name, source_id)` into the journal.
+///
+/// Returns `None` when nothing changed (declined, skipped, trust failed,
+/// no gallery). Ctrl-C after Apply does NOT cancel the wizard: state was
+/// already written, so the run still lands on the finish screen with its
+/// undo receipts — the flow prints a skip note instead.
+fn run_post_install_theme_pick(
+    io: &mut WizardIo,
+    lang: Lang,
+    home: &std::path::Path,
+    fresh_ids: &[String],
+    cfg: &mut WizardConfig,
+) -> Option<(String, String)> {
+    let t = lang;
+    let options = [
+        format!(
+            "{}  {}",
+            pad_display(t.tr("Skip"), 14),
+            t.tr("default — stay untrusted; nothing changes")
+        ),
+        format!(
+            "{}  {}",
+            pad_display(t.tr("Trust now"), 14),
+            fill(
+                t.tr("verify the checksum, then list themes from {}"),
+                &[&fresh_ids.join(", ")]
+            )
+        ),
+    ];
+    let option_refs: Vec<&str> = options.iter().map(String::as_str).collect();
+    let label = if fresh_ids.len() == 1 {
+        fill(
+            t.tr("  \u{1f510}  Trust '{}' now to list its themes?"),
+            &[&fresh_ids[0]],
+        )
+    } else {
+        t.tr("  \u{1f510}  Trust the freshly installed sources now to list their themes?")
+            .to_string()
+    };
+    let idx = match io.choice(
+        &label,
+        0,
+        &option_refs,
+        t.tr("  |  this question is the `niu plugin trust` verb; Skip leaves the source untrusted"),
+    ) {
+        Some(idx) => idx,
+        None => {
+            println!();
+            println!(
+                "  \u{23ed}\u{fe0f}  {}",
+                t.tr("Theme pick skipped — this run's summary follows")
+            );
+            return None;
+        }
+    };
+
+    if idx == 0 {
+        print_post_install_trust_hint(&t, fresh_ids);
+        return None;
+    }
+
+    // Trust: `trust_source` re-verifies the tree checksum itself and
+    // refuses on mismatch/degraded (the same gate `niu plugin trust`
+    // runs), so a failure here names its repair verb and nothing flips.
+    let mut trusted: Vec<String> = Vec::new();
+    for id in fresh_ids {
+        match crate::plugins::sources::trust_source(id) {
+            Ok(record) => {
+                println!(
+                    "  \u{2705}  {}",
+                    fill(
+                        t.tr("trusted '{}' — its themes join the catalog"),
+                        &[&record.id]
+                    )
+                );
+                trusted.push(record.id);
+            }
+            Err(err) => println!(
+                "  \u{26a0}\u{fe0f}  {}",
+                fill(t.tr("could not trust '{}': {}"), &[id, &err])
+            ),
+        }
+    }
+    if trusted.is_empty() {
+        print_post_install_trust_hint(&t, fresh_ids);
+        return None;
+    }
+
+    let gallery = theme_gallery();
+    if gallery.entries.is_empty() {
+        println!();
+        println!(
+            "  {}",
+            t.tr("no themes appeared after trust — pick later with `niu plugin enable <theme>`")
+        );
+        return None;
+    }
+
+    // The rc the wizard wrote at Apply time has no theme block, so the
+    // "current" the Skip option describes is the default look.
+    match ask_theme_question(io, &t, &gallery, &ThemePick::Keep) {
+        Some(ThemePick::External { name, source_id }) => {
+            cfg.theme = name.clone();
+            cfg.theme_source_id = Some(source_id.clone());
+            // Same write path as a Q1 pick: the guarded activation block
+            // lands through generate_rc/write_rc_and_mark_done, so undo
+            // (`niu plugin disable <theme>`) and rollback cover it.
+            let _ = write_rc_and_mark_done(home, cfg, lang);
+            Some((name, source_id))
+        }
+        Some(ThemePick::Keep) => None,
+        None => {
+            println!();
+            println!(
+                "  \u{23ed}\u{fe0f}  {}",
+                t.tr("Theme pick skipped — this run's summary follows")
+            );
+            None
+        }
+    }
+}
+
+/// The exact one-liner to run later when the trust question is declined
+/// (or fails): trust the source, then re-run the wizard or enable a theme.
+fn print_post_install_trust_hint(t: &Lang, ids: &[String]) {
+    println!();
+    println!(
+        "  \u{21a9}\u{fe0f}  {}",
+        t.tr("Theme pick skipped — trust later, then pick:")
+    );
+    for id in ids {
+        println!("  \u{2502}    niu plugin trust {id}");
+    }
+    println!(
+        "  \u{2502}    {}",
+        t.tr("then re-run `niu setup` (or `niu plugin enable <theme>`)")
+    );
 }
 
 /// Short human description of a theme pick ("classic", "robbyrussell ·
@@ -1640,6 +1882,26 @@ fn zh(en: &str) -> Option<&'static str> {
             "双框架 + bash-preexec；fzf/starship 仅为安装建议（niu 不下载任何东西）",
         "  |  installs stay untrusted until `niu plugin trust`; Skip changes nothing" =>
             "  |  安装后保持未信任，待 `niu plugin trust` 审阅；跳过则不做任何改动",
+
+        // Post-install theme pick (owner ruling 2026-10-03)
+        "Trust now" => "现在信任",
+        "default — stay untrusted; nothing changes" => "默认 —— 保持未信任，不做任何改动",
+        "verify the checksum, then list themes from {}" => "校验 checksum，然后列出 {} 的主题",
+        "  \u{1f510}  Trust '{}' now to list its themes?" =>
+            "  \u{1f510}  现在信任 '{}' 以列出它的主题？",
+        "  \u{1f510}  Trust the freshly installed sources now to list their themes?" =>
+            "  \u{1f510}  现在信任新安装的源以列出它们的主题？",
+        "  |  this question is the `niu plugin trust` verb; Skip leaves the source untrusted" =>
+            "  |  这一问就是 `niu plugin trust` 动作本身；跳过则保持未信任",
+        "Theme pick skipped — this run's summary follows" =>
+            "已跳过主题选择 —— 接下来显示本次运行的摘要",
+        "trusted '{}' — its themes join the catalog" => "已信任 '{}' —— 其主题加入目录",
+        "could not trust '{}': {}" => "无法信任 '{}'：{}",
+        "no themes appeared after trust — pick later with `niu plugin enable <theme>`" =>
+            "信任后没有出现主题 —— 以后用 `niu plugin enable <主题>` 选择",
+        "Theme pick skipped — trust later, then pick:" => "已跳过主题选择 —— 以后信任后再选：",
+        "then re-run `niu setup` (or `niu plugin enable <theme>`)" =>
+            "然后重新运行 `niu setup`（或 `niu plugin enable <主题>`）",
         "current look unchanged" => "当前外观保持不变",
         "keep" => "保留",
         "default" => "默认",
@@ -1861,6 +2123,11 @@ mod tests {
             "  \u{1f9f0}  Plugin collection?",
             "default — browse later with `niu plugin recipe list`",
             "plugin collection",
+            "  \u{1f510}  Trust '{}' now to list its themes?",
+            "Trust now",
+            "default — stay untrusted; nothing changes",
+            "Theme pick skipped — trust later, then pick:",
+            "then re-run `niu setup` (or `niu plugin enable <theme>`)",
             "  \u{1f9e9}  niu-git — Windows-native git experience?",
             "Apply",
             "Cancel",
@@ -2004,6 +2271,205 @@ mod tests {
         assert!(rc.contains("bash-compatible channel"), "{rc}");
 
         crate::plugins::sources::remove_source("oh-my-bash").unwrap();
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    /// The state `apply_plugin_collection` leaves behind, without any
+    /// network: the fixture source installed UNTRUSTED from a local path.
+    fn install_untrusted_omb_fixture() {
+        crate::plugins::sources::add_source(crate::plugins::sources::SourceInstallRequest {
+            adapter: None,
+            origin: omb_fixture_path().to_string_lossy().into_owned(),
+            ref_name: None,
+            commit: None,
+            expected_checksum: None,
+            id: None,
+            entry: None,
+        })
+        .expect("fixture source add must succeed");
+    }
+
+    fn source_is_trusted(id: &str) -> bool {
+        crate::plugins::sources::read_source_registry()
+            .into_iter()
+            .find(|record| record.id == id)
+            .map(|record| record.trusted)
+            .unwrap_or(false)
+    }
+
+    /// (a) recommended + trust-yes + theme picked: the same run trusts the
+    /// fresh source and rewrites the rc through the guarded activation
+    /// block — journal/undo cover the pick exactly like a Q1 pick.
+    #[test]
+    fn post_install_pick_trusts_then_writes_the_guarded_theme_block() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let temp = unique_temp_dir("wizard-post-install");
+        let root = temp.join("sources");
+        let home = temp.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let _sources = EnvGuard::set("NIU_PLUGIN_SOURCES_ROOT", &root.to_string_lossy());
+        let _home = EnvGuard::set("HOME", &host_to_shell_style_path(&home));
+        let _userprofile = EnvGuard::unset("USERPROFILE");
+        install_untrusted_omb_fixture();
+
+        // Post-apply wizard state: rc already written theme-less, cfg from
+        // build_config(Keep), collection journal naming the fresh source.
+        let mut cfg = build_config(&ThemePick::Keep);
+        std::fs::write(home.join(PRIMARY_RC_FILE), generate_rc(&cfg)).unwrap();
+        let candidates = post_install_theme_candidates(Some(&CollectionJournal {
+            name: "recommended".to_string(),
+            sources: vec!["oh-my-bash".to_string()],
+        }));
+        assert_eq!(candidates, vec!["oh-my-bash".to_string()], "{candidates:?}");
+
+        // Answers (0-based indices, like every choice_inner return): Trust
+        // now (1), then the gallery's first theme — the fixture lists
+        // agnoster + robbyrussell sorted, so Skip=0, agnoster=1.
+        let mut io = WizardIo::scripted(&[1, 1]);
+        let picked = run_post_install_theme_pick(&mut io, Lang::En, &home, &candidates, &mut cfg);
+        assert_eq!(
+            picked,
+            Some(("agnoster".to_string(), "oh-my-bash".to_string())),
+            "{picked:?}"
+        );
+        assert_eq!(cfg.theme, "agnoster");
+        assert_eq!(cfg.theme_source_id.as_deref(), Some("oh-my-bash"));
+        assert!(
+            source_is_trusted("oh-my-bash"),
+            "the pick must have trusted it"
+        );
+
+        // The rc on disk carries the same guarded block a Q1 pick writes.
+        let rc = std::fs::read_to_string(home.join(PRIMARY_RC_FILE)).unwrap();
+        assert!(rc.contains("OSH_THEME='agnoster'"), "{rc}");
+        assert!(rc.contains("NIU_THEME_SOURCE=omb"), "{rc}");
+        assert!(rc.contains(">>> niu source oh-my-bash"), "{rc}");
+        assert!(rc.contains("fallback stays active when absent"), "{rc}");
+
+        // One journal + undo lines for both the collection and the pick.
+        let journal = SetupJournal {
+            rc_backup: None,
+            theme: picked.map(|(name, source)| (name, source)),
+            preset: None,
+            niu_git: None,
+            collection: Some(CollectionJournal {
+                name: "recommended".to_string(),
+                sources: vec!["oh-my-bash".to_string()],
+            }),
+        };
+        let undo = setup_undo_lines(&home, &journal);
+        assert!(
+            undo.iter()
+                .any(|line| line.contains("niu plugin disable agnoster")),
+            "{undo:?}"
+        );
+        assert!(
+            undo.iter()
+                .any(|line| line.contains("niu plugin source remove oh-my-bash")),
+            "{undo:?}"
+        );
+
+        crate::plugins::sources::remove_source("oh-my-bash").unwrap();
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    /// (b) trust declined: no theme question at all, the hint is the only
+    /// output, and the rc/registry stay exactly as the collection apply
+    /// left them.
+    #[test]
+    fn post_install_declined_trust_changes_nothing() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let temp = unique_temp_dir("wizard-post-decline");
+        let root = temp.join("sources");
+        let home = temp.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let _sources = EnvGuard::set("NIU_PLUGIN_SOURCES_ROOT", &root.to_string_lossy());
+        let _home = EnvGuard::set("HOME", &host_to_shell_style_path(&home));
+        let _userprofile = EnvGuard::unset("USERPROFILE");
+        install_untrusted_omb_fixture();
+
+        let mut cfg = build_config(&ThemePick::Keep);
+        std::fs::write(home.join(PRIMARY_RC_FILE), generate_rc(&cfg)).unwrap();
+        let rc_before = std::fs::read_to_string(home.join(PRIMARY_RC_FILE)).unwrap();
+        let candidates = post_install_theme_candidates(Some(&CollectionJournal {
+            name: "recommended".to_string(),
+            sources: vec!["oh-my-bash".to_string()],
+        }));
+
+        // Skip (0): the default answer — the wizard convention that every
+        // question defaults to "no change".
+        let mut io = WizardIo::scripted(&[0]);
+        let picked = run_post_install_theme_pick(&mut io, Lang::En, &home, &candidates, &mut cfg);
+        assert!(picked.is_none(), "{picked:?}");
+        assert!(cfg.theme.is_empty());
+        assert!(cfg.theme_source_id.is_none());
+        assert!(!source_is_trusted("oh-my-bash"));
+        assert_eq!(
+            std::fs::read_to_string(home.join(PRIMARY_RC_FILE)).unwrap(),
+            rc_before,
+            "the rc must stay byte-identical when trust is declined"
+        );
+        // Exactly one question was asked (the trust one) — no gallery.
+        #[cfg(test)]
+        assert!(io.script.is_empty(), "the theme question must not appear");
+
+        // The non-interactive default is the same Skip.
+        let mut io = WizardIo::new(false);
+        assert!(
+            run_post_install_theme_pick(&mut io, Lang::En, &home, &candidates, &mut cfg).is_none()
+        );
+        assert!(!source_is_trusted("oh-my-bash"));
+
+        // Ctrl-C after Apply skips the pick too — state is already written,
+        // so the flow must return (the finish screen follows), not cancel.
+        let mut io = WizardIo::scripted(&[usize::MAX]);
+        assert!(
+            run_post_install_theme_pick(&mut io, Lang::En, &home, &candidates, &mut cfg).is_none()
+        );
+        assert_eq!(
+            std::fs::read_to_string(home.join(PRIMARY_RC_FILE)).unwrap(),
+            rc_before
+        );
+
+        crate::plugins::sources::remove_source("oh-my-bash").unwrap();
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    /// (c) minimal / Skip collections ask nothing: no collection, a failed
+    /// apply, or an apply whose sources bear no themes all stay silent.
+    #[test]
+    fn post_install_candidates_stay_empty_for_minimal_or_skipped_runs() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let temp = unique_temp_dir("wizard-post-minimal");
+        let root = temp.join("sources");
+        let _sources = EnvGuard::set("NIU_PLUGIN_SOURCES_ROOT", &root.to_string_lossy());
+
+        assert!(
+            post_install_theme_candidates(None).is_empty(),
+            "Skip (or a failed apply) must never trigger the question"
+        );
+
+        // A minimal-style apply lands bash-completion — no theme assets.
+        crate::plugins::sources::add_source(crate::plugins::sources::SourceInstallRequest {
+            adapter: None,
+            origin: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/sources/bash-completion")
+                .to_string_lossy()
+                .into_owned(),
+            ref_name: None,
+            commit: None,
+            expected_checksum: None,
+            id: None,
+            entry: None,
+        })
+        .expect("bash-completion fixture add must succeed");
+        let candidates = post_install_theme_candidates(Some(&CollectionJournal {
+            name: "minimal".to_string(),
+            sources: vec!["bash-completion".to_string()],
+        }));
+        assert!(candidates.is_empty(), "{candidates:?}");
+
+        crate::plugins::sources::remove_source("bash-completion").unwrap();
         let _ = std::fs::remove_dir_all(&temp);
     }
 

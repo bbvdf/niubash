@@ -137,6 +137,15 @@ niu plugin enable <id>[/<asset>]   # declare + materialize
 - Lockfile verbs: `update` moves the pin to the ref's tip, `restore`
   rebuilds the tree from the pin, `rollback` returns to the previous
   state, `clean` removes staging leftovers and orphaned trees.
+- **The setup wizard's post-install pick** (one run, out of the box): when
+  a collection applied by `niu setup` installs a theme-bearing source
+  (e.g. the `recommended` collection's oh-my-bash), the same run asks one
+  trust question — the wizard's phrasing of `niu plugin trust`, same
+  checksum tier — and then offers the freshly trusted source's themes;
+  the picked theme lands through the same guarded block `niu plugin
+  enable <theme>` writes and gets its own undo line in the setup journal.
+  Declining changes nothing: the run prints the exact `niu plugin trust
+  <id>` command (plus the re-run / enable follow-up) to do it later.
 
 ## Troubleshooting
 

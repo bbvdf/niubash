@@ -301,6 +301,23 @@ else
 fi
 rm -rf "$SB2"
 
+# d2 — the one-run out-of-box journey (owner ruling 2026-10-03): the wizard
+# installs the recommended collection, asks trust-now, and the SAME run
+# picks agnoster — a fresh `niu -c` shows OSH_THEME=agnoster. Driven over
+# ConPTY (python + pywinpty + pyte, the scripts/test_setup_wizard_pty.py
+# pattern); fully offline — the collection's git clones resolve through a
+# seeded local mirror. Exit 2 from the probe = environment skip.
+if python scripts/smoke-wizard-journey.py "$NIU" "$SB" >"$SB/d2.out" 2>&1; then
+    record PASS d2-one-run-theme "empty → recommended → trust → agnoster in one wizard run"
+else
+    d2_rc=$?
+    if [ "$d2_rc" = "2" ]; then
+        record SKIP d2-one-run-theme "$(tail -1 "$SB/d2.out")"
+    else
+        record FAIL d2-one-run-theme "$(tail -3 "$SB/d2.out" | tr '\n' ' ')"
+    fi
+fi
+
 # ── E. basics ────────────────────────────────────────────────────────────────
 section "E. basics"
 
