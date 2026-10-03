@@ -315,10 +315,38 @@ fn theme_gallery() -> ThemeGallery {
             adapter: entry.adapter_display,
         })
         .collect();
-    external.sort_by(|a, b| a.name.cmp(&b.name));
+    // Sort by (name, source priority, source id), then keep the FIRST entry
+    // per name. The priority tier is the fix for the journey's J5 gap
+    // (run-13, 2026-10-04): with several frameworks installed, both may ship
+    // a same-named theme (powerline-multiline exists in oh-my-bash AND
+    // bash-it) and the old plain-name sort kept whichever the registry
+    // happened to list first — silently routing the pick through the other
+    // framework's adapter. Resolution now follows the product's framework
+    // order: oh-my-bash is niu's primary external framework (the base of
+    // every built-in collection, the rc template's default theme channel),
+    // so a shared name activates through ITS native loader; every other
+    // source follows alphabetical tie-break so the gallery stays
+    // deterministic regardless of registry order.
+    external.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| gallery_source_rank(&a.source_id).cmp(&gallery_source_rank(&b.source_id)))
+            .then_with(|| a.source_id.cmp(&b.source_id))
+    });
     let mut seen = BTreeSet::new();
     external.retain(|entry| seen.insert(entry.name.to_ascii_lowercase()));
     ThemeGallery { entries: external }
+}
+
+/// Priority tier of a theme source for same-name gallery resolution
+/// (lower renders first and wins the dedupe): 0 = oh-my-bash (the primary
+/// external framework), 1 = everything else.
+fn gallery_source_rank(source_id: &str) -> u8 {
+    if source_id == "oh-my-bash" {
+        0
+    } else {
+        1
+    }
 }
 
 /// The theme question itself: option 0 is Skip — described by whatever
@@ -1002,10 +1030,6 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Apply the picked collection after the Apply gate (study §8/§10.2).
-/// Failures are collected per entry (lazy.nvim Spec:log pattern): each one
-/// is printed with its repair verb and the run continues — the function
-/// itself never fails.
 fn apply_plugin_collection(name: &str, lang: Lang) -> Option<CollectionJournal> {
     println!();
     match crate::plugins::distros::apply(name) {
@@ -1265,13 +1289,13 @@ fn print_post_install_trust_hint(t: &Lang, ids: &[String]) {
 fn describe_theme_pick(pick: &ThemePick, t: Lang) -> String {
     match pick {
         ThemePick::Keep => t.tr("default").to_string(),
-        ThemePick::External { name, .. } => format!("{} · oh-my-bash", name),
+        ThemePick::External { name, source_id } => format!("{name} · {source_id}"),
     }
 }
 
-/// The theme that is active right now: the `NIU_THEME` the shell was started
-/// with, else the assignment in the existing rc (`OSH_THEME` +
-/// `NIU_THEME_SOURCE=omb` marks an external oh-my-bash pick). Used so
+/// The theme that is active right now: the assignment in the existing rc
+/// (`OSH_THEME` marks an oh-my-bash pick, `BASH_IT_THEME` a bash-it pick —
+/// the LAST theme-bearing block wins, mirroring rc load order). Used so
 /// "Skip — keep my current theme" is honest and side-effect free.
 fn current_theme_pick(home: &std::path::Path) -> ThemePick {
     let text = std::fs::read_to_string(home.join(PRIMARY_RC_FILE))
@@ -1281,27 +1305,24 @@ fn current_theme_pick(home: &std::path::Path) -> ThemePick {
         return ThemePick::Keep;
     };
     // The native NIU_THEME channel is retired (niubash#145); only the
-    // external oh-my-bash OSH_THEME lines identify an active theme.
-    let mut osh: Option<String> = None;
+    // external theme variables identify an active pick — each through its
+    // own framework's managed block.
+    let mut active: Option<(String, String)> = None;
     for raw in text.lines() {
         let line = raw.trim().strip_prefix("export ").unwrap_or(raw).trim();
-        if let Some(rest) = line
-            .strip_prefix("OSH_THEME")
-            .and_then(|r| r.strip_prefix('='))
-        {
-            let value = rest.trim().trim_matches('\'').trim_matches('"');
-            if !value.is_empty() {
-                osh = Some(value.to_string());
+        for (var, source_id) in [("OSH_THEME", "oh-my-bash"), ("BASH_IT_THEME", "bash-it")] {
+            if let Some(rest) = line.strip_prefix(var).and_then(|r| r.strip_prefix('=')) {
+                let value = rest.trim().trim_matches('\'').trim_matches('"');
+                if !value.is_empty() {
+                    active = Some((value.to_string(), source_id.to_string()));
+                }
             }
         }
     }
-    if let Some(name) = osh {
-        return ThemePick::External {
-            name,
-            source_id: "oh-my-bash".to_string(),
-        };
+    match active {
+        Some((name, source_id)) => ThemePick::External { name, source_id },
+        None => ThemePick::Keep,
     }
-    ThemePick::Keep
 }
 
 /// Build the rc configuration from the wizard answers. Skip paths mirror the
@@ -1764,8 +1785,12 @@ fn generate_rc(cfg: &WizardConfig) -> String {
         block
     };
     let theme_note = if external.is_some() {
+        // Name the pick's ACTUAL source (run-13 journaled "the oh-my-bash
+        // theme" above a bash-it BASH_IT_THEME block — the note must never
+        // contradict the loader it sits on).
         format!(
-            "# Prompt owned by the oh-my-bash theme '{}'; PS1 renders via the bash-compatible channel.\n",
+            "# Prompt owned by the {} theme '{}'; PS1 renders via the bash-compatible channel.\n",
+            cfg.theme_source_id.as_deref().unwrap_or("external"),
             cfg.theme
         )
     } else {
@@ -2242,6 +2267,110 @@ mod tests {
         );
 
         crate::plugins::sources::remove_source("oh-my-bash").unwrap();
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    /// The vendored bash-it fixture tree shipped with the repo tests.
+    fn bash_it_fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/sources/bash-it")
+    }
+
+    fn install_trusted_bash_it_fixture(root: &std::path::Path) {
+        let _ = root;
+        crate::plugins::sources::add_source(crate::plugins::sources::SourceInstallRequest {
+            adapter: None,
+            origin: bash_it_fixture_path().to_string_lossy().into_owned(),
+            ref_name: None,
+            commit: None,
+            expected_checksum: None,
+            id: None,
+            entry: None,
+        })
+        .expect("bash-it fixture source add must succeed");
+        crate::plugins::sources::trust_source("bash-it").expect("bash-it fixture trust");
+    }
+
+    /// J5 gap (journey run-13, 2026-10-04), both halves in one fixture pass
+    /// (a single install of both frameworks keeps the env-sensitive window
+    /// of the suite's Windows env race as short as possible):
+    ///
+    /// 1. Gallery routing: both fixtures ship a theme named `demox`, and the
+    ///    old plain-name sort kept whichever source the registry listed
+    ///    first — the preview read "demox - bash-it theme", the rc got a
+    ///    BASH_IT_THEME block while the wizard model said oh-my-bash, and
+    ///    PS1 stayed the default. The collision must resolve exactly once,
+    ///    deterministically, to the primary framework (oh-my-bash).
+    /// 2. Loader fidelity (§14.4): whichever source a picked theme came
+    ///    from, the rc activates it through THAT framework's own mechanism
+    ///    (no shims, no PS1-writing): OSH_THEME + the guarded oh-my-bash.sh
+    ///    loader for oh-my-bash picks, BASH_IT_THEME + the guarded
+    ///    bash_it.sh loader for bash-it picks, note naming the real source.
+    #[test]
+    fn theme_pick_routes_and_applies_through_the_owning_framework() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp = unique_temp_dir("wizard-routing");
+        let root = temp.join("sources");
+        let home = temp.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let _sources = EnvGuard::set("NIU_PLUGIN_SOURCES_ROOT", &root.to_string_lossy());
+        let _home = EnvGuard::set("HOME", &host_to_shell_style_path(&home));
+        let _userprofile = EnvGuard::unset("USERPROFILE");
+        // Register bash-it FIRST on purpose: the old bug kept whichever
+        // source happened to list first, so the hostile order is the proof.
+        install_trusted_bash_it_fixture(&root);
+        install_trusted_omb_fixture(&root);
+
+        // (1) The gallery resolves the shared name once, to oh-my-bash.
+        let gallery = theme_gallery();
+        let shared: Vec<&ThemeGalleryEntry> = gallery
+            .entries
+            .iter()
+            .filter(|entry| entry.name == "demox")
+            .collect();
+        assert_eq!(shared.len(), 1, "collision must resolve once: {gallery:?}");
+        assert_eq!(
+            shared[0].source_id, "oh-my-bash",
+            "shared names route to the primary framework: {gallery:?}"
+        );
+        // Both sources still contribute their unique names.
+        assert!(
+            gallery
+                .entries
+                .iter()
+                .any(|e| e.name == "agnoster" && e.source_id == "oh-my-bash"),
+            "{gallery:?}"
+        );
+
+        // (2) A pick from either source routes through that framework's own
+        // loader block.
+        let omb_pick = build_config(&ThemePick::External {
+            name: "demox".to_string(),
+            source_id: "oh-my-bash".to_string(),
+        });
+        let rc = generate_rc(&omb_pick);
+        assert!(rc.contains("OSH_THEME='demox'"), "{rc}");
+        assert!(rc.contains(". \"$OSH/oh-my-bash.sh\""), "{rc}");
+        assert!(!rc.contains("BASH_IT_THEME"), "{rc}");
+        assert!(
+            rc.contains("# Prompt owned by the oh-my-bash theme 'demox'"),
+            "the note must name the pick's actual source: {rc}"
+        );
+
+        let bash_it_pick = build_config(&ThemePick::External {
+            name: "demox".to_string(),
+            source_id: "bash-it".to_string(),
+        });
+        let rc = generate_rc(&bash_it_pick);
+        assert!(rc.contains("BASH_IT_THEME='demox'"), "{rc}");
+        assert!(rc.contains("bash_it.sh"), "{rc}");
+        assert!(!rc.contains("OSH_THEME"), "{rc}");
+        assert!(
+            rc.contains("# Prompt owned by the bash-it theme 'demox'"),
+            "the note must name the pick's actual source: {rc}"
+        );
+
+        let _ = crate::plugins::sources::remove_source("oh-my-bash");
+        let _ = crate::plugins::sources::remove_source("bash-it");
         let _ = std::fs::remove_dir_all(&temp);
     }
 
