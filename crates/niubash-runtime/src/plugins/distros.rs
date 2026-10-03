@@ -341,22 +341,18 @@ pub struct CollectionApply {
     pub failures: Vec<(String, String)>,
     /// Source ids installed by this apply (undo: `niu plugin source remove`).
     pub installed_sources: Vec<String>,
-    /// Tool ids installed by this apply (undo: `niu plugin tool remove`).
-    pub installed_tools: Vec<String>,
 }
 
 /// Apply a collection: walk the entries through the recipe drivers. Trust
 /// is never granted here — each report carries the review verb.
+/// Executable-tool entries recommend package managers (download retraction
+/// 2026-10-04); they install nothing and fail nothing.
 pub fn apply(name: &str) -> anyhow::Result<CollectionApply> {
     let listing = collection(name).ok_or_else(|| anyhow!("unknown collection '{name}'"))?;
     validate_collection(&listing.collection)?;
     let before_sources: Vec<String> = super::sources::read_source_registry()
         .into_iter()
         .map(|record| record.id)
-        .collect();
-    let before_tools: Vec<String> = super::download::read_tool_registry()
-        .into_iter()
-        .map(|tool| tool.id)
         .collect();
 
     let mut reports = Vec::new();
@@ -373,17 +369,11 @@ pub fn apply(name: &str) -> anyhow::Result<CollectionApply> {
         .map(|record| record.id)
         .filter(|id| !before_sources.contains(id))
         .collect();
-    let installed_tools: Vec<String> = super::download::read_tool_registry()
-        .into_iter()
-        .map(|tool| tool.id)
-        .filter(|id| !before_tools.contains(id))
-        .collect();
     Ok(CollectionApply {
         name: listing.collection.name,
         reports,
         failures,
         installed_sources,
-        installed_tools,
     })
 }
 

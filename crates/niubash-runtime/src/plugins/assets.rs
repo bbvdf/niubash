@@ -56,29 +56,15 @@ fn end_marker(id: &str) -> String {
     format!("# <<< niu source {id} <<<")
 }
 
-fn tool_begin_marker(id: &str) -> String {
-    format!("# >>> niu tool {id} (managed by `niu plugin enable/disable`) >>>")
-}
-
-fn tool_end_marker(id: &str) -> String {
-    format!("# <<< niu tool {id} <<<")
-}
-
-/// True when `id` has a managed block in the rc (the enable state as the
-/// loader sees it — one source of truth for listings and the plugin UI).
-/// Checks both block kinds: source loaders, tool PATH blocks, and the
-/// legacy unmarked tool header (still load-bearing in rc files written by
-/// older builds).
+/// True when `id` has a managed source block in the rc (the enable state
+/// as the loader sees it — one source of truth for listings and the
+/// plugin UI). The former tool PATH-block channel retired with the
+/// download driver (owner ruling 2026-10-04).
 pub fn managed_block_present(id: &str) -> bool {
     let Ok(text) = fs::read_to_string(rc_file()) else {
         return false;
     };
-    let legacy_tool_header =
-        format!("# niu tool path: {id} (managed; edit via `niu plugin enable/disable {id}`)");
-    text.lines().any(|line| {
-        let line = line.trim();
-        line == begin_marker(id) || line == tool_begin_marker(id) || line == legacy_tool_header
-    })
+    text.lines().any(|line| line.trim() == begin_marker(id))
 }
 
 /// The primary interactive rc file asset activation edits.
@@ -419,71 +405,6 @@ pub fn build_theme_block(source_id: &str, theme: &str) -> Option<String> {
         files: Vec::new(),
     };
     Some(render_block(&record, &model, &state))
-}
-
-/// Write (or replace) the managed PATH block for an executable tool
-/// installed through the download driver (`plugins::download`). Mason's
-/// PATH-as-policy shape (study §10.3): one block per tool, the tool
-/// directory prepended so it wins over system copies. The block carries
-/// its own `niu tool` marker pair (distinct from source blocks) so
-/// `niu plugin disable` / `niu plugin tool remove` strip exactly these
-/// lines and never touch a source block or user lines.
-pub fn write_tool_path_block(tool_id: &str, tool_dir: &Path) -> anyhow::Result<PathBuf> {
-    let block = format!(
-        "# niu tool path: {tool_id} (managed; edit via `niu plugin enable/disable {tool_id}`)\n\
-         export PATH={}:\"$PATH\"\n",
-        shell_quote(&tool_dir.display().to_string())
-    );
-    let wrapped = format!(
-        "{}\n{}\n{}\n",
-        tool_begin_marker(tool_id),
-        block.trim_end_matches('\n'),
-        tool_end_marker(tool_id)
-    );
-    write_managed_block(
-        &tool_begin_marker(tool_id),
-        &tool_end_marker(tool_id),
-        &wrapped,
-    )
-}
-
-/// Remove a tool's PATH block; `false` when none existed. Falls back to the
-/// legacy unmarked shape (pre-marker tool blocks appended verbatim by older
-/// builds) so those lines are cleaned up too instead of leaking.
-pub fn remove_tool_path_block(tool_id: &str) -> anyhow::Result<bool> {
-    if remove_managed_block(&tool_begin_marker(tool_id), &tool_end_marker(tool_id))? {
-        return Ok(true);
-    }
-    let path = rc_file();
-    let Ok(text) = fs::read_to_string(&path) else {
-        return Ok(false);
-    };
-    let legacy_header = format!(
-        "# niu tool path: {tool_id} (managed; edit via `niu plugin enable/disable {tool_id}`)"
-    );
-    let mut lines: Vec<&str> = Vec::new();
-    let mut removed = false;
-    let mut skip_next_export = false;
-    for line in text.lines() {
-        if line.trim() == legacy_header {
-            removed = true;
-            skip_next_export = true;
-            continue;
-        }
-        if skip_next_export && line.trim_start().starts_with("export PATH=") {
-            skip_next_export = false;
-            continue;
-        }
-        skip_next_export = false;
-        lines.push(line);
-    }
-    if !removed {
-        return Ok(false);
-    }
-    let mut rewritten = lines.join("\n");
-    rewritten.push('\n');
-    fs::write(&path, rewritten)?;
-    Ok(true)
 }
 
 // ── bash-it enabled/ directory (tree-side state) ─────────────────────────────
@@ -1424,70 +1345,6 @@ mod tests {
 
     fn spec_text() -> String {
         fs::read_to_string(spec::spec_path()).unwrap_or_default()
-    }
-
-    /// Tool PATH blocks carry their own `niu tool` marker pair (distinct
-    /// from `niu source` blocks): enable writes them wrapped, present sees
-    /// them, disable removes exactly those lines — and the legacy unmarked
-    /// shape from older builds is swept too (wt49/wpmretract: the download
-    /// driver is the only tool-install entry, so its undo must be real).
-    #[test]
-    fn tool_path_block_round_trip_is_marker_wrapped_and_removable() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
-        let box_ = sandbox("tool-path-block");
-        fs::write(rc_file(), "# user header\nexport EDITOR=vim\n").unwrap();
-
-        let tool_dir = box_.temp.join("tools").join("dust");
-        fs::create_dir_all(&tool_dir).unwrap();
-        write_tool_path_block("dust", &tool_dir).expect("write tool block");
-        let rc = rc_text();
-        assert!(
-            rc.contains("# >>> niu tool dust (managed by `niu plugin enable/disable`) >>>"),
-            "{rc}"
-        );
-        assert!(rc.contains("# <<< niu tool dust <<<"), "{rc}");
-        assert!(rc.contains("# niu tool path: dust"), "{rc}");
-        assert!(rc.contains("export PATH="), "{rc}");
-        assert!(managed_block_present("dust"), "{rc}");
-        // User lines survive.
-        assert!(rc.contains("export EDITOR=vim"), "{rc}");
-
-        // Enable is idempotent: a second write replaces, never duplicates.
-        write_tool_path_block("dust", &tool_dir).expect("rewrite tool block");
-        assert_eq!(
-            rc_text().matches("# >>> niu tool dust").count(),
-            1,
-            "{}",
-            rc_text()
-        );
-
-        // Disable removes exactly the managed block.
-        assert!(remove_tool_path_block("dust").expect("remove"));
-        let rc = rc_text();
-        assert!(!rc.contains("niu tool"), "{rc}");
-        assert!(rc.contains("export EDITOR=vim"), "{rc}");
-        assert!(!managed_block_present("dust"));
-        assert!(!remove_tool_path_block("dust").unwrap(), "already gone");
-
-        // Legacy sweep: the pre-marker shape (appended verbatim by older
-        // builds) is still cleaned up.
-        fs::write(
-            rc_file(),
-            format!(
-                "# user header\n\n# niu tool path: dust (managed; edit via `niu plugin enable/disable dust`)\nexport PATH='/x/dust':\"$PATH\"\n",
-            ),
-        )
-        .unwrap();
-        assert!(
-            managed_block_present("dust"),
-            "legacy line counts as present"
-        );
-        assert!(remove_tool_path_block("dust").expect("legacy remove"));
-        let rc = rc_text();
-        assert!(!rc.contains("niu tool"), "{rc}");
-        assert!(!rc.contains("/x/dust"), "{rc}");
-        assert!(rc.contains("# user header"), "{rc}");
-        let _ = fs::remove_dir_all(&box_.temp);
     }
 
     #[test]

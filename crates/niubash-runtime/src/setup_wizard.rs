@@ -41,8 +41,8 @@ struct SetupJournal {
     preset: Option<String>,
     /// Lasting niu-git answer ("never" / "installed").
     niu_git: Option<String>,
-    /// Plugin collection applied by this run: name + the ids that landed
-    /// (sources and download tools), so the undo lines can name each one.
+    /// Plugin collection applied by this run: name + the source ids that
+    /// landed, so the undo lines can name each one.
     collection: Option<CollectionJournal>,
 }
 
@@ -51,7 +51,6 @@ struct SetupJournal {
 struct CollectionJournal {
     name: String,
     sources: Vec<String>,
-    tools: Vec<String>,
 }
 
 fn setup_journal_path(home: &std::path::Path) -> PathBuf {
@@ -100,10 +99,6 @@ fn write_setup_journal(home: &std::path::Path, journal: &SetupJournal) {
                 .collect();
             body.push_str(&format!("collection_sources = [{}]\n", ids.join(", ")));
         }
-        if !collection.tools.is_empty() {
-            let ids: Vec<String> = collection.tools.iter().map(|id| shell_quote(id)).collect();
-            body.push_str(&format!("collection_tools = [{}]\n", ids.join(", ")));
-        }
     }
     if let Err(err) = std::fs::write(&path, body) {
         println!(
@@ -138,35 +133,30 @@ fn setup_undo_lines(home: &std::path::Path, journal: &SetupJournal) -> Vec<Strin
                 collection.name
             ));
         }
-        for id in &collection.tools {
-            lines.push(format!(
-                "niu plugin tool remove {id:<12}    # collection '{}': drop the tool",
-                collection.name
-            ));
-        }
     }
     lines
 }
 
-/// niu-git recipe id in the compiled-in plugin recipe index. The wizard only
-/// ever names this recipe; it installs solely on an explicit "Install" pick.
-/// Owner ruling 2026-10-03 (wpm retraction to the command layer): the plugin
-/// download driver is the single executable-tool install entry, so the old
-/// `wpm install niugit` form is gone — the wizard drives the recipe instead.
-/// Windows-only because niu-git itself is Windows-native git (the topic and
-/// the question never appear on other platforms).
+/// niu-git recipe id in the compiled-in plugin recipe index. The wizard
+/// only ever names this recipe; its install pick prints the recipe's
+/// package-manager recommendation (wpm first — niu-git ships in the wpm
+/// index — plus the upstream releases page). niu itself installs nothing
+/// (download retraction, owner ruling 2026-10-04). Windows-only because
+/// niu-git is Windows-native git (the topic and the question never appear
+/// on other platforms).
 #[cfg(windows)]
 const NIUGIT_RECIPE_ID: &str = "niugit";
-/// The exact CLI equivalent of the wizard's Install pick (shown in the menu
-/// and the summary row). Windows-only, same gate as the question.
+/// The primary install command the wizard's Install pick recommends
+/// (shown in the menu and the summary row). Windows-only, same gate as
+/// the question.
 #[cfg(windows)]
-const NIUGIT_ADD_COMMAND: &str = "niu plugin add niugit";
+const NIUGIT_WPM_COMMAND: &str = "wpm install niugit";
 
 /// Tools probed on PATH during preflight; drives the environment summary.
-/// These are application tools (plus git/docker/npm style runtimes) — probes
-/// only: installing them is the plugin download driver's job
-/// (`niu plugin add <recipe-id>`), never wpm's (owner ruling 2026-10-03:
-/// wpm retracts to the bundled Unix command layer).
+/// These are application tools (plus git/docker/npm style runtimes) —
+/// probes only: installing them is the system package manager's job (wpm
+/// first on Windows, owner correction 2026-10-03; native managers
+/// elsewhere). niu never downloads executables.
 const PROBED_TOOLS: &[&str] = &[
     "git", "fzf", "eza", "bat", "starship", "zoxide", "fd", "rg", "dust", "duf", "erd", "direnv",
     "kubectl", "docker", "npm", "thefuck",
@@ -865,10 +855,10 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
 
     // --- Q3: niu-git, offered once (never auto-installed, never nagged) ---
     // Windows-only question: niu-git is Windows-native git, and Linux/macOS
-    // users already have native git. The install itself runs through the
-    // cross-platform plugin download driver (owner ruling 2026-10-03: the
-    // plugin driver is the only executable-tool install entry; wpm no
-    // longer installs application tools).
+    // users already have native git. niu installs nothing itself (download
+    // retraction 2026-10-04): the Install pick prints the recommendation —
+    // wpm first (niu-git ships in the wpm index; owner correction
+    // 2026-10-03), then the upstream releases page.
     let niu_git = match ask_niu_git(&mut io, &t, &home, &probe) {
         Some(choice) => choice,
         None => return Ok(()), // cancelled at the niu-git question
@@ -896,12 +886,12 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
     let backup_path = write_rc_and_mark_done(&home, &cfg, lang)?;
 
     // The niu-git question is Windows-only (niu-git is Windows-native git):
-    // the Install branch — and the recipe-driven install — compiles only
+    // the Install branch — and the recommendation print — compiles only
     // there. Non-Windows wizard paths never reach NiuGitChoice::Install
     // (ask_niu_git returns Skip), so only the answer memory remains.
     #[cfg(windows)]
     if niu_git == NiuGitChoice::Install {
-        install_niu_git(&home, lang);
+        recommend_niu_git(&home, lang);
     } else if niu_git == NiuGitChoice::NeverShow {
         write_niu_git_answer(&home, "never");
     }
@@ -911,9 +901,9 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
     }
 
     // The collection apply lands after the rc write: it installs sources
-    // (untrusted) and download tools, collecting per-entry failures the way
-    // lazy.nvim collects spec errors (study §10.1) — a failed entry never
-    // fails the wizard run.
+    // (untrusted) and prints executable-tool recommendations, collecting
+    // per-entry failures the way lazy.nvim collects spec errors (study
+    // §10.1) — a failed entry never fails the wizard run.
     let collection_journal = collection_pick
         .flatten()
         .and_then(|name| apply_plugin_collection(&name, lang));
@@ -926,7 +916,7 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
             ThemePick::Keep => None,
         },
         preset: None,
-        // Whatever lasting answer the run recorded ("never"/"installed");
+        // Whatever lasting answer the run recorded ("never"/"recommended");
         // a plain Skip stays transient and journaled as none.
         niu_git: read_niu_git_answer(&home),
         collection: collection_journal,
@@ -974,7 +964,6 @@ fn apply_plugin_collection(name: &str, lang: Lang) -> Option<CollectionJournal> 
             Some(CollectionJournal {
                 name: outcome.name,
                 sources: outcome.installed_sources,
-                tools: outcome.installed_tools,
             })
         }
         Err(err) => {
@@ -1055,9 +1044,13 @@ enum NiuGitChoice {
 }
 
 // --- niu-git ask: Windows-only at compile time (niu-git is Windows-native
-// git; on other platforms native git already exists). The install itself is
-// cross-platform machinery: the plugin download driver (pure Rust), never
-// an external package manager.
+// git; on other platforms native git already exists). niu installs nothing
+// itself (download retraction 2026-10-04): the Install pick prints the
+// package-manager recommendation — wpm first on Windows (owner correction
+// 2026-10-03: wpm is the first-class command-layer tool installer; niu-git
+// ships in its index), plus the upstream releases page. Red lines
+// unchanged: offered at most once per lasting answer, never
+// auto-installed, cfg(windows) only.
 #[cfg(windows)]
 fn ask_niu_git(
     io: &mut WizardIo,
@@ -1076,7 +1069,7 @@ fn ask_niu_git(
             format!(
                 "{}  {}",
                 pad_display(t.tr("Install"), 14),
-                NIUGIT_ADD_COMMAND
+                NIUGIT_WPM_COMMAND
             ),
             format!(
                 "{}  {}",
@@ -1150,7 +1143,10 @@ fn ask_plugin_collection(io: &mut WizardIo, t: &Lang) -> Option<Option<String>> 
         format!(
             "{}  {}",
             pad_display("full", 14),
-            t.tr("both frameworks, bash-preexec, fzf, starship")
+            t.tr(
+                "both frameworks + bash-preexec; fzf/starship are suggested \
+                 installs (niu downloads nothing)"
+            )
         ),
     ];
     let option_refs: Vec<&str> = options.iter().map(String::as_str).collect();
@@ -1208,29 +1204,28 @@ fn write_niu_git_answer(home: &std::path::Path, value: &str) {
     }
 }
 
-/// Run the niu-git install the user explicitly picked — through the plugin
-/// download driver (`niu plugin add niugit`), which is the single
-/// executable-tool install entry (owner ruling 2026-10-03: wpm retracts to
-/// the Unix command layer and no longer installs application tools). The
-/// "installed" marker is only recorded after a successful install, so a
-/// failed install stays retryable.
+/// Print the niu-git install recommendation the user explicitly picked
+/// (download retraction, owner ruling 2026-10-04): niu itself installs
+/// nothing — the pick prints the recipe's package-manager commands (wpm
+/// first: niu-git ships in the wpm index; plus the upstream releases
+/// page) and records the answer so the question does not nag again.
 #[cfg(windows)]
-fn install_niu_git(home: &std::path::Path, lang: Lang) {
-    println!("  \u{1f4e6}  {NIUGIT_ADD_COMMAND}");
+fn recommend_niu_git(home: &std::path::Path, lang: Lang) {
+    println!("  \u{1f4e6}  {NIUGIT_WPM_COMMAND}");
     match crate::plugins::recipes::install(NIUGIT_RECIPE_ID) {
         Ok(report) => {
             println!("    - {}", report.summary);
-            write_niu_git_answer(home, "installed");
-            println!("  \u{2705}  {}", lang.tr("niu-git installed"));
             for step in &report.next {
                 println!("    {step}");
             }
         }
-        Err(err) => println!(
-            "  \u{26a0}\u{fe0f}  {}: {err:#}",
-            lang.tr("niu-git install failed — no other changes were made")
-        ),
+        Err(err) => println!("    {err:#}"),
     }
+    println!(
+        "  {}",
+        lang.tr("niu installs nothing itself — run one of the commands above, then restart niu")
+    );
+    write_niu_git_answer(home, "recommended");
 }
 
 /// The final "how to change things later" block — one compact screen, in the
@@ -1361,12 +1356,12 @@ fn print_config_summary(
     row(
         "niu-git",
         match niu_git {
-            // The plugin-driver install text is Windows-only (the question
-            // exists only there); on other platforms the summary shows the
-            // same "skipped" the wizard actually did (ask_niu_git always
-            // returns Skip there).
+            // The recommendation text is Windows-only (the question exists
+            // only there); on other platforms the summary shows the same
+            // "skipped" the wizard actually did (ask_niu_git always returns
+            // Skip there).
             #[cfg(windows)]
-            NiuGitChoice::Install => NIUGIT_ADD_COMMAND.to_string(),
+            NiuGitChoice::Install => format!("{NIUGIT_WPM_COMMAND} ({})", t.tr("recommended")),
             NiuGitChoice::NeverShow => t.tr("don't ask again").to_string(),
             NiuGitChoice::Skip => t.tr("skipped").to_string(),
         },
@@ -1402,8 +1397,9 @@ fn write_rc_and_mark_done(
 
 /// `wpm` when the command link is on PATH, else `winuxcmd.exe wpm`. The
 /// command-layer probe (environment summary / `apt` alias condition); the
-/// wizard never installs anything through it — tool installs go through the
-/// plugin download driver (owner ruling 2026-10-03).
+/// wizard never installs anything through it — niu installs nothing at all
+/// (download retraction 2026-10-04); wpm is only ever *recommended* as the
+/// first-class Windows tool channel.
 #[cfg(windows)]
 fn wpm_command() -> Option<Command> {
     if on_path("wpm") {
@@ -1640,8 +1636,9 @@ fn zh(en: &str) -> Option<&'static str> {
         "bash-completion only, no frameworks" => "仅 bash-completion，不含框架",
         "oh-my-bash + its default theme + completions" =>
             "oh-my-bash + 默认主题 + 补全",
-        "both frameworks, bash-preexec, fzf, starship" =>
-            "双框架 + bash-preexec + fzf + starship",
+        "both frameworks + bash-preexec; fzf/starship are suggested \
+                 installs (niu downloads nothing)" =>
+            "双框架 + bash-preexec；fzf/starship 仅为安装建议（niu 不下载任何东西）",
         "  |  installs stay untrusted until `niu plugin trust`; Skip changes nothing" =>
             "  |  安装后保持未信任，待 `niu plugin trust` 审阅；跳过则不做任何改动",
         "current look unchanged" => "当前外观保持不变",
@@ -1651,8 +1648,8 @@ fn zh(en: &str) -> Option<&'static str> {
         "theme (external source, primary)" => "主题（外部源，主选）",
         "renders via the bash-compatible PS1 channel; built-in themes stay as fallback" =>
             "经 bash 兼容 PS1 通道渲染；内置主题作为保底保留",
-        "needs a Nerd Font — `niu font` installs one (optional)" =>
-            "需要 Nerd Font —— 可用 `niu font` 安装（可选）",
+        "needs a Nerd Font — `niu font` shows install commands (optional)" =>
+            "需要 Nerd Font —— `niu font` 给出安装命令（可选）",
 
         // Completion opt-in
         "Skip" => "跳过",
@@ -2023,7 +2020,6 @@ mod tests {
             collection: Some(CollectionJournal {
                 name: "recommended".to_string(),
                 sources: vec!["oh-my-bash".to_string()],
-                tools: vec!["starship".to_string()],
             }),
         };
         write_setup_journal(&temp, &journal);
@@ -2037,12 +2033,12 @@ mod tests {
             text.contains("collection_sources = ['oh-my-bash']"),
             "{text}"
         );
-        assert!(text.contains("collection_tools = ['starship']"), "{text}");
 
         // One undo command per entry: rc restore, theme disable, the
-        // optional source removal hint, and one line per collection entry.
+        // optional source removal hint, and one line per collection source
+        // (executable-tool entries install nothing, so they have no undo).
         let undo = setup_undo_lines(&temp, &journal);
-        assert!(undo.len() == 5, "{undo:?}");
+        assert!(undo.len() == 4, "{undo:?}");
         assert!(undo[0].starts_with("cp "), "{undo:?}");
         assert!(undo[0].contains(".niubashrc"), "{undo:?}");
         assert!(
@@ -2058,8 +2054,8 @@ mod tests {
             "{undo:?}"
         );
         assert!(
-            undo[4].contains("niu plugin tool remove starship"),
-            "{undo:?}"
+            !undo.iter().any(|line| line.contains("niu plugin tool")),
+            "retracted tool verbs must not appear in undo lines: {undo:?}"
         );
 
         // A skip run (no theme, no backup) undoes nothing.

@@ -316,10 +316,10 @@ fn download_asset(repo: &str, tag: &str, asset: &GitHubAsset) -> Result<PathBuf>
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     let path = dir.join(safe_asset_name(&asset.name));
 
-    // Transport-layer mirror rewrite (§14.8): the recorded asset URL stays
-    // canonical GitHub; only the request goes through the active mirror.
-    let url = niubash_runtime::plugins::mirrors::rewrite_download_url(&asset.browser_download_url);
-    let bytes = http_get_bytes(&url).with_context(|| {
+    // Direct fetch from the canonical GitHub URL. The §14.8 mirror prefix
+    // rewrite channel retired with the download retraction (2026-10-04:
+    // mirrors are git-insteadOf only); self-update goes direct.
+    let bytes = http_get_bytes(&asset.browser_download_url).with_context(|| {
         format!(
             "download {}/{} from {} ({})",
             repo,

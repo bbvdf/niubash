@@ -32,7 +32,6 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Network
 
 [dev-dependencies]
 sha2 = "0.10"
-zip = { version = "0.6", default-features = false, features = ["deflate"] }
 # Interactive-mode regression harness (tests/interactive.rs): pseudo-terminal
 # driver. Originally evaluated expectrl 0.9 (pexpect port), but its Windows
 # backend (conpty 0.5.1) failed to attach the child to the pseudo console on

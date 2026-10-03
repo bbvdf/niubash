@@ -21,7 +21,7 @@
 use anyhow::bail;
 use std::io::IsTerminal;
 
-use super::{distros, download, recipes, sources};
+use super::{distros, recipes, sources};
 use crate::interactive_menu::{interactive_choice, Selection};
 use crate::text_style;
 
@@ -73,11 +73,6 @@ pub const UI_VERBS: &[UiVerb] = &[
         cli: "niu plugin add <id>",
     },
     UiVerb {
-        verb: "remove-tool",
-        label: "remove — drop PATH block, dir, record",
-        cli: "niu plugin tool remove <id>",
-    },
-    UiVerb {
         verb: "apply",
         label: "apply — install every recipe in the collection",
         cli: "niu plugin distro apply <name>",
@@ -101,7 +96,6 @@ fn verb(verb_id: &str) -> &'static UiVerb {
 pub enum UiRowKind {
     Source { trusted: bool, degraded: bool },
     Recipe { installable: bool, installed: bool },
-    Tool { enabled: bool },
     Collection { builtin: bool },
 }
 
@@ -130,7 +124,6 @@ impl UiRowKind {
                     Vec::new()
                 }
             }
-            Self::Tool { .. } => vec![verb("enable"), verb("disable"), verb("remove-tool")],
             Self::Collection { .. } => vec![verb("apply")],
         }
     }
@@ -211,34 +204,13 @@ pub fn inventory() -> Vec<UiSection> {
         global: false,
     });
 
-    // Tools (download driver): enabled means the PATH block is present.
-    let tools = download::read_tool_registry();
-    sections.push(UiSection {
-        title: "Tools — downloaded binaries".into(),
-        rows: tools
-            .iter()
-            .map(|tool| {
-                let enabled = super::assets::managed_block_present(&tool.id);
-                UiRow {
-                    id: tool.id.clone(),
-                    kind: UiRowKind::Tool { enabled },
-                    state: if enabled {
-                        "active".into()
-                    } else {
-                        "installed".into()
-                    },
-                    hint: format!("{} · bins: {}", tool.version, tool.bins.join(",")),
-                }
-            })
-            .collect(),
-        global: false,
-    });
-
     // Recipes not installed yet, grouped by category (the mason-style
     // index; only installable or notable rows are listed to keep the menu
     // a menu — the full 498-row index stays behind `niu plugin recipe
     // list`). Categories in the order users think in: managers, prompts,
-    // plugins, completions, themes, aliases.
+    // plugins, completions, themes, aliases. Executable-tool rows ride
+    // here too: `add` prints their package-manager recommendation
+    // (download retraction 2026-10-04).
     let installed_sources: Vec<String> = sources::read_source_registry()
         .into_iter()
         .map(|record| record.id)
@@ -362,13 +334,6 @@ pub fn apply_verb(verb_id: &str, target: &str) -> anyhow::Result<String> {
                 report.summary,
                 report.next.join(" ")
             ))
-        }
-        "remove-tool" => {
-            if download::remove_tool(target)? {
-                Ok(format!("removed tool '{target}'"))
-            } else {
-                bail!("no installed tool '{target}'")
-            }
         }
         "apply" => {
             let outcome = distros::apply(target)?;

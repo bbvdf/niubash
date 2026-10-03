@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# Niubash 1.3.0 release smoke suite (wt49/smokesweep) — one repeatable
-# end-to-end pass over the release checklist, run against a real niu binary
-# in a throwaway sandbox. Nothing in here touches the real HOME, the real
-# plugin sources/spec/tool registry, the real font state, or the real
-# Windows Terminal settings.
+# Niubash 1.3.0 release smoke suite (wt49/smokesweep; section B reworked
+# for the download retraction 2026-10-04) — one repeatable end-to-end pass
+# over the release checklist, run against a real niu binary in a throwaway
+# sandbox. Nothing in here touches the network, the real HOME, the real
+# plugin sources/spec, or the real font state.
 #
 # Legs (release checklist order):
 #   A  install chain   plugin add --path → trust → enable → fresh-shell
 #                      effect (oh-my-bash OSH_THEME, bash-it PS1), spec↔rc
 #                      sync idempotency, clean --bootstrap
-#   B  download chain  recipe list non-empty · empty tool list · real
-#                      download-driver install+remove (network, skippable)
-#                      · `niu font` end-to-end (network + PTY, skippable)
+#   B  download        recipe list non-empty · tool recipes recommend
+#      retraction      package managers offline (wpm first on Windows) ·
+#                      retired `plugin tool` verb fails loudly · zero
+#                      HTTP/download surface audit (no ureq/flate2/tar/zip
+#                      deps, no plugins/download.rs) · `niu font` offline
 #   C  floor           external theme claims PS1 across a boot; disable
 #                      releases the slot back to the shell floor
 #   D  setup wizard    `niu setup --preset recommended` → rc parses clean
@@ -22,12 +24,10 @@
 # Usage:
 #   scripts/smoke-test-1.3.0.sh              # build debug niu, then run
 #   NIU_SMOKE_BINARY=<exe> scripts/smoke-test-1.3.0.sh   # prebuilt binary
-#   NIU_SMOKE_SKIP_FONT=1 ...                # force-skip the font leg
-#   NIU_SMOKE_SKIP_NET=1  ...                # force-skip network legs
+#   NIU_SMOKE_NO_BUILD=1 ...                 # skip the cargo build
 #
-# Exit code: 0 iff every non-skipped leg passed. Skips are reported with
-# their reason; a skip never fails the run (release checklist: network legs
-# are "可跳过如无网络").
+# Exit code: 0 iff every leg passed. The suite is fully offline — the
+# shell carries zero download responsibility (owner ruling 2026-10-04).
 # ─────────────────────────────────────────────────────────────────────────────
 set -u
 
@@ -84,10 +84,9 @@ ORIG_HOME=${HOME:-}
 ORIG_USERPROFILE=${USERPROFILE:-}
 SB=$(mktemp -d)
 trap 'rm -rf "$SB"' EXIT
-mkdir -p "$SB/home/.niubash" "$SB/sources" "$SB/tools" "$SB/local-appdata"
+mkdir -p "$SB/home/.niubash" "$SB/sources"
 export HOME="$SB/home" USERPROFILE="$SB/home"
 export NIU_PLUGIN_SOURCES_ROOT="$SB/sources"
-export NIU_PLUGIN_TOOLS_ROOT="$SB/tools"
 export NIU_PLUGIN_SPEC="$SB/home/.niubash/plugins.toml"
 unset NIU_ENV BASH_ENV || true
 
@@ -119,7 +118,7 @@ if nu plugin add bash-it --path "$FIXTURES/bash-it" >"$SB/a2.out" 2>&1 \
     if [ "$ps1" = "demox> " ]; then
         record PASS a2-bash-it-theme "bash-it theme claims PS1 (demox> )"
     else
-        record FAIL a2-bash-it-theme "PS1 was '$ps1', expected 'demox> '"
+        record FAIL a2-bash-it-theme "PS1 was '$ps1', expected demox> "
     fi
 else
     record FAIL a2-bash-it-theme "add/trust/enable chain failed: $(tail -2 "$SB/a2.out" | tr '\n' ' ')"
@@ -145,8 +144,8 @@ else
     record FAIL a3-sync-idempotent "first sync failed: $(tail -2 "$SB/a3.out" | tr '\n' ' ')"
 fi
 
-# ── B. download chain ────────────────────────────────────────────────────────
-section "B. download chain"
+# ── B. download retraction ───────────────────────────────────────────────────
+section "B. download retraction"
 
 if nu plugin recipe list >"$SB/b1.out" 2>&1; then
     count=$(sed -n 's/^\([0-9][0-9]*\) recipes$/\1/p' "$SB/b1.out" | tail -1)
@@ -159,128 +158,79 @@ else
     record FAIL b1-recipe-list "recipe list exited non-zero"
 fi
 
-if out=$(nu plugin tool list 2>&1); then
+# Tool recipes recommend package managers instead of fetching — fully
+# offline (download retraction 2026-10-04). wpm first on Windows (owner
+# correction 2026-10-03), native managers everywhere, upstream URL always.
+if out=$(nu plugin add fzf 2>&1); then
     case $out in
-        *"no tools installed"*) record PASS b2-tool-list-empty "empty registry lists cleanly" ;;
-        *) record FAIL b2-tool-list-empty "unexpected output: $out" ;;
+        *"does not download binaries"*)
+            ok=1
+            for want in "sudo apt install fzf" "brew install fzf" \
+                        "https://github.com/junegunn/fzf/"; do
+                case $out in
+                    *"$want"*) ;; *) ok=0 ;;
+                esac
+            done
+            if [ "$ok" = 1 ]; then
+                record PASS b2-tool-recommendation "fzf recipe recommends package managers (offline)"
+            else
+                record FAIL b2-tool-recommendation "recommendation lines missing: $(printf '%s' "$out" | tail -3 | tr '\n' ' ')"
+            fi
+            ;;
+        *) record FAIL b2-tool-recommendation "retraction statement missing: $out" ;;
     esac
 else
-    record FAIL b2-tool-list-empty "tool list exited non-zero"
+    record FAIL b2-tool-recommendation "plugin add fzf exited non-zero: $out"
 fi
 
-# Real download-driver install (pure-Rust transport). Network legs degrade
-# to SKIP when the CDN is unreachable — offline is an environment state,
-# not a product failure.
-if [ "${NIU_SMOKE_SKIP_NET:-0}" = "1" ]; then
-    record SKIP b3-download-driver "forced by NIU_SMOKE_SKIP_NET=1"
+# The retired downloaded-tools verb fails loudly (never a silent success).
+if nu plugin tool list >"$SB/b3.out" 2>&1; then
+    record FAIL b3-tool-verb-retired "plugin tool list still succeeds: $(tail -1 "$SB/b3.out")"
+elif grep -q "retired with the download retraction" "$SB/b3.out"; then
+    record PASS b3-tool-verb-retired "plugin tool verb retired with a clear message"
 else
-    installed=""
-    for attempt in 1 2 3; do
-        if run_timed 300 "$NIU" plugin recipe add fzf >"$SB/b3.out" 2>&1; then
-            installed=yes; break
-        fi
-        grep -qE "download failed|niu: reading|timed out|tls|Connection Failed" "$SB/b3.out" \
-            || break # non-transport error: stop retrying
-        sleep 5
-    done
-    if [ -n "$installed" ]; then
-        if [ -d "$NIU_PLUGIN_TOOLS_ROOT/fzf" ] \
-            && nu plugin enable fzf >/dev/null 2>&1 \
-            && grep -q "niu tool path: fzf" "$HOME/.niubashrc" \
-            && nu plugin tool remove fzf >/dev/null 2>&1 \
-            && [ ! -d "$NIU_PLUGIN_TOOLS_ROOT/fzf" ]; then
-            record PASS b3-download-driver "fzf installed (sha256-pinned), enabled, removed"
-        else
-            record FAIL b3-download-driver "install landed but enable/remove leg failed"
-        fi
-    else
-        reason=$(tail -1 "$SB/b3.out" 2>/dev/null | tr -d '\r')
-        case $reason in
-            *"download failed"*|*"niu: reading"*|*tls*|*"timed out"*|*"Connection Failed"*)
-                record SKIP b3-download-driver "asset transport unreachable: $reason" ;;
-            *) record FAIL b3-download-driver "${reason:-recipe add fzf failed}" ;;
-        esac
-    fi
+    record FAIL b3-tool-verb-retired "unexpected retirement output: $(tail -1 "$SB/b3.out")"
 fi
 
-# `niu font` end-to-end: needs a real interactive terminal (its own guard),
-# so this leg drives a ConPTY with LOCALAPPDATA redirected into the sandbox
-# — TTFs land in the sandbox, one HKCU Fonts entry per file is written and
-# removed again afterwards (it pointed at the deleted sandbox anyway).
-if [ "${NIU_SMOKE_SKIP_FONT:-0}" = "1" ]; then
-    record SKIP b4-font-install "forced by NIU_SMOKE_SKIP_FONT=1"
-elif [ "${NIU_SMOKE_SKIP_NET:-0}" = "1" ]; then
-    record SKIP b4-font-install "network legs disabled (NIU_SMOKE_SKIP_NET=1)"
-elif ! command -v python >/dev/null 2>&1; then
-    record SKIP b4-font-install "python not available for the PTY harness"
-elif ! python -c "import winpty, pyte" >/dev/null 2>&1; then
-    record SKIP b4-font-install "pywinpty/pyte not installed (PTY harness)"
-elif ! curl -fsI --max-time 15 https://github.com >/dev/null 2>&1; then
-    record SKIP b4-font-install "github.com unreachable"
-else
-    run_timed 420 python - "$NIU" "$SB" >"$SB/b4.out" 2>&1 <<'PYEOF'
-import os, sys, time
-from pathlib import Path
-from winpty import PtyProcess
-
-exe, sb = sys.argv[1], Path(sys.argv[2])
-home = sb / "home"
-sysroot = os.environ.get("SystemRoot", r"C:\Windows")
-env = {
-    "SystemRoot": sysroot,
-    "COMSPEC": sysroot + r"\System32\cmd.exe",
-    "HOME": str(home),
-    "USERPROFILE": str(home),
-    "LOCALAPPDATA": str(sb / "local-appdata"),
-    "NIU_PLUGIN_SOURCES_ROOT": str(sb / "sources"),
-    "NIU_PLUGIN_TOOLS_ROOT": str(sb / "tools"),
-    "NIU_PLUGIN_SPEC": str(home / ".niubash" / "plugins.toml"),
-    "WINDIR": sysroot,
-    "PATH": sysroot + r"\System32;" + sysroot,
-}
-proc = PtyProcess.spawn(f'"{exe}" font', dimensions=(120, 36), env=env)
-buf = ""
-deadline = time.time() + 380
-sent = False
-while time.time() < deadline:
-    try:
-        buf += proc.read(65536)
-    except Exception:
-        break # process closed the pty
-    if not sent and "Choose a Nerd Font" in buf:
-        time.sleep(0.5)
-        proc.write("\r") # default selection: JetBrainsMono
-        sent = True
-    if "Installed JetBrainsMono" in buf or "download failed" in buf \
-       or "needs an interactive terminal" in buf or proc.exited:
-        break
-    time.sleep(0.2)
-if proc.isalive():
-    proc.terminate(force=True)
-print(buf[-2000:])
-fonts_dir = sb / "local-appdata" / "Microsoft" / "Windows" / "Fonts"
-ttfs = sorted(p.name for p in fonts_dir.glob("*NerdFontMono*.ttf")) if fonts_dir.is_dir() else []
-print("TTF_COUNT", len(ttfs))
-for name in ttfs:
-    print("REGNAME", name.rsplit(".", 1)[0] + " (TrueType)")
-PYEOF
-    ttf_count=$(sed -n 's/^TTF_COUNT //p' "$SB/b4.out" | tail -1)
-    if [ "${ttf_count:-0}" -ge 1 ] 2>/dev/null; then
-        # Clean the sandbox-pointed HKCU font registrations this leg wrote.
-        sed -n 's/^REGNAME //p' "$SB/b4.out" | while IFS= read -r regname; do
-            [ -n "$regname" ] && reg delete \
-                'HKCU\Software\Microsoft\Windows NT\CurrentVersion\Fonts' \
-                /v "$regname" /f >/dev/null 2>&1
-        done
-        record PASS b4-font-install "$ttf_count NerdFontMono TTFs landed in the sandbox fonts dir"
-    else
-        tail_line=$(grep -E "download failed|timed out|interactive" "$SB/b4.out" | tail -1 | tr -d '\r')
-        if [ -n "$tail_line" ]; then
-            record SKIP b4-font-install "font download unavailable: $tail_line"
-        else
-            record FAIL b4-font-install "no TTFs installed; PTY log: $(tail -3 "$SB/b4.out" | tr '\n' ' ' | cut -c1-160)"
-        fi
+# Zero HTTP/download surface audit: the shell carries no download code.
+# Source-level (the ruling is about the product, so audit the tree):
+#   - no ureq/flate2/tar/zip crate dependencies anywhere
+#   - no plugins/download.rs module
+#   - no ureq/tar/flate2 symbols left in product code
+# Lock-level: ureq and its TLS tree must be gone from Cargo.lock.
+section "B. download retraction (source audit)"
+audit_fail=""
+for toml in Cargo.toml crates/niubash-runtime/Cargo.toml; do
+    if grep -nE '^(ureq|flate2|tar|zip) *=' "$toml" >/dev/null 2>&1; then
+        audit_fail="$audit_fail [$toml still declares a download crate]"
     fi
+done
+[ -e crates/niubash-runtime/src/plugins/download.rs ] \
+    && audit_fail="$audit_fail [plugins/download.rs still exists]"
+if grep -rn "ureq\|flate2\|tar::" --include="*.rs" crates/ src/ >/dev/null 2>&1; then
+    audit_fail="$audit_fail [download-crate symbols remain in product code]"
+fi
+if grep -n '^name = "ureq"' Cargo.lock >/dev/null 2>&1; then
+    audit_fail="$audit_fail [Cargo.lock still resolves ureq]"
+fi
+if [ -z "$audit_fail" ]; then
+    record PASS b4-zero-download-surface "no download deps, no download.rs, no ureq in the lock"
+else
+    record FAIL b4-zero-download-surface "$audit_fail"
+fi
+
+# `niu font`: detection + recommendations, offline and non-interactive.
+if out=$(nu font 2>&1); then
+    case $out in
+        *"JetBrainsMono Nerd Font"*"nerdfonts.com"*)
+            record PASS b5-font-recommendation "niu font detects and recommends (offline)"
+            ;;
+        *)
+            record FAIL b5-font-recommendation "unexpected niu font output: $(printf '%s' "$out" | head -3 | tr '\n' ' ')"
+            ;;
+    esac
+else
+    record FAIL b5-font-recommendation "niu font exited non-zero: $out"
 fi
 
 # ── C. defaults-as-floor ─────────────────────────────────────────────────────
@@ -392,7 +342,7 @@ elif (if [ -n "$ORIG_HOME" ]; then export HOME="$ORIG_HOME"; else unset HOME; fi
       if [ -n "$ORIG_USERPROFILE" ]; then export USERPROFILE="$ORIG_USERPROFILE"; else unset USERPROFILE; fi
       run_timed 600 cargo test --test smoke_1_3_0 >"$SB/f1.out" 2>&1); then
     got=$(sed -n 's/^test result: ok\. \([0-9]*\) passed.*/\1/p' "$SB/f1.out" | tail -1)
-    record PASS f1-cargo-mirror "${got:-?} offline legs green (b3 auto-skips without NIU_SMOKE_NETWORK=1)"
+    record PASS f1-cargo-mirror "${got:-?} offline legs green (the suite is fully offline)"
 else
     record FAIL f1-cargo-mirror "$(grep -E '^test result:|^error' "$SB/f1.out" | tail -1)"
 fi

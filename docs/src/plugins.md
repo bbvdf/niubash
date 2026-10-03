@@ -17,11 +17,15 @@ AI agents driving niu on a user's behalf.
 | **Asset** | A theme/plugin/alias/completion *inside* a manager source | enabled via the manager's own mechanism |
 | **Recipe** | A data row describing one ecosystem asset and how to install it (~500-row compiled-in index) | `niu plugin recipe list` |
 | **Collection** | A named manifest of recipe ids — a starting-point bundle (LazyVim-extras pattern) | built-in, or `~/.niubash/distros/` |
-| **Tool** | A direct binary download (pure-Rust HTTP + unpack, sha256-pinned) | `~/.niubash/tools/<id>/` |
 
-Two install drivers exist, and only two: `git` (tree sources) and `download`
-(executables). Niubash never drives apt/wpm/Chocolatey to install plugin
-content — the download driver is implemented in niubash itself, cross-platform.
+One install driver exists, and only one: `git` (tree sources, via
+`niu plugin add <git-url>`). Niubash carries zero network/HTTP download
+responsibility (download retraction, owner ruling 2026-10-04): executable
+tools (fzf, starship, …) install through your real package managers —
+wpm first on Windows (owner correction 2026-10-03), winget/scoop as
+alternatives for what wpm does not carry (GUI apps, fonts), and
+apt/dnf/yum/brew on other platforms. The recipe rows for those tools stay
+in the index as catalog metadata and `add` prints the commands.
 
 ## Everyday flow
 
@@ -44,7 +48,7 @@ declared; `niu plugin sync` reconciles the spec with what is installed,
 and `niu plugin update <id>` (no id = all) moves sources to their ref tips.
 
 Undo is printed with every mutating command (`disable`, `source remove`,
-`tool remove`, `source rollback`) and the setup wizard journals one undo
+`source rollback`) and the setup wizard journals one undo
 command per thing it changed.
 
 ## Recipes: the index
@@ -54,13 +58,15 @@ $ niu plugin recipe list                     # the whole index
 $ niu plugin recipe list --category prompt   # manager|theme|plugin|alias|completion|prompt
 $ niu plugin recipe list --json              # machine-readable (agents: prefer this)
 $ niu plugin recipe show starship            # driver, version, license, state
-$ niu plugin add starship                    # download driver, sha256-verified
+$ niu plugin add starship                    # prints package-manager install commands
 ```
 
-Rows with `driver = git` install as tree sources; `driver = "download"` rows
-fetch a pinned release artifact (every compiled-in download row pins a sha256
-— a test enforces it); rows with no driver are info-only (e.g. ble.sh, which
-builds from source) and `add` explains instead of installing.
+Rows with `driver = git` install as tree sources; executable-tool rows
+(`driver = "download"` in the generated index) are catalog metadata —
+`add` prints package-manager install commands (wpm first on Windows,
+native managers elsewhere) and never fetches; rows with no driver are
+info-only (e.g. ble.sh, which builds from source) and `add` explains
+instead of installing.
 
 ## Collections: starting points
 
@@ -73,7 +79,8 @@ $ niu plugin distro remove <name>
 
 Built-ins: `minimal` (bash-completion only), `recommended` (oh-my-bash + its
 default theme + completions — also offered by the first-run wizard),
-`full` (both frameworks + bash-preexec + fzf + starship).
+`full` (both frameworks + bash-preexec; its fzf/starship entries print
+package-manager suggestions, since niu downloads nothing).
 
 A collection is a small TOML manifest of recipe ids:
 
@@ -96,20 +103,24 @@ The first-run wizard's plugin-collection question is a LazyVim-style
 progressive-disclosure hook: it only appears when the ecosystem is empty, and
 Skip is the default.
 
-## Tools: downloaded binaries
+## Tools: package-manager recommendations
 
 ```console
-$ niu plugin add fzf          # release artifact, sha256 pinned in the recipe
-$ niu plugin enable fzf       # managed PATH block in ~/.niubashrc
-$ niu plugin tool list
-$ niu plugin tool remove fzf  # PATH block + directory + record
+$ niu plugin add fzf          # prints: wpm install fzf (Windows, first choice),
+                              #        winget/scoop alternatives, apt/dnf/brew,
+                              #        plus the upstream release URL
 ```
+
+Nothing is fetched and nothing lands on disk — run the printed command with
+your package manager. The retired `niu plugin tool` verbs fail with a
+pointer here; a download-era install under `~/.niubash/tools/<id>` can be
+removed by deleting the directory.
 
 ## The menu UI
 
 `niu plugin ui` opens a menu-level UI (needs an interactive terminal):
 sections ordered by what needs attention — untrusted sources first, then
-ready sources, tools, installable recipes, collections, global verbs. Every
+ready sources, installable recipes, collections, global verbs. Every
 action in the menu is the same verb the CLI runs (the footer shows the CLI
 equivalent of each); there is no UI-only logic. Rows read
 `[state] id — hint`.
@@ -126,7 +137,7 @@ When driving niu on a user's machine:
   user with the exact command they should run.
 - Trust requires an intact tree; a degraded source (missing directory) cannot
   be trusted — suggest `niu plugin restore <id>`.
-- Mutations print their undo (`disable`, `source remove`, `tool remove`,
+- Mutations print their undo (`disable`, `source remove`,
   `source rollback <id>`). Surface those undo verbs to the user.
 - `niu plugin update <id>` moves a source to its ref tip (no id = every
   source); `niu plugin sync` reconciles the spec with reality;
@@ -136,4 +147,4 @@ When driving niu on a user's machine:
   builtin-name collision, non-tty `ui`) exit non-zero with a message that
   names the object and the repair verb.
 - Env overrides used by tests/tools: `NIU_PLUGIN_SOURCES_ROOT`,
-  `NIU_PLUGIN_TOOLS_ROOT`, `NIU_PLUGIN_DISTROS_ROOT`.
+  `NIU_PLUGIN_DISTROS_ROOT`.

@@ -15,19 +15,22 @@
 //! each manager's own selection mechanism ([`assets`]). No vendoring: the
 //! license stays between the user and upstream.
 //!
-//! Recipe-shaped access (lazy.nvim/mason conventions, owner ruling
-//! 2026-10-03): [`recipes`] is the data index over the ecosystem,
-//! [`download`] the pure-Rust direct-binary driver, [`distros`] the
-//! collection manifests (LazyVim extras pattern), and [`ui`] the menu-level
-//! view over the same verbs. [`mirrors`] is the transport-layer
-//! China-network mirroring (§14.8): rewrites downloads and git fetches,
-//! never the recorded origins.
+//! Recipe-shaped access (lazy.nvim/mason conventions): [`recipes`] is the
+//! data index over the ecosystem and [`distros`] the collection manifests
+//! (LazyVim extras pattern), with [`ui`] the menu-level view over the same
+//! verbs. The former direct-binary download driver is retired (owner
+//! ruling 2026-10-04, download retraction): the shell carries zero
+//! network/HTTP responsibility, `niu plugin add <git-url>` via `git clone`
+//! is the only extension installation entry, and executable-tool recipes
+//! are catalog rows whose install prints a package-manager recommendation
+//! (winget/scoop on Windows, apt/dnf/yum/brew elsewhere). [`mirrors`] is
+//! the transport-layer China-network mirroring (§14.8): git-only
+//! `insteadOf` rewriting of git fetches, never the recorded origins.
 
 pub mod assets;
 pub mod catalog;
 pub mod descriptors;
 pub mod distros;
-pub mod download;
 pub mod mirrors;
 pub mod recipes;
 pub mod sources;

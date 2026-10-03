@@ -1,14 +1,16 @@
-//! 1.3.0 release smoke suite (wt49/smokesweep) — one binary-level pass over
-//! every leg the release claims, in the order of the release checklist:
+//! 1.3.0 release smoke suite (wt49/smokesweep; section B reworked for the
+//! download retraction 2026-10-04) — one binary-level pass over every leg
+//! the release claims, in the order of the release checklist:
 //!
 //! * A. install chain — `niu plugin add --path` → trust → enable → the
 //!   managed rc block actually takes effect in a fresh `niu -c` shell
 //!   (oh-my-bash `OSH_THEME`, bash-it theme PS1), and the declarative spec
 //!   round-trips through `niu plugin sync` byte-idempotently;
-//! * B. download channel — the compiled-in recipe index is non-empty, the
-//!   empty tool registry lists cleanly, and (opt-in `NIU_SMOKE_NETWORK=1`)
-//!   a real download-driver install lands a working binary; transport
-//!   failure downgrades that leg to a recorded skip, never a false red;
+//! * B. download retraction — the compiled-in recipe index is non-empty,
+//!   executable-tool recipes recommend package managers instead of
+//!   fetching (fully offline), the retired `plugin tool` verb fails with
+//!   the retirement message, and `niu font` runs offline as
+//!   detection+recommendation;
 //! * C. defaults-as-floor — an enabled external theme claims the prompt
 //!   slot end-to-end, disabling it releases the slot back to the shell
 //!   floor (the product floor's own restore is pinned by the runtime unit
@@ -18,9 +20,10 @@
 //!   stack fields;
 //! * E. basics — `niu --version`, `echo`, `seq 1 3 | wc -l` = 3, `cat -n`.
 //!
-//! Every subprocess this file spawns is timeout-guarded: a hung niu (or a
-//! hung network read) is killed at its deadline and reported as a failure
-//! of that leg, so the suite is safe in CI without external watchdogs.
+//! Every subprocess this file spawns is timeout-guarded: a hung niu is
+//! killed at its deadline and reported as a failure of that leg, so the
+//! suite is safe in CI without external watchdogs. No leg touches the
+//! network — the shell carries zero download responsibility.
 
 use std::fs;
 use std::io::Write;
@@ -28,10 +31,8 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// Default per-invocation deadline. Network legs pass a larger budget.
+/// Default per-invocation deadline.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
-/// Download-driver leg budget (asset fetch + unpack + registry).
-const NETWORK_TIMEOUT: Duration = Duration::from_secs(300);
 
 fn niu_binary() -> PathBuf {
     let p = PathBuf::from(env!("CARGO_BIN_EXE_niu"));
@@ -68,11 +69,10 @@ fn temp_dir(name: &str) -> PathBuf {
 }
 
 /// HOME + USERPROFILE + plugin roots pointed at one sandbox: no leg in this
-/// file may touch the real user home, sources, spec, or tool registry.
+/// file may touch the real user home, sources, or spec.
 struct Sandbox {
     home: PathBuf,
     sources_root: PathBuf,
-    tools_root: PathBuf,
     spec_path: PathBuf,
     envs: Vec<(&'static str, String)>,
     _root: PathBuf,
@@ -83,10 +83,8 @@ impl Sandbox {
         let root = temp_dir(label);
         let home = root.join("home");
         let sources_root = root.join("sources");
-        let tools_root = root.join("tools");
         fs::create_dir_all(home.join(".niubash")).unwrap();
         fs::create_dir_all(&sources_root).unwrap();
-        fs::create_dir_all(&tools_root).unwrap();
         let spec_path = home.join(".niubash").join("plugins.toml");
         let envs = vec![
             ("HOME", home.to_string_lossy().into_owned()),
@@ -95,10 +93,6 @@ impl Sandbox {
                 "NIU_PLUGIN_SOURCES_ROOT",
                 sources_root.to_string_lossy().into_owned(),
             ),
-            (
-                "NIU_PLUGIN_TOOLS_ROOT",
-                tools_root.to_string_lossy().into_owned(),
-            ),
             ("NIU_PLUGIN_SPEC", spec_path.to_string_lossy().into_owned()),
             // No pre-existing rc may leak into the boot legs.
             ("NIU_ENV", String::new()),
@@ -106,7 +100,6 @@ impl Sandbox {
         Self {
             home,
             sources_root,
-            tools_root,
             spec_path,
             envs,
             _root: root,
@@ -412,7 +405,7 @@ fn a3_spec_sync_is_idempotent() {
     );
 }
 
-// ── B. download channel ──────────────────────────────────────────────────────
+// ── B. download retraction ───────────────────────────────────────────────────
 
 /// The compiled-in recipe index lists non-empty rows (offline leg).
 #[test]
@@ -434,95 +427,89 @@ fn b1_recipe_list_is_non_empty() {
     assert!(text.contains("oh-my-bash"), "{text}");
 }
 
-/// The empty tool registry lists cleanly (offline leg).
+/// Executable-tool recipes recommend package managers instead of fetching
+/// (download retraction 2026-10-04): `niu plugin add fzf` exits 0, fully
+/// offline, printing install commands — wpm first on Windows (owner
+/// correction 2026-10-03), native package managers on every platform —
+/// plus the upstream URL, and never a download attempt.
 #[test]
-fn b2_tool_list_empty_returns_cleanly() {
-    let sandbox = Sandbox::new("b2-tools");
-    let list = run_niu(&["plugin", "tool", "list"], &sandbox.envs);
-    assert_success(&list, "plugin tool list");
+fn b2_tool_recipes_recommend_package_managers_offline() {
+    let sandbox = Sandbox::new("b2-recommend");
+    let add = run_niu(&["plugin", "add", "fzf"], &sandbox.envs);
+    assert_success(&add, "plugin add fzf (recommendation, offline)");
+    let text = stdout_text(&add);
     assert!(
-        stdout_text(&list).contains("no tools installed"),
-        "{}",
-        stdout_text(&list)
+        text.contains("does not download binaries"),
+        "the retraction must be stated:\n{text}"
+    );
+    assert!(
+        text.contains("https://github.com/junegunn/fzf/"),
+        "the upstream URL must be printed:\n{text}"
+    );
+    assert!(text.contains("sudo apt install fzf"), "{text}");
+    assert!(text.contains("brew install fzf"), "{text}");
+    #[cfg(windows)]
+    assert!(text.contains("wpm install fzf"), "{text}");
+    #[cfg(not(windows))]
+    assert!(
+        !text.contains("wpm"),
+        "no wpm strings on non-Windows:\n{text}"
+    );
+    // Nothing landed anywhere: the recommendation installs nothing.
+    assert!(
+        !sandbox
+            .home
+            .join(".niubash")
+            .join("tools")
+            .join("fzf")
+            .exists(),
+        "no tool directory may be created by the recommendation"
+    );
+    assert!(
+        !sandbox
+            .home
+            .join(".niubash")
+            .join("tools")
+            .join("registry.toml")
+            .exists(),
+        "no tool registry may be written"
     );
 }
 
-/// Real download-driver install (network, opt-in via `NIU_SMOKE_NETWORK=1`):
-/// `niu plugin recipe add fzf` fetches the pinned asset with the pure-Rust
-/// driver, verifies the pinned sha256, lands `fzf(.exe)`, and
-/// `niu plugin tool remove fzf` undoes it. A transport-layer failure
-/// downgrades this leg to a recorded skip — an offline CI runner must not
-/// turn this suite red (release checklist: "可跳过如无网络").
+/// The retired downloaded-tools verbs fail loudly with the retirement
+/// message (never a silent success), and `niu font` runs offline as
+/// detection + recommendations.
 #[test]
-fn b3_download_driver_real_install_when_network_opted_in() {
-    if std::env::var_os("NIU_SMOKE_NETWORK").map(|v| v == "1") != Some(true) {
-        eprintln!("skipping: NIU_SMOKE_NETWORK=1 not set (network leg is opt-in)");
-        return;
-    }
-    let sandbox = Sandbox::new("b3-download");
+fn b3_retired_tool_verb_and_offline_font_recommendation() {
+    let sandbox = Sandbox::new("b3-retired");
 
-    let mut last_err = String::new();
-    let mut installed = false;
-    // The public CDN is allowed to flake; retry the transport a few times
-    // before giving up. A successful download is still fully asserted.
-    for _ in 0..3 {
-        let add = run_niu_timed(
-            &["plugin", "recipe", "add", "fzf"],
-            &sandbox.envs,
-            NETWORK_TIMEOUT,
-        );
-        if add.status.success() {
-            installed = true;
-            break;
-        }
-        last_err = format!(
-            "stdout: {}\nstderr: {}",
-            stdout_text(&add).trim(),
-            stderr_text(&add).trim()
-        );
-        if !stderr_text(&add).contains("download failed") {
-            panic!("fzf install failed for a non-transport reason:\n{last_err}");
-        }
-        std::thread::sleep(Duration::from_secs(5));
-    }
-    if !installed {
-        eprintln!("skipping: asset transport unreachable (download failed x3):\n{last_err}");
-        return;
-    }
-
-    // The registry records the resolved on-disk bin name.
     let list = run_niu(&["plugin", "tool", "list"], &sandbox.envs);
-    assert_success(&list, "plugin tool list after install");
-    let bin_name = if cfg!(windows) { "fzf.exe" } else { "fzf" };
     assert!(
-        stdout_text(&list).contains(bin_name),
-        "tool list must show the resolved bin:\n{}",
+        !list.status.success(),
+        "plugin tool list must be retired, got:\n{}",
         stdout_text(&list)
     );
     assert!(
-        sandbox.tools_root.join("fzf").join(bin_name).is_file(),
-        "asset must be unpacked at {}",
-        sandbox.tools_root.join("fzf").join(bin_name).display()
+        stderr_text(&list).contains("retired with the download retraction"),
+        "{}",
+        stderr_text(&list)
     );
 
-    // Enable writes the PATH block; remove undoes everything.
-    let enable = run_niu(&["plugin", "enable", "fzf"], &sandbox.envs);
-    assert_success(&enable, "plugin enable fzf (PATH block)");
+    // `niu font` is pure detection+recommendation: works with no terminal
+    // and no network, names the package channels and nerdfonts.com.
+    let font = run_niu(&["font"], &sandbox.envs);
+    assert_success(&font, "niu font (offline detection+recommendation)");
+    let font_text = stdout_text(&font);
+    assert!(font_text.contains("JetBrainsMono Nerd Font"), "{font_text}");
+    assert!(font_text.contains("nerdfonts.com"), "{font_text}");
     assert!(
-        sandbox.rc().contains("niu tool path: fzf"),
-        "{}",
-        sandbox.rc()
+        !font_text.contains("Choose a Nerd Font"),
+        "no interactive install prompt may remain:\n{font_text}"
     );
-    let remove = run_niu(&["plugin", "tool", "remove", "fzf"], &sandbox.envs);
-    assert_success(&remove, "plugin tool remove fzf");
+    // No fonts were installed into the sandbox.
     assert!(
-        !sandbox.tools_root.join("fzf").exists(),
-        "tool dir must be gone"
-    );
-    assert!(
-        !sandbox.rc().contains("niu tool path: fzf"),
-        "{}",
-        sandbox.rc()
+        !sandbox.home.join(".fonts").join("x.ttf").exists(),
+        "nothing may be installed"
     );
 }
 

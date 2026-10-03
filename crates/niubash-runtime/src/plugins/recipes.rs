@@ -7,10 +7,13 @@
 //!
 //! Drivers (closed set, study §10.3): `git` (tree source through the
 //! existing adapters — manager or generic-with-entry) and `download`
-//! (direct binary via [`super::download`], pure Rust, no external package
-//! manager — owner ruling 2026-10-03). Asset recipes (`manager` + `asset`)
-//! ride on a manager source and resolve through its own selection
-//! mechanism.
+//! (executable-tool rows). The download driver is **retracted** (owner
+//! ruling 2026-10-04, "download full retraction"): niu carries zero
+//! network/HTTP responsibility, so a `download` row is catalog metadata
+//! only — `add` prints a package-manager recommendation (winget/scoop on
+//! Windows, apt/dnf/yum/brew elsewhere) instead of fetching anything.
+//! Asset recipes (`manager` + `asset`) ride on a manager source and
+//! resolve through its own selection mechanism.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -19,7 +22,6 @@ use anyhow::{anyhow, bail};
 use serde::Deserialize;
 
 use super::assets;
-use super::download::{self, DownloadAsset};
 use super::sources;
 
 /// Generated seed index, compiled in (regenerate with
@@ -63,12 +65,24 @@ pub enum RecipeDriver {
         entry: Option<String>,
         origin: Option<String>,
     },
-    /// Direct binary download (pure-Rust driver).
+    /// Executable-tool row (former direct-binary driver, retracted
+    /// 2026-10-04): catalog metadata only — the platform release URLs are
+    /// data for `recipe show`, never fetched. `add` prints a
+    /// package-manager recommendation.
     Download {
         version: String,
-        downloads: BTreeMap<String, DownloadAsset>,
-        bins: Vec<String>,
+        /// Platform key → upstream release URL (catalog data only).
+        downloads: BTreeMap<String, DownloadAssetInfo>,
     },
+}
+
+/// Catalog metadata for one platform row of an executable-tool recipe.
+/// The generated recipes.toml rows carry more fields (archive kind, pinned
+/// sha256, bins) from the download-driver era; they parse compatibly and
+/// are ignored — niu no longer downloads, so nothing needs them.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DownloadAssetInfo {
+    pub url: String,
 }
 
 /// One recipe row (data only — the generator and the adapter-derived
@@ -108,9 +122,7 @@ struct RawRecipe {
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
-    downloads: Option<BTreeMap<String, DownloadAsset>>,
-    #[serde(default)]
-    bins: Option<Vec<String>>,
+    downloads: Option<BTreeMap<String, DownloadAssetInfo>>,
     #[serde(default)]
     manager: Option<String>,
     #[serde(default)]
@@ -138,7 +150,6 @@ impl TryFrom<RawRecipe> for Recipe {
                     raw.id
                 ))?,
                 downloads: raw.downloads.clone().unwrap_or_default(),
-                bins: raw.bins.clone().unwrap_or_default(),
             }),
             Some(other) => {
                 return Err(format!(
@@ -263,14 +274,9 @@ pub fn install(id: &str) -> anyhow::Result<RecipeInstall> {
             "recipe '{}' is malformed: git driver with a manager",
             found.id
         ),
-        (
-            Some(RecipeDriver::Download {
-                version,
-                downloads,
-                bins,
-            }),
-            None,
-        ) => install_download(found, version, downloads, bins),
+        (Some(RecipeDriver::Download { version, downloads }), None) => {
+            recommend_package_manager(found, version, downloads)
+        }
     }
 }
 
@@ -386,90 +392,260 @@ fn install_manager_asset(found: &Recipe, manager: &str) -> anyhow::Result<Recipe
     }
 }
 
-fn install_download(
-    found: &Recipe,
-    version: &str,
-    downloads: &BTreeMap<String, DownloadAsset>,
-    bins: &[String],
-) -> anyhow::Result<RecipeInstall> {
-    // Conflict gate (owner ruling 2026-10-03, wpm retraction): the download
-    // driver refuses a same-id reinstall (see download::install_executable);
-    // the recipe layer renders that refusal as a report, so a re-applied
-    // collection entry reads "already installed", not "failed".
-    if download::tool_installed(&found.id) {
-        return Ok(RecipeInstall {
-            recipe_id: found.id.clone(),
-            summary: format!(
-                "tool '{}' is already installed — see `niu plugin tool list`",
-                found.id
-            ),
-            next: vec![format!("niu plugin tool remove {}", found.id)],
-        });
+/// Package-manager spellings for the known executable-tool recipes
+/// (download retraction, owner ruling 2026-10-04 + correction 2026-10-03):
+/// niu never fetches binaries, so these rows install through the user's
+/// real package managers. On Windows **wpm is the first-class
+/// recommendation** for executable command-layer tools (owner correction:
+/// the shell stopped downloading; wpm stays the primary tool channel) —
+/// winget/scoop appear only as alternatives for what wpm does not carry
+/// (GUI apps, fonts). Non-Windows platforms recommend native package
+/// managers only; wpm strings compile out there (`cfg(windows)`, the
+/// niubash 688f224 red line). The upstream URL is always printed so no
+/// row can dead-end.
+struct ToolPackages {
+    winget: Option<&'static str>,
+    scoop: Option<&'static str>,
+    apt: Option<&'static str>,
+    dnf: Option<&'static str>,
+    brew: Option<&'static str>,
+}
+
+const fn pkgs(
+    winget: Option<&'static str>,
+    scoop: Option<&'static str>,
+    apt: Option<&'static str>,
+    dnf: Option<&'static str>,
+    brew: Option<&'static str>,
+) -> ToolPackages {
+    ToolPackages {
+        winget,
+        scoop,
+        apt,
+        dnf,
+        brew,
     }
-    let asset = download::resolve_platform_asset(downloads)?;
-    let mut asset = asset.clone();
-    if asset.bins.is_empty() {
-        asset.bins = bins.to_vec();
-    }
-    if asset.bins.is_empty() {
-        bail!("recipe '{}' declares no binaries", found.id);
-    }
-    let install = download::install_executable(&found.id, version, &asset)?;
-    let pinned = if install.pinned_checksum {
-        format!(
-            "sha256 verified ({})",
-            short(&install.record.archive_sha256)
-        )
-    } else {
-        "sha256 recorded (recipe pins no checksum — upstream digest unavailable)".to_string()
-    };
-    Ok(RecipeInstall {
-        recipe_id: found.id.clone(),
-        summary: format!(
-            "installed '{}' {} into {} [{pinned}]",
-            found.id,
-            version,
-            install.record.path.display()
+}
+
+fn tool_packages(id: &str) -> Option<ToolPackages> {
+    Some(match id {
+        "fzf" => pkgs(
+            Some("junegunn.fzf"),
+            Some("fzf"),
+            Some("fzf"),
+            Some("fzf"),
+            Some("fzf"),
         ),
-        next: vec![format!("niu plugin enable {}", found.id)],
+        "starship" => pkgs(
+            Some("Starship.Starship"),
+            Some("starship"),
+            None,
+            None,
+            Some("starship"),
+        ),
+        "ripgrep" => pkgs(
+            Some("BurntSushi.ripgrep.MSVC"),
+            Some("ripgrep"),
+            Some("ripgrep"),
+            Some("ripgrep"),
+            Some("ripgrep"),
+        ),
+        "fd" => pkgs(
+            Some("sharkdp.fd"),
+            Some("fd"),
+            Some("fd-find"),
+            Some("fd-find"),
+            Some("fd"),
+        ),
+        "bat" => pkgs(
+            Some("sharkdp.bat"),
+            Some("bat"),
+            Some("bat"),
+            Some("bat"),
+            Some("bat"),
+        ),
+        "eza" => pkgs(
+            Some("eza-community.eza"),
+            Some("eza"),
+            Some("eza"),
+            None,
+            Some("eza"),
+        ),
+        "zoxide" => pkgs(
+            Some("ajeetdsouza.zoxide"),
+            Some("zoxide"),
+            Some("zoxide"),
+            Some("zoxide"),
+            Some("zoxide"),
+        ),
+        "dust" => pkgs(
+            Some("bootandy.dust"),
+            Some("dust"),
+            None,
+            None,
+            Some("dust"),
+        ),
+        "duf" => pkgs(
+            Some("muesli.duf"),
+            Some("duf"),
+            Some("duf"),
+            Some("duf"),
+            Some("duf"),
+        ),
+        "erdtree" => pkgs(None, None, None, None, Some("erdtree")),
+        "direnv" => pkgs(
+            Some("direnv.direnv"),
+            Some("direnv"),
+            Some("direnv"),
+            Some("direnv"),
+            Some("direnv"),
+        ),
+        // niu-git ships in the wpm index (wpm/niugit.json upstream) but no
+        // public package manager carries it: wpm first, releases page as
+        // the machine-independent fallback.
+        "niugit" => pkgs(None, None, None, None, None),
+        _ => return None,
     })
 }
 
-fn short(digest: &str) -> String {
-    digest.chars().take(12).collect()
+/// The install commands one executable-tool recipe recommends, in a fixed
+/// platform order. Windows leads with wpm (owner correction 2026-10-03:
+/// wpm is the first-class executable-tool channel on Windows — the shell
+/// stopped downloading, wpm was not demoted); winget/scoop follow as
+/// alternatives. Each line is a complete, copy-pasteable command.
+fn recommendation_lines(id: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    match tool_packages(id) {
+        Some(ToolPackages {
+            winget,
+            scoop,
+            apt,
+            dnf,
+            brew,
+        }) => {
+            // Windows: wpm first (cfg-gated: the wpm surface must not exist
+            // in non-Windows builds at all — niubash 688f224 red line).
+            #[cfg(windows)]
+            lines.push(format!(
+                "wpm install {id}                      # Windows — first choice"
+            ));
+            if let Some(pkg) = winget {
+                lines.push(format!(
+                    "winget install --id {pkg}    # Windows (alternative)"
+                ));
+            }
+            if let Some(pkg) = scoop {
+                lines.push(format!(
+                    "scoop install {pkg}               # Windows (alternative)"
+                ));
+            }
+            if let Some(pkg) = apt {
+                lines.push(format!("sudo apt install {pkg}          # Debian / Ubuntu"));
+            }
+            if let Some(pkg) = dnf {
+                lines.push(format!(
+                    "sudo dnf install {pkg}          # Fedora / RHEL (yum on older)"
+                ));
+            }
+            if let Some(pkg) = brew {
+                lines.push(format!(
+                    "brew install {pkg}               # macOS / Linuxbrew"
+                ));
+            }
+        }
+        None => {
+            #[cfg(windows)]
+            lines.push(format!(
+                "wpm install {id}                      # Windows — first choice"
+            ));
+            lines.push(format!(
+                "winget search {id}                  # Windows (alternative; then install --id)"
+            ));
+            lines.push(format!(
+                "sudo apt install {id}             # Debian / Ubuntu (if packaged)"
+            ));
+            lines.push(format!(
+                "brew install {id}                  # macOS / Linuxbrew (if packaged)"
+            ));
+        }
+    }
+    lines
 }
 
-/// `niu plugin enable/disable <id>` routing: executable tools activate a
-/// PATH managed block (mason PATH-as-policy, study §10.3); everything else
-/// goes to the asset/asset-layer machinery.
-pub fn enable(id: &str) -> anyhow::Result<assets::ActivationOutcome> {
-    if let Some(record) = download::read_tool_registry()
-        .into_iter()
-        .find(|record| record.id == id)
-    {
-        let rc = assets::write_tool_path_block(id, &record.path)?;
-        return Ok(assets::ActivationOutcome {
-            summary: format!(
-                "tool '{id}' on PATH — managed block added to {}",
-                rc.display()
-            ),
-            undo: format!("niu plugin disable {id}"),
-        });
+/// The most specific one-line recommendation for surfaces that print a
+/// single hint (the shell's command-not-found advice): the *current
+/// platform's* primary install command — wpm on Windows, the first native
+/// package manager elsewhere (Windows-only lines are skipped there).
+pub fn first_recommendation(id: &str) -> Option<String> {
+    let lines = recommendation_lines(id);
+    let pick = lines.iter().find(|line| {
+        #[cfg(windows)]
+        {
+            line.contains("wpm install")
+        }
+        #[cfg(not(windows))]
+        {
+            !line.contains("winget") && !line.contains("scoop") && !line.contains("wpm")
+        }
+    });
+    let line = pick.or_else(|| lines.first())?;
+    Some(line.split('#').next().unwrap_or(line).trim().to_string())
+}
+
+/// `niu plugin add <download-recipe>` after the download retraction (owner
+/// ruling 2026-10-04 + wpm-first correction): the row stays as catalog
+/// metadata, but niu never fetches executables — the install action is a
+/// recommendation pointing at the platform's real package manager (wpm
+/// first on Windows), plus the upstream release page.
+fn recommend_package_manager(
+    found: &Recipe,
+    version: &str,
+    downloads: &BTreeMap<String, DownloadAssetInfo>,
+) -> anyhow::Result<RecipeInstall> {
+    let mut next = recommendation_lines(&found.id);
+    // The upstream URL is always present, so even a row with no curated
+    // spelling cannot dead-end. Prefer the current platform's release URL,
+    // else the recipe's project page.
+    let platform_url = downloads
+        .get(platform_key())
+        .map(|asset| asset.url.clone())
+        .or_else(|| downloads.values().next().map(|asset| asset.url.clone()));
+    let upstream = platform_url.unwrap_or_else(|| found.url.clone());
+    next.push(upstream);
+    Ok(RecipeInstall {
+        recipe_id: found.id.clone(),
+        summary: format!(
+            "'{}' ({version}) is an executable tool — niu does not download binaries; \
+             install it with your system package manager",
+            found.id
+        ),
+        next,
+    })
+}
+
+/// Platform key matching the recipe asset table (mason `target` naming,
+/// dash-joined os-arch). Used only to pick which catalog URL to show.
+fn platform_key() -> &'static str {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", "x86_64") => "windows-x64",
+        ("windows", "aarch64") => "windows-arm64",
+        ("linux", "x86_64") => "linux-x64",
+        ("linux", "aarch64") => "linux-arm64",
+        ("macos", "x86_64") => "darwin-x64",
+        ("macos", "aarch64") => "darwin-arm64",
+        _ => "unknown-platform",
     }
+}
+
+/// `niu plugin enable/disable <id>` routing: everything goes to the
+/// asset/asset-layer machinery (the executable-tool PATH-block channel
+/// retired with the download driver — a package-manager install puts the
+/// binary on PATH itself).
+pub fn enable(id: &str) -> anyhow::Result<assets::ActivationOutcome> {
     assets::enable(id)
 }
 
 pub fn disable(id: &str) -> anyhow::Result<assets::ActivationOutcome> {
-    if download::read_tool_registry()
-        .iter()
-        .any(|record| record.id == id)
-        && assets::remove_tool_path_block(id)?
-    {
-        return Ok(assets::ActivationOutcome {
-            summary: format!("tool '{id}' PATH block removed"),
-            undo: format!("niu plugin enable {id}"),
-        });
-    }
     assets::disable(id)
 }
 
@@ -479,11 +655,9 @@ pub fn disable(id: &str) -> anyhow::Result<assets::ActivationOutcome> {
 pub enum RecipeState {
     /// Not installed.
     Available,
-    /// Executable tool installed through the download driver.
-    ToolInstalled,
     /// Riding on an installed manager source (sub-state of the source).
     ManagerAsset { manager_state: String },
-    /// Info-only row.
+    /// Info-only row (no niu install driver).
     InfoOnly,
 }
 
@@ -491,12 +665,6 @@ pub fn recipe_state(id: &str) -> RecipeState {
     let Some(found) = recipe(id) else {
         return RecipeState::Available;
     };
-    if download::read_tool_registry()
-        .iter()
-        .any(|tool| tool.id == id)
-    {
-        return RecipeState::ToolInstalled;
-    }
     match (&found.driver, &found.manager) {
         (None, Some(manager)) => {
             let state = sources::read_source_registry()
@@ -536,7 +704,9 @@ pub fn recipe_state(id: &str) -> RecipeState {
                 None => RecipeState::Available,
             }
         }
-        (Some(RecipeDriver::Download { .. }), _) => RecipeState::Available,
+        // Executable-tool rows are recommendations, not installs niu can
+        // observe — report them like info-only rows.
+        (Some(RecipeDriver::Download { .. }), _) => RecipeState::InfoOnly,
     }
 }
 
@@ -623,82 +793,104 @@ mod tests {
     fn download_recipes_carry_platform_rows() {
         let starship = recipe("starship").expect("starship recipe");
         let Some(RecipeDriver::Download { downloads, .. }) = &starship.driver else {
-            panic!("starship must be a download recipe");
+            panic!("starship must be an executable-tool (download) recipe");
         };
         assert!(downloads.contains_key("windows-x64"), "{downloads:?}");
         assert!(downloads.contains_key("linux-x64"), "{downloads:?}");
     }
 
+    /// Download retraction (owner ruling 2026-10-04): the rows stay as
+    /// catalog metadata and `add` recommends package managers — fully
+    /// offline, no fetch is ever attempted.
     #[test]
-    fn download_recipes_pin_sha256_per_platform() {
-        // Integrity is data, not policy: a download row without a pinned
-        // digest silently downgrades to "checksum recorded" (download.rs).
-        // The compiled-in seed must never ship that downgrade.
-        for found in recipes() {
-            if let Some(RecipeDriver::Download { downloads, .. }) = &found.driver {
-                for (platform, asset) in downloads {
-                    assert!(
-                        asset
-                            .sha256
-                            .as_deref()
-                            .is_some_and(|digest| !digest.is_empty()),
-                        "recipe '{}' platform '{platform}' pins no sha256",
-                        found.id
-                    );
-                }
-            }
+    fn download_recipes_recommend_package_managers_instead_of_fetching() {
+        let fzf = recipe("fzf").expect("fzf recipe");
+        let Some(RecipeDriver::Download { version, .. }) = &fzf.driver else {
+            panic!("fzf must be an executable-tool (download) recipe");
+        };
+        let report = install("fzf").expect("install is a recommendation, never a fetch");
+        assert_eq!(report.recipe_id, "fzf");
+        assert!(
+            report.summary.contains("package manager"),
+            "{}",
+            report.summary
+        );
+        assert!(
+            report.summary.contains(version.as_str()),
+            "{}",
+            report.summary
+        );
+        let joined = report.next.join("\n");
+        // Windows: wpm first (owner correction 2026-10-03), winget/scoop as
+        // alternatives; non-Windows: native managers only, zero wpm
+        // strings (the 688f224 red line holds — the line never compiles in).
+        #[cfg(windows)]
+        {
+            assert!(joined.contains("wpm install fzf"), "{joined}");
+            assert!(
+                joined.find("wpm install") < joined.find("winget install"),
+                "{joined}"
+            );
         }
+        #[cfg(not(windows))]
+        assert!(
+            !joined.contains("wpm"),
+            "no wpm strings on non-Windows:\n{joined}"
+        );
+        assert!(
+            joined.contains("winget install --id junegunn.fzf"),
+            "{joined}"
+        );
+        assert!(joined.contains("scoop install fzf"), "{joined}");
+        assert!(joined.contains("sudo apt install fzf"), "{joined}");
+        assert!(joined.contains("sudo dnf install fzf"), "{joined}");
+        assert!(joined.contains("brew install fzf"), "{joined}");
+        assert!(
+            joined.contains("https://github.com/junegunn/fzf/"),
+            "the upstream URL must be the dead-end-free fallback:\n{joined}"
+        );
+        // Every recommendation line is a copy-pasteable command (the URL
+        // excepted) and mentions no niu download verb.
+        assert!(
+            !joined.contains("niu plugin tool"),
+            "retracted tool verbs must not surface:\n{joined}"
+        );
     }
 
-    /// The PROBED_TOOLS application class owns download rows (owner ruling
-    /// 2026-10-03, wpm retraction): every wizard-probe application tool is
-    /// installable through the plugin driver on windows-x64 and linux-x64
-    /// (thefuck excepted — no binary release, info-only), and every asset
-    /// row names its exact in-archive bin path.
+    /// Rows without a curated spelling table still recommend honestly
+    /// (wpm on Windows + search-oriented generic lines + upstream), and
+    /// niugit — carried by the wpm index but no public package manager —
+    /// leads with wpm on Windows and points at its GitHub releases.
     #[test]
-    fn application_tools_have_download_rows_per_platform() {
-        for id in [
-            "starship", "fzf", "ripgrep", "fd", "bat", "eza", "zoxide", "dust", "duf", "erdtree",
-            "direnv", "niugit",
-        ] {
-            let found = recipe(id).unwrap_or_else(|| panic!("missing tool recipe '{id}'"));
-            let Some(RecipeDriver::Download {
-                downloads, bins, ..
-            }) = &found.driver
-            else {
-                panic!("tool recipe '{id}' must use the download driver");
-            };
-            assert!(
-                downloads.contains_key("windows-x64"),
-                "'{id}' has no windows-x64 row: {downloads:?}"
-            );
-            if id != "niugit" {
-                // niu-git is Windows-native git by design; everything else
-                // installs cross-platform.
-                assert!(
-                    downloads.contains_key("linux-x64"),
-                    "'{id}' has no linux-x64 row: {downloads:?}"
-                );
-            }
-            for (platform, asset) in downloads {
-                // Driver precedence (install_download): per-asset bins first,
-                // then the recipe-level `bins` (archive-root binaries).
-                assert!(
-                    !asset.bins.is_empty() || !bins.is_empty(),
-                    "'{id}' platform '{platform}' names no bin path"
-                );
-                assert!(
-                    asset.sha256.as_deref().is_some_and(|s| !s.is_empty()),
-                    "'{id}' platform '{platform}' pins no sha256"
-                );
-            }
-        }
-        // thefuck ships no binaries: the row exists and explains instead.
-        let fuck = recipe("thefuck").expect("thefuck recipe");
+    fn uncurated_and_own_project_tools_recommend_upstream() {
+        let niugit = install("niugit").expect("niugit recommendation");
+        let joined = niugit.next.join("\n");
+        #[cfg(windows)]
+        assert!(joined.contains("wpm install niugit"), "{joined}");
         assert!(
-            fuck.driver.is_none(),
-            "thefuck is info-only (no binary release)"
+            joined.contains("https://github.com/unixwin/niu-git/"),
+            "{joined}"
         );
+        assert!(
+            !joined.contains("winget install --id"),
+            "niu-git has no winget package:\n{joined}"
+        );
+        // The shell-facing one-liner exists for every known tool row and
+        // names the platform's primary channel.
+        for id in [
+            "fzf", "starship", "ripgrep", "fd", "bat", "eza", "zoxide", "dust", "duf", "direnv",
+        ] {
+            let first =
+                first_recommendation(id).unwrap_or_else(|| panic!("{id}: no first_recommendation"));
+            #[cfg(windows)]
+            assert_eq!(first, format!("wpm install {id}"), "{id}: {first}");
+            #[cfg(not(windows))]
+            assert!(
+                first.starts_with("sudo apt") || first.starts_with("brew"),
+                "{id}: {first}"
+            );
+        }
+        assert!(first_recommendation("erdtree").is_some());
     }
 
     #[test]

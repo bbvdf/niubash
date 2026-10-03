@@ -47,3 +47,25 @@ Known non-blocker noted during the fix: the PATH block prepends the tool
 root directory; a recipe declaring a *nested* bin (`bin/tool.exe`) would
 need the bin's parent on PATH instead. No current recipe declares nested
 bins (`fzf`, `starship` are root-level), so this is latent, not shipped.
+
+---
+
+## Retraction addendum (2026-10-04, wt50/dlretract — supersedes the ledger above)
+
+The download surface audited above no longer exists. Owner final ruling:
+niu carries zero network/HTTP download responsibility — `plugins/download.rs`
+(the ureq/rustls driver), the `zip`/`tar`/`flate2` unpack stack, the
+`fonts.rs` download path, the mirror HTTP prefix channel, and the
+`niu plugin mirror test` probe were all deleted. Surviving network call
+points:
+
+| Call point | Mechanism | Status |
+| --- | --- | --- |
+| `plugins/sources.rs`, `plugins/distros.rs` | external `git` | The sanctioned and *only* extension transport (`niu plugin add <git-url>`). |
+| `src/self_update.rs` | WinHTTP via `windows-sys` | Product self-update channel (not an extension install); goes direct since the mirror prefix channel is gone. |
+
+Executable tools install through real package managers (wpm first on
+Windows per the 2026-10-03 owner correction; apt/dnf/yum/brew elsewhere) —
+the recipe rows print those commands. The zero-download surface is asserted
+by `scripts/smoke-test-1.3.0.sh` leg B (no download deps in Cargo.toml, no
+download.rs, no ureq in Cargo.lock, offline recommendations).

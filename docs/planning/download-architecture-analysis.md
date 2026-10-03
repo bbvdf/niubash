@@ -207,3 +207,29 @@ WinHttp/TcpStream —— 引擎干净，无需动作。真正的耦合债务在 
 - 未验证项（诚实声明）：fish 2.x 联网取 man 页的具体 changelog 原文未能从
   fish-shell 仓库现行 CHANGELOG.rst（只覆盖较新版本）中定位，该条为次级来源；
   不影响任何结论（fish 现状"只解析本地 man 页"是一手确认的）。
+
+---
+
+## 终局裁定（2026-10-04，owner 最终裁决；本节取代上文所有"待裁定"选项）
+
+Owner 裁定：**收缩，不是搬家。** niu 是纯 bash 生态插件管理器，
+shell 本体承担零网络/HTTP 下载职责——本报告评估的选项 A/B/C（内置
+驱动 / 独立 crate + feature / 独立 exe）全部作废，HTTP 依赖整体移除：
+
+- **删除**：`plugins/download.rs` 整模块与 `ureq`/`flate2`/`tar`/`zip`
+  依赖（wt50/dlretract）。锁文件经普通 `cargo build` 增量修剪（未跑
+  wholesale `cargo update`；windows-sys 0.59/0.61.2 钉未动，0.52 随
+  ring/ureq 树离开）。
+- **归属**：可执行工具归真实包管理器——Windows 上 wpm 第一顺位
+  （owner 更正 2026-10-03），winget/scoop 为 wpm 不携带物（GUI、字体）
+  的补充；其他平台 apt/dnf/yum/brew，非 Windows 构建零 wpm 字符串。
+- **插件驱动**：`niu plugin add <git-url>`（git clone）是唯一扩展安装
+  入口；recipe 索引降为目录元数据，download 行的 `add` 打印包管理器
+  推荐而非 fetch。
+- **字体**：检测+推荐（winget/scoop/brew/nerdfonts.com），无下载无解压。
+- **镜像**：HTTP prefix 通道删除，仅存 git insteadOf（git-only）。
+- **自更新**：self_update（WinHTTP）为产品自身更新通道，不属扩展安装，
+  保留直连。
+
+§3 的体积实验与 §2 的调用面盘点作为历史证据保留；其"缺的是编译期
+边界"的判断以最彻底的形式（整个删除）落地。

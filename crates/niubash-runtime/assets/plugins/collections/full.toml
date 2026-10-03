@@ -1,7 +1,7 @@
 # niubash plugin collection: full
 schema = "niubash:plugin-collection@1"
 name = "full"
-description = "both frameworks + hooks + tooling: omb, bash-it, completions, bash-preexec, fzf, starship"
+description = "both frameworks + hooks: omb, bash-it, completions, bash-preexec; fzf & starship are suggested package-manager installs (niu downloads nothing)"
 
 [[entry]]
 recipe = "oh-my-bash"

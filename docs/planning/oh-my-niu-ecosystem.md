@@ -1314,3 +1314,49 @@ awk/jq/7z/zstd/wget/aria2/rclone/busybox 一类经典 Unix 工具箱），**不�
 recipe（涉及 UAC/提权平面归属），待裁定；命令层与应用层的分界线
 （awk/jq/7z 归命令层）如 owner 意在更严格的"仅随产品走"口径，则
 `wpm_package_for_command` 需再收缩。
+
+### 14.9 下载全面收缩（2026-10-04 owner 最终裁定，wt50/dlretract）
+
+裁定：**niu 是纯 bash 生态插件管理器，shell 本体承担零网络/HTTP 下载职责。**
+全部 HTTP 依赖移除；可执行工具的安装归属真实包管理器（Windows 上 wpm
+为第一顺位——owner 更正 2026-10-03：shell 停止下载 ≠ wpm 被降级，
+winget/scoop 只作为 wpm 不携带物（GUI 应用、字体）的补充；其他平台
+apt/dnf/yum/brew 原生管理器，非 Windows 构建零 wpm 字符串，688f224
+红线不变）；插件驱动 `niu plugin add <git-url>` 是**唯一**扩展安装入口
+且只用 `git clone`；字体收缩为检测+推荐。
+
+**删除面**（本节为存档裁定记录，下面的 14.8 两节描述的 download 驱动、
+镜像 prefix 通道、`niu plugin tool` 动词均已被本节取代）：
+
+1. `plugins/download.rs` 整模块（ureq/rustls 传输、zip/tar.gz 解包、
+   `~/.niubash/tools/registry.toml` 工具注册表、PATH 块激活通道）。
+   Cargo.toml 移除 `ureq`/`flate2`/`tar`/`zip`（flate2 仅作为 png 的
+   传递依赖留在锁文件）。
+2. 镜像 HTTP prefix 通道（`rewrite_download_url`、`[github] prefix`、
+   `[github.releases]`）与可达性探测（`probe_reachability`、
+   `niu plugin mirror test`）。镜像收缩为 **git-only insteadOf**：
+   `niu plugin mirror set <url>` 写 `git_instead_of`；旧 prefix 字段
+   兼容解析、静默忽略。
+3. `niu plugin tool list/remove` 动词（报错指向包管理器流程）；
+   download-era 安装残留（`~/.niubash/tools/<id>`）手动删除。
+4. `fonts.rs` 下载/解压/注册路径：保留 NerdFont 检测（目录+注册表
+   扫描），`niu font` 改为非交互的检测+推荐（winget `DEVCOM.
+   JetBrainsMonoNerdFont` 等 / scoop nerd-fonts bucket / brew cask /
+   nerdfonts.com 兜底；wpm 不携带字体，属正常分工而非降级）。
+5. recipe 索引（509 行）保留为**目录元数据**：`driver = "download"`
+   行照常解析（平台 URL 为纯数据），`niu plugin add fzf` 打印包管理器
+   推荐命令（Windows 首选 `wpm install fzf`，winget/scoop 次之；非
+   Windows 仅 apt/dnf/brew）+ 上游 release URL，永不 fetch。
+   command-not-found 提示同名推荐。自更新（self_update，WinHTTP）
+   是产品自身更新通道，不属于扩展安装，保留直连（不再走镜像）。
+
+**教育口径**（docs 同步用）：两个系统共存——**wpm = Windows 的 Unix
+命令层**（含应用工具，第一顺位），**`niu plugin` = bash 生态扩展驱动**
+（git 源、主题、补全，任意平台）。收缩叙事是"niu 不再下载"，不是
+"wpm 被 winget 取代"。
+
+**验收**：runtime 单测 304/0（原 71 失败经删除消除，非 #[ignore] 隐藏）；
+`RUSTFLAGS="-D warnings" cargo check --all-targets` 干净；冒烟套件
+B 段改为收缩面审计（Cargo.toml 无下载依赖、无 download.rs、锁文件无
+ureq、`plugin add fzf` 离线出推荐、`plugin tool` 报退役、`niu font`
+离线推荐），全离线通过。

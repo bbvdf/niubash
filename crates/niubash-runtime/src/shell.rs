@@ -2584,14 +2584,17 @@ where
 
     let search = shell_quote(command);
 
-    // Application tools with a compiled-in plugin recipe: the driver is the
-    // single executable-tool install entry on every platform (owner ruling
-    // 2026-10-03 — wpm retracts to the Unix command layer and stops
-    // installing application tools).
+    // Application tools with a compiled-in plugin recipe: niu downloads
+    // nothing (download retraction 2026-10-04), so the hint names the
+    // platform's primary package-manager command directly — wpm first on
+    // Windows (owner correction 2026-10-03), the native manager elsewhere.
+    // `niu plugin add <recipe>` prints the same, fuller recommendation.
     if let Some(recipe) = plugin_recipe_for_command(command) {
-        lines.push(format!(
-            "niubash: try 'niu plugin add {recipe}' to add {command}"
-        ));
+        if let Some(install) = crate::plugins::recipes::first_recommendation(recipe) {
+            lines.push(format!(
+                "niubash: try '{install}' to add {command} (or: niu plugin add {recipe})"
+            ));
+        }
     }
 
     // The wpm channel survives only for the bundled Unix command layer
@@ -2624,10 +2627,11 @@ where
     lines
 }
 
-/// Application tools that own a compiled-in plugin download recipe: their
-/// install hint names the recipe (cross-platform — the download driver runs
-/// everywhere). Keep in sync with `assets/plugins/recipes.toml`: an entry
-/// here without a recipe row would print a dead verb.
+/// Application tools that own a compiled-in plugin executable-tool recipe:
+/// their install hint names the recipe's package-manager recommendation
+/// (cross-platform — wpm first on Windows, native managers elsewhere).
+/// Keep in sync with `assets/plugins/recipes.toml`: an entry here without a
+/// recipe row would print a dead verb.
 fn plugin_recipe_for_command(command: &str) -> Option<&'static str> {
     match command {
         "rg" => Some("ripgrep"),
@@ -3572,17 +3576,32 @@ niu_git_comp() {
 
     #[test]
     fn native_command_not_found_lines_include_available_windows_package_managers() {
-        // rg is an application tool with a compiled-in download recipe: the
-        // install hint names the plugin driver (owner ruling 2026-10-03 —
-        // wpm retracted to the Unix command layer), never wpm.
+        // rg is an application tool with a compiled-in executable-tool
+        // recipe: the install hint names the platform's package manager
+        // directly (wpm first on Windows — owner correction 2026-10-03;
+        // native managers elsewhere), plus the recipe verb for the fuller
+        // recommendation.
         let lines = native_command_not_found_hint_lines("rg", |command| {
             matches!(command, "winget" | "scoop")
         });
 
-        assert!(lines.contains(&"niubash: try 'niu plugin add ripgrep' to add rg".to_string()));
+        #[cfg(windows)]
         assert!(
-            !lines.iter().any(|line| line.contains("wpm")),
-            "application tools must not recommend wpm: {lines:?}"
+            lines.contains(
+                &"niubash: try 'wpm install ripgrep' to add rg \
+                             (or: niu plugin add ripgrep)"
+                    .to_string()
+            ),
+            "{lines:?}"
+        );
+        #[cfg(not(windows))]
+        assert!(
+            lines.iter().any(|line| line.contains("to add rg")),
+            "{lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|line| line.contains("wpm install awk")),
+            "command-layer and application-tool channels must not cross: {lines:?}"
         );
         assert!(lines.contains(&"niubash: package search hints:".to_string()));
         assert!(lines.contains(&"  winget search --name 'rg'".to_string()));
@@ -3635,7 +3654,7 @@ niu_git_comp() {
                         Some(crate::plugins::recipes::RecipeDriver::Download { .. })
                     )
                 }),
-                "hint recipe '{recipe}' for '{command}' has no download row in the seed index"
+                "hint recipe '{recipe}' for '{command}' has no executable-tool row in the seed index"
             );
             let lines = native_command_not_found_hint_lines(command, |_| false);
             assert!(
@@ -3644,9 +3663,15 @@ niu_git_comp() {
                     .any(|line| line.contains(&format!("niu plugin add {recipe}"))),
                 "{command}: {lines:?}"
             );
+            // The platform's primary install command is named directly
+            // (wpm on Windows, a native manager elsewhere).
+            let first = crate::plugins::recipes::first_recommendation(recipe)
+                .unwrap_or_else(|| panic!("{recipe}: no recommendation"));
             assert!(
-                !lines.iter().any(|line| line.contains("wpm")),
-                "{command} is an application tool — no wpm channel: {lines:?}"
+                lines
+                    .iter()
+                    .any(|line| line.contains(&format!("try '{first}'"))),
+                "{command}: expected '{first}' in {lines:?}"
             );
         }
     }

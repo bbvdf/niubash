@@ -1,68 +1,82 @@
-//! Nerd Font detection, download, and per-user installation.
+//! Nerd Font detection and install recommendations.
 //!
-//! Fonts install to `%LOCALAPPDATA%\Microsoft\Windows\Fonts` and register
-//! under `HKCU\...\Fonts`, so no administrator rights are needed on
-//! Windows 10 1809+. Downloads come from the nerd-fonts GitHub release
-//! assets through the plugin system's pure-Rust driver
-//! (`plugins::download::http_get_bytes`, ureq over rustls — zero external
-//! dependencies, owner ruling: download logic stays pure Rust). On Unix,
-//! TTFs are extracted into `~/.fonts` (fontconfig scans it without any
-//! registration step).
+//! Download retraction (owner ruling 2026-10-04): the shell carries zero
+//! network/HTTP responsibility, so `niu font` no longer downloads or
+//! extracts font zips. What remains is detection — scanning the per-user
+//! and system font directories plus the registered font lists (HKCU and
+//! HKLM on Windows) — and a recommendation surface: on Windows the winget
+//! nerd-fonts packages (fonts are not part of wpm's Unix command layer,
+//! so the package-manager channel for them is winget/scoop), on other
+//! platforms the native package manager or nerdfonts.com. No HTTP, no
+//! zip extraction, no registration writes.
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
-
-const NERD_FONTS_RELEASE: &str = "https://github.com/ryanoasis/nerd-fonts/releases/latest/download";
-
-/// A selectable Nerd Font from the nerd-fonts release catalog.
+/// A Nerd Font niu knows how to detect and recommend.
 pub struct NerdFont {
     /// Menu label shown to the user.
     pub label: &'static str,
-    /// Value written to a Windows Terminal profile's `font.face`.
+    /// Value a Windows Terminal profile's `font.face` should use.
     pub face: &'static str,
-    /// Release asset name, e.g. `JetBrainsMono.zip`.
-    pub asset: &'static str,
-    /// Substring selecting the mono-spaced family TTFs inside the zip.
-    pub file_marker: &'static str,
+    /// winget package id (`winget install --id <id>`), when one exists.
+    pub winget_id: Option<&'static str>,
+    /// scoop manifest name in the `nerd-fonts` bucket, when one exists.
+    pub scoop: Option<&'static str>,
+    /// Homebrew cask name (`brew install --cask <name>`).
+    pub brew_cask: &'static str,
 }
 
-/// Fonts offered by the setup wizard and `niu font`.
+/// Fonts niu detects and recommends (`niu font`, the setup wizard's
+/// environment summary, `niu doctor`).
 pub const FONT_OPTIONS: &[NerdFont] = &[
     NerdFont {
         label: "JetBrainsMono Nerd Font",
         face: "JetBrainsMono Nerd Font Mono",
-        asset: "JetBrainsMono.zip",
-        file_marker: "NerdFontMono-",
+        winget_id: Some("DEVCOM.JetBrainsMonoNerdFont"),
+        scoop: Some("JetBrainsMono-NF"),
+        brew_cask: "font-jetbrains-mono-nerd-font",
     },
     NerdFont {
         label: "MesloLGM Nerd Font",
         face: "MesloLGM Nerd Font Mono",
-        asset: "Meslo.zip",
-        file_marker: "LGMNerdFontMono-",
+        // No winget package exists for Meslo; scoop's nerd-fonts bucket
+        // and the nerdfonts.com release carry it.
+        winget_id: None,
+        scoop: Some("Meslo-NF"),
+        brew_cask: "font-meslo-lg-nerd-font",
     },
     NerdFont {
         label: "CaskaydiaCove Nerd Font",
         face: "CaskaydiaCove Nerd Font Mono",
-        asset: "CascadiaCode.zip",
-        file_marker: "CoveNerdFontMono-",
+        winget_id: None,
+        scoop: Some("CascadiaCode-NF"),
+        brew_cask: "font-caskaydia-cove-nerd-font",
     },
 ];
-
-/// Result of a successful font install.
-pub struct InstalledFont {
-    /// The `font.face` name terminals should use.
-    pub face: &'static str,
-    /// Number of TTF files installed.
-    pub files: usize,
-    /// Directory the fonts were copied into.
-    pub dir: PathBuf,
-}
 
 /// Menu labels for the font choice question (plus room for a Skip entry
 /// appended by the caller).
 pub fn menu_labels() -> Vec<String> {
     FONT_OPTIONS.iter().map(|f| f.label.to_string()).collect()
+}
+
+/// The copy-pasteable install commands for one font: winget first on
+/// Windows (fonts are a package-manager channel, not wpm's Unix command
+/// layer), scoop as the Windows alternative, brew on macOS, and always
+/// nerdfonts.com as the channel-free fallback.
+fn install_lines(font: &NerdFont) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(id) = font.winget_id {
+        lines.push(format!("winget install --id {id}    # Windows"));
+    }
+    if let Some(name) = font.scoop {
+        lines.push(format!(
+            "scoop bucket add nerd-fonts; scoop install {name}   # Windows (alternative)"
+        ));
+    }
+    lines.push(format!("brew install --cask {}   # macOS", font.brew_cask));
+    lines.push("https://www.nerdfonts.com/font-downloads   # manual download".to_string());
+    lines
 }
 
 /// True when any installed font name or file looks like a Nerd Font.
@@ -72,146 +86,49 @@ pub fn nerd_font_installed() -> bool {
     font_dirs().iter().any(|dir| dir_has_nerd_font(dir)) || registry_has_nerd_font()
 }
 
-/// Download `font`, install its mono family into the per-user font
-/// directory, register each face, and broadcast `WM_FONTCHANGE`.
-pub fn install(font: &NerdFont) -> Result<InstalledFont> {
-    let fonts_dir = user_fonts_dir().context("locate per-user fonts directory")?;
-    std::fs::create_dir_all(&fonts_dir)
-        .with_context(|| format!("create {}", fonts_dir.display()))?;
-
-    let zip_path = std::env::temp_dir().join(format!("niu-font-{}", font.asset));
-    download(&format!("{NERD_FONTS_RELEASE}/{}", font.asset), &zip_path)?;
-    let installed = extract_family(&zip_path, &fonts_dir, font.file_marker)?;
-    let _ = std::fs::remove_file(&zip_path);
-    if installed.is_empty() {
-        bail!("no matching font files in {}", font.asset);
-    }
-
-    for path in &installed {
-        register_font(path);
-    }
-    broadcast_font_change();
-
-    Ok(InstalledFont {
-        face: font.face,
-        files: installed.len(),
-        dir: fonts_dir,
-    })
-}
-
-/// `niu font` — pick a Nerd Font, install it per-user, and point the
-/// Windows Terminal Niubash profile at it when one exists.
-pub fn run_font_command() -> Result<()> {
-    use crate::interactive_menu::{interactive_choice, Selection};
-
-    if !crate::terminal::stdio_is_interactive() {
-        bail!("`niu font` needs an interactive terminal");
-    }
-    if nerd_font_installed() {
-        println!("A Nerd Font is already installed — installing another is fine.");
-    }
-    let mut labels = menu_labels();
-    labels.push("Cancel".to_string());
-    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-    let selection = interactive_choice(
-        "Choose a Nerd Font to install",
-        &refs,
-        0,
-        "installs to your user fonts folder — no admin needed",
-    );
-    let Selection::Confirmed(idx) = selection else {
-        println!("Cancelled — nothing was installed.");
-        return Ok(());
-    };
-    if idx >= FONT_OPTIONS.len() {
-        return Ok(());
-    }
-    let installed = install(&FONT_OPTIONS[idx])?;
+/// `niu font` — report Nerd Font detection and print per-font install
+/// recommendations. Non-interactive by design (no terminal needed, no
+/// network used): the command observes and advises, it never installs.
+pub fn run_font_command() -> std::result::Result<(), anyhow::Error> {
     println!(
-        "Installed {} ({} files) to {}",
-        FONT_OPTIONS[idx].label,
-        installed.files,
-        installed.dir.display()
+        "{}",
+        crate::text_style::bold("Nerd Fonts — detection & install recommendations")
     );
-    if std::env::var_os("WT_SESSION").is_some() {
-        if wt_profile_font_set(installed.face) {
-            println!(
-                "Windows Terminal Niubash profile now uses '{}'.",
-                installed.face
-            );
-        } else {
-            println!(
-                "Set your terminal font to '{}' (Windows Terminal: profile → Appearance → Font face).",
-                installed.face
-            );
-        }
+    println!(
+        "{}",
+        crate::text_style::dim(
+            "  niu no longer downloads fonts (download retraction 2026-10-04); \
+             install one with your package manager, then set it in your terminal"
+        )
+    );
+    println!();
+    if nerd_font_installed() {
+        println!(
+            "  {} a Nerd Font is installed — icon themes are unlocked",
+            crate::text_style::green("detected:")
+        );
     } else {
-        println!("Now set your terminal font to '{}'.", installed.face);
+        println!(
+            "  {} no Nerd Font found — icon themes need one",
+            crate::text_style::yellow("missing:")
+        );
     }
-    Ok(())
-}
-
-/// True when the Windows Terminal Niubash profile was pointed at `face`.
-/// Windows Terminal is Windows-only; elsewhere this is always false so the
-/// caller prints the manual "set your font" hint instead.
-#[cfg(windows)]
-fn wt_profile_font_set(face: &str) -> bool {
-    matches!(
-        crate::windows_terminal::set_niubash_profile_font(face),
-        Ok(summary) if !summary.updated.is_empty()
-    )
-}
-
-#[cfg(not(windows))]
-fn wt_profile_font_set(_face: &str) -> bool {
-    false
-}
-
-// ── Download & extract ───────────────────────────────────────────────────────
-
-/// Download `url` into `dest` through the plugin system's pure-Rust driver
-/// (same transport as `niu plugin add` for download recipes — no system
-/// curl, no external dependencies, all platforms).
-fn download(url: &str, dest: &Path) -> Result<()> {
-    // Transport-layer mirror rewrite (§14.8): the recorded font source stays
-    // the canonical nerd-fonts GitHub release; only the request goes through
-    // the active mirror when one is configured.
-    let url = crate::plugins::mirrors::rewrite_download_url(url);
-    let bytes = crate::plugins::download::http_get_bytes(&url)?;
-    crate::plugins::download::write_download(&bytes, dest)
-        .with_context(|| format!("write {}", dest.display()))
-}
-
-fn extract_family(zip_path: &Path, dest: &Path, marker: &str) -> Result<Vec<PathBuf>> {
-    let file =
-        std::fs::File::open(zip_path).with_context(|| format!("open {}", zip_path.display()))?;
-    let mut archive = zip::ZipArchive::new(file).context("read font zip")?;
-    let mut written = Vec::new();
-    for i in 0..archive.len() {
-        let mut entry = archive.by_index(i)?;
-        let Some(name) = entry.enclosed_name().map(|n| n.to_path_buf()) else {
-            continue;
-        };
-        let is_ttf = name
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("ttf"));
-        let file_name = name
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default()
-            .to_string();
-        if !is_ttf || !file_name.contains(marker) {
-            continue;
+    println!();
+    for font in FONT_OPTIONS {
+        println!("  {} ('{}' in your terminal)", font.label, font.face);
+        for line in install_lines(font) {
+            println!("    {line}");
         }
-        let target = dest.join(&file_name);
-        let mut out = std::fs::File::create(&target)
-            .with_context(|| format!("create {}", target.display()))?;
-        std::io::copy(&mut entry, &mut out)
-            .with_context(|| format!("write {}", target.display()))?;
-        written.push(target);
     }
-    Ok(written)
+    println!();
+    println!(
+        "  {}",
+        crate::text_style::dim(
+            "after installing: set your terminal font to the face above \
+             (Windows Terminal: profile → Appearance → Font face)"
+        )
+    );
+    Ok(())
 }
 
 // ── Detection ────────────────────────────────────────────────────────────────
@@ -253,59 +170,6 @@ fn dir_has_nerd_font(dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-// ── Windows font registration ────────────────────────────────────────────────
-
-#[cfg(windows)]
-fn to_wide(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
-/// Register one installed TTF for the current user: registry entry plus
-/// `AddFontResourceW` so the face works in this session too.
-#[cfg(windows)]
-fn register_font(path: &Path) {
-    use windows_sys::Win32::Graphics::Gdi::AddFontResourceW;
-
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("NiubashFont");
-    let value_name = format!("{stem} (TrueType)");
-    set_user_font_value(&value_name, &path.to_string_lossy());
-    unsafe {
-        AddFontResourceW(to_wide(&path.to_string_lossy()).as_ptr());
-    }
-}
-
-/// Tell running apps the font list changed.
-#[cfg(windows)]
-fn broadcast_font_change() {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        PostMessageW, HWND_BROADCAST, WM_FONTCHANGE,
-    };
-    unsafe {
-        PostMessageW(HWND_BROADCAST, WM_FONTCHANGE, 0, 0);
-    }
-}
-
-#[cfg(windows)]
-fn registry_has_nerd_font() -> bool {
-    font_value_names()
-        .iter()
-        .any(|name| name.to_lowercase().contains("nerd"))
-}
-
-#[cfg(not(windows))]
-fn registry_has_nerd_font() -> bool {
-    false
-}
-
-#[cfg(not(windows))]
-fn register_font(_path: &Path) {}
-
-#[cfg(not(windows))]
-fn broadcast_font_change() {}
-
 /// Value names under `HKCU`/`HKLM ...\Fonts` — the registered font list.
 #[cfg(windows)]
 fn font_value_names() -> Vec<String> {
@@ -314,6 +178,10 @@ fn font_value_names() -> Vec<String> {
         RegCloseKey, RegEnumValueW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
         KEY_READ,
     };
+
+    fn to_wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(std::iter::once(0)).collect()
+    }
 
     const FONTS_KEY: &str = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts";
     let mut names = Vec::new();
@@ -353,45 +221,16 @@ fn font_value_names() -> Vec<String> {
     names
 }
 
-/// Write `name = <ttf path>` into the per-user Fonts registry key so the
-/// font persists across logons.
 #[cfg(windows)]
-fn set_user_font_value(name: &str, path: &str) {
-    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
-    use windows_sys::Win32::System::Registry::{
-        RegCloseKey, RegCreateKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_SZ,
-    };
+fn registry_has_nerd_font() -> bool {
+    font_value_names()
+        .iter()
+        .any(|name| name.to_lowercase().contains("nerd"))
+}
 
-    const FONTS_KEY: &str = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts";
-    let mut key: HKEY = std::ptr::null_mut();
-    let created = unsafe {
-        RegCreateKeyExW(
-            HKEY_CURRENT_USER,
-            to_wide(FONTS_KEY).as_ptr(),
-            0,
-            std::ptr::null(),
-            0,
-            KEY_WRITE,
-            std::ptr::null(),
-            &mut key,
-            std::ptr::null_mut(),
-        )
-    };
-    if created != ERROR_SUCCESS {
-        return;
-    }
-    let data = to_wide(path);
-    unsafe {
-        RegSetValueExW(
-            key,
-            to_wide(name).as_ptr(),
-            0,
-            REG_SZ,
-            data.as_ptr() as *const u8,
-            (data.len() * 2) as u32,
-        );
-        RegCloseKey(key);
-    }
+#[cfg(not(windows))]
+fn registry_has_nerd_font() -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -399,12 +238,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn font_options_have_matching_markers() {
+    fn font_options_carry_a_face_and_a_recommendation() {
         for font in FONT_OPTIONS {
             assert!(font.label.contains("Nerd Font"));
             assert!(font.face.contains("Nerd Font"));
-            assert!(font.asset.ends_with(".zip"));
-            assert!(font.file_marker.contains("NerdFontMono-"));
+            // Every font must recommend at least one channel plus the
+            // channel-free fallback (nerdfonts.com is always appended).
+            assert!(!install_lines(font).is_empty(), "{}", font.label);
+        }
+    }
+
+    #[test]
+    fn install_lines_are_offline_and_name_the_channels() {
+        for font in FONT_OPTIONS {
+            let joined = install_lines(font).join("\n");
+            assert!(joined.contains("nerdfonts.com"), "{}", font.label);
+            if let Some(id) = font.winget_id {
+                assert!(
+                    joined.contains(&format!("winget install --id {id}")),
+                    "{joined}"
+                );
+            }
         }
     }
 

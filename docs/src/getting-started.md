@@ -183,19 +183,23 @@ rewritten. Use `niu plugin list` and `niu plugin discover` for the current
 inventory and state.
 
 Executable CLI tools (starship, fzf, eza, bat, fd, ripgrep, zoxide, dust,
-duf, erdtree, direnv, niu-git …) install through the same plugin system's
-download driver — pure Rust, checksum-pinned, identical on every platform:
+duf, erdtree, direnv, niu-git …) install through your real package
+managers — niu downloads nothing (download retraction, owner ruling
+2026-10-04). `niu plugin add fzf` prints the commands:
 
 ```sh
-niu plugin add fzf        # download + sha256 verify into ~/.niubash/tools
-niu plugin enable fzf     # write the PATH block
-niu plugin tool list      # what is installed through the driver
+niu plugin add fzf        # prints: wpm install fzf (Windows, first choice),
+                          #        winget/scoop alternatives, apt/dnf/brew,
+                          #        plus the upstream release URL
 ```
 
-The Unix command layer (`ls`, `cat`, `grep`, … plus classic toolbox extras
-like `awk`/`jq`) is a separate plane owned by wpm on Windows
-(`wpm links rebuild`, `wpm update winuxcmd`); application tools never
-install through wpm.
+Two systems coexist: the Unix command layer (`ls`, `cat`, `grep`, … plus
+the application tools above) is owned by wpm on Windows (`wpm install
+<tool>`, `wpm links rebuild`, `wpm update winuxcmd`) — wpm is the
+first-class tool channel there (owner correction 2026-10-03); on Linux and
+macOS the native package managers (apt/dnf/yum/brew) own that plane.
+`niu plugin` owns the bash-ecosystem extension plane (git sources, themes,
+completions) on every platform.
 
 ## What next
 

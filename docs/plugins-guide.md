@@ -165,41 +165,67 @@ niu plugin enable <id>[/<asset>]   # declare + materialize
   entry; `niu plugin list` shows every candidate with its tag, enable
   with `niu plugin enable <id>/<relative/path>.sh`.
 
-## Downloads stall? Configure a mirror
+## Executable tools and fonts install through package managers
 
-Every plugin, tool, font, and self-update download comes from GitHub. If
-that is slow or unreachable from your network (common in mainland China),
-point niubash at a mirror URL you trust — one command:
+Download retraction (owner ruling 2026-10-04): **niubash carries zero
+network/HTTP download responsibility.** The plugin driver
+(`niu plugin add <git-url>`, git clone only) is the *only* extension
+installation entry. Executable tools (fzf, starship, ripgrep, bat, …) and
+fonts are installed by your real package managers — the recipe rows stay
+in the index as catalog metadata, and `niu plugin add fzf` prints the
+commands instead of fetching anything:
+
+- **Windows — wpm first** (owner correction 2026-10-03: wpm is the
+  first-class command-layer tool installer; the niu shell stopped
+  downloading, wpm was not demoted): `wpm install fzf`, with
+  winget/scoop as alternatives for what wpm does not carry (fonts, GUI
+  apps): `winget install --id junegunn.fzf`, `scoop install fzf`.
+- **Linux/macOS — native package managers only**: `sudo apt install fzf`,
+  `sudo dnf install fzf`, `brew install fzf`. No wpm strings exist at all
+  in non-Windows builds.
+- Every recommendation also prints the upstream release URL, so no row
+  can dead-end. `niu font` likewise only detects installed Nerd Fonts and
+  prints the winget/scoop/brew/nerdfonts.com commands.
+
+Two systems coexist by design: **wpm = the Unix command layer on
+Windows** (application tools included, wpm-first), **`niu plugin` = the
+bash-ecosystem extension driver** (git sources, themes, completions, any
+platform). The retraction story is "niu stopped downloading", not "wpm
+was replaced by winget".
+
+The retired `niu plugin tool list` / `tool remove` verbs fail with a
+pointer to the package-manager flow; a download-era install under
+`~/.niubash/tools/<id>` can be removed by deleting the directory.
+
+## Git fetches stall? Configure a mirror
+
+Every plugin git clone/fetch goes to GitHub. If that is slow or
+unreachable from your network (common in mainland China), point niubash
+at a mirror URL you trust — one command:
 
 ```sh
-niu plugin mirror set https://your-mirror.example.com/
+niu plugin mirror set https://your-mirror.example.com/github.com
 # back to direct connection:
 niu plugin mirror set none
 ```
 
-The mirror is a **transport concern only**: the spec, the lockfile, and
-tool records keep canonical GitHub URLs, so an install made through a
-mirror is byte-identical to a direct one (checksum verification is
-unaffected — a mirror is never a trust signal). Only `https://github.com/`
-requests are rewritten; anything else passes through untouched.
+The mirror is a **transport concern only**: the spec and the lockfile
+keep canonical GitHub URLs, so a tree cloned through a mirror is
+byte-identical to a direct one (checksum verification is unaffected — a
+mirror is never a trust signal). Only `https://github.com/` origins are
+rewritten, through git's own `insteadOf` mechanism; anything else passes
+through untouched.
 
-`niu plugin mirror test` probes GitHub and your configured mirror;
-`niu doctor` does the same probe when no mirror is configured and suggests
-the command above (it never switches anything by itself).
-
-Git-only mirrors and per-channel overrides live in
-`~/.niubash/mirrors.toml` (see `niu plugin mirror --help`):
+Mirrors are **git-only** since the retraction (the shell has no HTTP
+transport left). The config lives in `~/.niubash/mirrors.toml` (see
+`niu plugin mirror --help`):
 
 ```toml
 schema = "niubash:mirrors@0.1.0"
 active = "custom"
 
 [github]
-prefix = "https://your-mirror.example.com/"    # downloads
 git_instead_of = "https://your-git-mirror/"    # git clone/fetch
-
-[github.releases]
-prefix = "https://your-release-mirror/"        # release assets only
 ```
 
 niubash ships **no bundled mirror list**: community mirror services are

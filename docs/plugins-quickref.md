@@ -31,7 +31,7 @@ oh-my-niu-ecosystem.md` §14.6. All verbs: `niu plugin --help`.
 
 | Verb | Effect | Exit |
 |---|---|---|
-| `add <id\|owner/repo\|url\|path> [--id N] [--ref R] [--checksum S] [--path D]` | Append spec entry + sync (install untrusted) | non-zero if the entry failed to install or is already declared |
+| `add <id\|owner/repo\|url\|path> [--id N] [--ref R] [--checksum S] [--path D]` | Append spec entry + sync (install untrusted). A recipe id for an executable tool (fzf, starship, …) prints a package-manager recommendation instead — niu downloads nothing (retraction 2026-10-04) | non-zero if the entry failed to install or is already declared; recipe recommendations exit 0 |
 | `list [--json]` | Sources, assets (`*` = enabled), tags for wild candidates | 0 |
 | `enable <id\|asset\|id/asset>` | Spec edit + sync; wild/bpkg assets are tree-relative paths | non-zero when untrusted/degraded/ambiguous/whole-source misuse |
 | `disable <target>` | Spec edit (entry removal for source targets) + sync; tree kept | 0 |
@@ -41,7 +41,10 @@ oh-my-niu-ecosystem.md` §14.6. All verbs: `niu plugin --help`.
 | `restore [<id>]` / `rollback <id>` / `clean` | Lockfile verbs | 0 |
 | `discover` | Read-only overview | 0 |
 | `source <sub>` | Full source protocol (add/trust/sign/verify/remove/update/rollback/list) | — |
-| `mirror <sub>` | Transport mirroring: `list`, `set <url\|none>`, `test` | non-zero on garbage URL |
+| `mirror <sub>` | Git-only mirroring: `list`, `set <url\|none>` (insteadOf rewrite of git fetches) | non-zero on garbage URL |
+| `recipe <sub>` / `distro <sub>` | Recipe index (list/show/add) / collections (list/import/remove/apply) | — |
+| `tool <sub>` | **Retired** (download retraction): fails with a pointer to the package-manager flow | non-zero |
+| `ui` | Menu over the same verbs | 0 |
 
 ## Sync row actions
 
@@ -77,14 +80,22 @@ dropped, tree kept), `degraded` (tree missing → `niu plugin restore`),
 8. **Engine zero plugin special-cases**: rubash source contains no plugin
    dispatch (comments citing ecosystem scripts as regression provenance
    only; audited read-only 2026-10-02).
-9. **Mirrors are transport-only (§14.8)**: `~/.niubash/mirrors.toml`
-   (`NIU_MIRRORS`) rewrites `https://github.com/` download requests
-   (`[github] prefix`, `[github.releases] prefix` override) and injects
-   `git -c url.<base>.insteadOf` for clone/fetch; spec/registry/tool
-   records keep canonical URLs; missing/malformed/unknown config degrades
-   to direct; no auto-select (doctor probes 3s and suggests only); zero
-   bundled mirror list (community services are comments in the generated
-   file). Pinned by plugins::mirrors unit tests, sources.rs
+9. **Zero download responsibility (retraction 2026-10-04)**: niu has no
+   HTTP/download transport at all. `niu plugin add <git-url>` (git clone)
+   is the only extension installation entry; executable-tool recipes are
+   catalog rows whose `add` prints package-manager recommendations —
+   **wpm first on Windows** (owner correction 2026-10-03; wpm strings are
+   `cfg(windows)`-gated and never compile elsewhere), native managers
+   (apt/dnf/yum/brew) on other platforms, upstream URL always printed.
+   Fonts are detection+recommendation only (`niu font`).
+10. **Mirrors are transport-only (§14.8), git-only**: `~/.niubash/mirrors.toml`
+   (`NIU_MIRRORS`) injects `git -c url.<base>.insteadOf` for
+   clone/fetch; spec/registry records keep canonical URLs;
+   missing/malformed/unknown config degrades to direct; legacy
+   `[github] prefix` / `[github.releases]` channels parse compatibly and
+   are ignored (no HTTP transport exists to use them); no auto-select,
+   no probing; zero bundled mirror list. Pinned by plugins::mirrors unit
+   tests, sources.rs
    `git_clone_args_carry_instead_of_mirror_for_github_origins_only`,
    tests/plugin_mirrors.rs.
 

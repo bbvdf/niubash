@@ -1,11 +1,12 @@
-//! Mirror pipeline CLI tests (design §14.8, wt49/bmirror): `niu plugin
-//! mirror set <url>` is the one-command configuration face — it validates
-//! and normalizes a pasted mirror URL, round-trips through
-//! `~/.niubash/mirrors.toml` (env-scoped for the test), and `mirror list`
-//! reports the active channels. The transport invariants themselves (prefix
-//! rewrite, release override, git insteadOf, canonical origins in records)
-//! are pinned in the `plugins::mirrors` unit tests and the sources.rs
-//! arg-builder test; here we pin the user-facing control surface.
+//! Mirror pipeline CLI tests (design §14.8, wt49/bmirror; git-only since
+//! the download retraction 2026-10-04): `niu plugin mirror set <url>` is
+//! the one-command configuration face — it validates and normalizes a
+//! pasted mirror URL, round-trips through `~/.niubash/mirrors.toml`
+//! (env-scoped for the test), and `mirror list` reports the active git
+//! channel. The transport invariants (git insteadOf, canonical origins in
+//! records, legacy download channels ignored) are pinned in the
+//! `plugins::mirrors` unit tests and the sources.rs arg-builder test;
+//! here we pin the user-facing control surface.
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -59,9 +60,9 @@ fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
-/// `set <url>` → normalized prefix on disk, `list` shows the channels,
-/// `set none` returns to direct while preserving the section for a
-/// one-line re-enable.
+/// `set <url>` → normalized git_instead_of base on disk, `list` shows the
+/// channel, `set none` returns to direct while preserving the section for
+/// a one-line re-enable.
 #[test]
 fn mirror_set_url_roundtrip_and_disable() {
     let home = temp_dir("mirror-cli");
@@ -74,19 +75,27 @@ fn mirror_set_url_roundtrip_and_disable() {
     let text = stdout_text(&out);
     assert!(text.contains("direct connection"), "{text}");
 
-    // set normalizes the missing trailing slash.
+    // set normalizes the missing trailing slash into the insteadOf base.
     let out = run_niu_with_env(
-        &["plugin", "mirror", "set", "https://mirror.example.com"],
+        &[
+            "plugin",
+            "mirror",
+            "set",
+            "https://mirror.example.com/github.com",
+        ],
         &envs,
     );
     assert_success(&out, "mirror set url");
     let text = stdout_text(&out);
-    assert!(text.contains("https://mirror.example.com/"), "{text}");
+    assert!(
+        text.contains("https://mirror.example.com/github.com/"),
+        "{text}"
+    );
 
     let written = fs::read_to_string(&config).unwrap();
     assert!(written.contains("niubash:mirrors@0.1.0"));
     assert!(written.contains("active = \"custom\""));
-    assert!(written.contains("prefix = \"https://mirror.example.com/\""));
+    assert!(written.contains("git_instead_of = \"https://mirror.example.com/github.com/\""));
     // The community-service caveat ships in the file, not as a preset.
     assert!(written.contains("UNSUPPORTED"));
 
@@ -95,7 +104,11 @@ fn mirror_set_url_roundtrip_and_disable() {
     assert_success(&out, "mirror list (custom)");
     let text = stdout_text(&out);
     assert!(text.contains("custom mirror active"), "{text}");
-    assert!(text.contains("https://mirror.example.com/"), "{text}");
+    assert!(
+        text.contains("https://mirror.example.com/github.com/"),
+        "{text}"
+    );
+    assert!(text.contains("insteadOf"), "{text}");
 
     // set none goes back to direct but keeps the section.
     let out = run_niu_with_env(&["plugin", "mirror", "set", "none"], &envs);
@@ -106,7 +119,7 @@ fn mirror_set_url_roundtrip_and_disable() {
     assert!(text.contains("direct connection"), "{text}");
     let written = fs::read_to_string(&config).unwrap();
     assert!(
-        written.contains("prefix = \"https://mirror.example.com/\""),
+        written.contains("git_instead_of = \"https://mirror.example.com/github.com/\""),
         "custom section must survive set none:\n{written}"
     );
 
@@ -132,9 +145,14 @@ fn mirror_set_rejects_garbage_and_help_exists() {
     let out = run_niu_with_env(&["plugin", "mirror", "--help"], &envs);
     assert_success(&out, "mirror --help");
     let text = stdout_text(&out);
-    for needed in ["set <mirror-url>", "set none", "test", "git_instead_of"] {
+    for needed in ["set <mirror-url>", "set none", "git_instead_of", "git-only"] {
         assert!(text.contains(needed), "help missing '{needed}':\n{text}");
     }
+    // The retracted probe verb must not be offered anymore.
+    assert!(
+        !text.contains("  test "),
+        "mirror test verb retired:\n{text}"
+    );
 
     let out = run_niu_with_env(&["plugin", "--help"], &envs);
     assert_success(&out, "plugin --help");
