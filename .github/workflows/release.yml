@@ -632,10 +632,12 @@ jobs:
       - name: Run the golden user journey
         shell: pwsh
         run: |
-          # Invoke the preserved gate copy directly from RUNNER_TEMP:
-          # the workspace copy is at the mercy of checkout/copy semantics
-          # (runs 2-5 nested copy, run 6 vanished); the temp copy is intact.
-          python "$env:RUNNER_TEMP/journey/golden-journey.py" `
+          # Deterministic gate delivery: take scripts/journey straight from
+          # the dispatch ref's git object store (no temp dirs, no
+          # Copy-Item semantics — runs 2-8). fetch-depth 0 guarantees the
+          # ref is present.
+          git checkout origin/master -- scripts/journey
+          python scripts/journey/golden-journey.py `
             (Resolve-Path target/release/niu.exe) `
             --artifacts journey-artifacts
 
