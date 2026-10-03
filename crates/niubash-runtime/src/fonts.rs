@@ -3,12 +3,13 @@
 //! Fonts install to `%LOCALAPPDATA%\Microsoft\Windows\Fonts` and register
 //! under `HKCU\...\Fonts`, so no administrator rights are needed on
 //! Windows 10 1809+. Downloads come from the nerd-fonts GitHub release
-//! assets via the system `curl.exe`. On Unix, TTFs are extracted into
-//! `~/.fonts` (fontconfig scans it without any registration step) and
-//! downloads use the system `curl` from PATH.
+//! assets through the plugin system's pure-Rust driver
+//! (`plugins::download::http_get_bytes`, ureq over rustls — zero external
+//! dependencies, owner ruling: download logic stays pure Rust). On Unix,
+//! TTFs are extracted into `~/.fonts` (fontconfig scans it without any
+//! registration step).
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 
@@ -168,47 +169,19 @@ fn wt_profile_font_set(_face: &str) -> bool {
 
 // ── Download & extract ───────────────────────────────────────────────────────
 
-/// Locate the download helper: `curl.exe` — System32 on Windows 10 1803+,
-/// else PATH. On Unix, the system `curl` from PATH.
-#[cfg(windows)]
-fn curl_command() -> Command {
-    let sys32 = std::env::var_os("WINDIR")
-        .map(PathBuf::from)
-        .map(|w| w.join("System32").join("curl.exe"));
-    match sys32 {
-        Some(path) if path.is_file() => Command::new(path),
-        _ => Command::new("curl.exe"),
-    }
-}
-
-#[cfg(not(windows))]
-fn curl_command() -> Command {
-    Command::new("curl")
-}
-
+/// Download `url` into `dest` through the plugin system's pure-Rust driver
+/// (same transport as `niu plugin add` for download recipes — no system
+/// curl, no external dependencies, all platforms).
 fn download(url: &str, dest: &Path) -> Result<()> {
     // Transport-layer mirror rewrite (§14.8): the recorded font source stays
     // the canonical nerd-fonts GitHub release; only the request goes through
     // the active mirror when one is configured.
     let url = crate::plugins::mirrors::rewrite_download_url(url);
-    let status = curl_command()
-        .arg("-fSL")
-        .arg("--retry")
-        .arg("2")
-        .arg("-o")
-        .arg(dest)
-        .arg(&url)
-        .stdin(Stdio::null())
-        .status()
-        .context("run curl.exe")?;
-    if !status.success() {
-        bail!("download failed (curl exited with {status}): {url}");
-    }
-    Ok(())
+    let bytes = crate::plugins::download::http_get_bytes(&url)?;
+    crate::plugins::download::write_download(&bytes, dest)
+        .with_context(|| format!("write {}", dest.display()))
 }
 
-/// Extract TTFs whose file name contains `marker` into `dest`; returns the
-/// written paths.
 fn extract_family(zip_path: &Path, dest: &Path, marker: &str) -> Result<Vec<PathBuf>> {
     let file =
         std::fs::File::open(zip_path).with_context(|| format!("open {}", zip_path.display()))?;

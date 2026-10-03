@@ -82,6 +82,114 @@ STANDALONE = [
           "linux-arm64": ("https://github.com/starship/starship/releases/download/v1.26.0/starship-aarch64-unknown-linux-musl.tar.gz",
                           "tar-gzip", "dc30189378d2f2e287384e8a692d3f95ad1df64cf0e8c36aa9201516028aed6b"),
       }}),
+    # Application-tool rows (owner ruling 2026-10-03, wpm retraction): the
+    # download driver is the only executable-tool install entry, so the
+    # PROBED_TOOLS application class gets recipe rows. Digests are measured
+    # from the exact release assets (windows rows cross-checked against the
+    # WinuxCmd wpm official index); bare-executable upstream releases use
+    # archive = "raw".
+    ("ripgrep", "plugin",
+     "fast recursive grep (rg) with regex defaults and .gitignore respect",
+     "MIT OR Unlicense", "https://github.com/BurntSushi/ripgrep",
+     {"driver": "download", "version": "15.2.0", "bins": ["rg"],
+      "assets": {
+          "windows-x64": ("https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-pc-windows-msvc.zip",
+                          "zip", "71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5", ["ripgrep-15.2.0-x86_64-pc-windows-msvc/rg.exe"]),
+          "linux-x64": ("https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz",
+                        "tar-gzip", "33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c", ["ripgrep-15.2.0-x86_64-unknown-linux-musl/rg"]),
+      }}),
+    ("fd", "plugin",
+     "fast, user-friendly find (fd) with sane defaults and color output",
+     "MIT OR Apache-2.0", "https://github.com/sharkdp/fd",
+     {"driver": "download", "version": "v10.4.2", "bins": ["fd"],
+      "assets": {
+          "windows-x64": ("https://github.com/sharkdp/fd/releases/download/v10.4.2/fd-v10.4.2-x86_64-pc-windows-msvc.zip",
+                          "zip", "b2816e506390a89941c63c9187d58a3cc10e9a55f2ef0685f9ea0eccaf7c98c8", ["fd-v10.4.2-x86_64-pc-windows-msvc/fd.exe"]),
+          "linux-x64": ("https://github.com/sharkdp/fd/releases/download/v10.4.2/fd-v10.4.2-x86_64-unknown-linux-gnu.tar.gz",
+                        "tar-gzip", "def59805cd14b5651b68990855f426ad087f3b96881296d963910431ba3143c8", ["fd-v10.4.2-x86_64-unknown-linux-gnu/fd"]),
+      }}),
+    ("bat", "plugin",
+     "cat(1) clone with syntax highlighting and git integration",
+     "MIT OR Apache-2.0", "https://github.com/sharkdp/bat",
+     {"driver": "download", "version": "v0.26.1", "bins": ["bat"],
+      "assets": {
+          "windows-x64": ("https://github.com/sharkdp/bat/releases/download/v0.26.1/bat-v0.26.1-x86_64-pc-windows-msvc.zip",
+                          "zip", "0f729b4b6f5f28d395c641eacc2e9ff68d0096b85aa0eec344aa62425144b69b", ["bat-v0.26.1-x86_64-pc-windows-msvc/bat.exe"]),
+          "linux-x64": ("https://github.com/sharkdp/bat/releases/download/v0.26.1/bat-v0.26.1-x86_64-unknown-linux-gnu.tar.gz",
+                        "tar-gzip", "726f04c8f576a7fd18b7634f1bbf2f915c43494c1c0f013baa3287edb0d5a2a3", ["bat-v0.26.1-x86_64-unknown-linux-gnu/bat"]),
+      }}),
+    ("eza", "plugin",
+     "modern ls replacement with icons, git status, and tree view",
+     "MIT", "https://github.com/eza-community/eza",
+     {"driver": "download", "version": "v0.23.5", "bins": ["eza"],
+      "assets": {
+          "windows-x64": ("https://github.com/eza-community/eza/releases/download/v0.23.5/eza.exe_x86_64-pc-windows-gnu.zip",
+                          "zip", "c830638c844a5b89d39ba662b5549903a71fa539018e813880f5b8afa77bac2e", ["eza.exe"]),
+          "linux-x64": ("https://github.com/eza-community/eza/releases/download/v0.23.5/eza_x86_64-unknown-linux-gnu.tar.gz",
+                        "tar-gzip", "35c70c5c43c29108075e58b893234c67ef585f0b53a7eaf8e9e7d4eec9f339b4", ["eza"]),
+      }}),
+    ("zoxide", "plugin",
+     "smarter cd that learns your habits (z/zi with fzf integration)",
+     "MIT", "https://github.com/ajeetdsouza/zoxide",
+     {"driver": "download", "version": "v0.10.0", "bins": ["zoxide"],
+      "assets": {
+          "windows-x64": ("https://github.com/ajeetdsouza/zoxide/releases/download/v0.10.0/zoxide-0.10.0-x86_64-pc-windows-msvc.zip",
+                          "zip", "f465ae548f8754c8e7edbc60b45fbf58c92bfe123db83d790252d6810fa5daf1", ["zoxide.exe"]),
+          "linux-x64": ("https://github.com/ajeetdsouza/zoxide/releases/download/v0.10.0/zoxide-0.10.0-x86_64-unknown-linux-musl.tar.gz",
+                        "tar-gzip", "2d93385b99f3e82cf2701609a1bffcad863fbeb75aa3fe7eb6be4d29be68b1ae", ["zoxide"]),
+      }}),
+    ("dust", "plugin",
+     "du + tree: intuitive disk usage analyzer",
+     "Apache-2.0", "https://github.com/bootandy/dust",
+     {"driver": "download", "version": "v1.2.4", "bins": ["dust"],
+      "assets": {
+          "windows-x64": ("https://github.com/bootandy/dust/releases/download/v1.2.4/dust-v1.2.4-x86_64-pc-windows-msvc.zip",
+                          "zip", "eb08d642f016787bb9fc918a4dc5f34665463657fddf83a40f2441cbf020fb4c", ["dust-v1.2.4-x86_64-pc-windows-msvc/dust.exe"]),
+          "linux-x64": ("https://github.com/bootandy/dust/releases/download/v1.2.4/dust-v1.2.4-x86_64-unknown-linux-gnu.tar.gz",
+                        "tar-gzip", "707cfdbfb9d2dc536f8c3853815bbe98a01012f2772463835edae06816551160", ["dust-v1.2.4-x86_64-unknown-linux-gnu/dust"]),
+      }}),
+    ("duf", "plugin",
+     "disk usage/free utility with a clean tabular display",
+     "MIT", "https://github.com/muesli/duf",
+     {"driver": "download", "version": "v0.9.1", "bins": ["duf"],
+      "assets": {
+          "windows-x64": ("https://github.com/muesli/duf/releases/download/v0.9.1/duf_0.9.1_windows_x86_64.zip",
+                          "zip", "503934be81f847d9ddb1b739834217480633435ad16515dd199e372c0b2e1afc", ["duf.exe"]),
+          "linux-x64": ("https://github.com/muesli/duf/releases/download/v0.9.1/duf_0.9.1_linux_x86_64.tar.gz",
+                        "tar-gzip", "5add851e7062c5e56939abb664705e4d14fa2d06289490aff31d51f153832de7", ["duf"]),
+      }}),
+    ("erdtree", "plugin",
+     "modern tree/disk-usage hybrid (erd) with parallel traversal",
+     "MIT", "https://github.com/solidiquis/erdtree",
+     {"driver": "download", "version": "v3.1.2", "bins": ["erd"],
+      "assets": {
+          "windows-x64": ("https://github.com/solidiquis/erdtree/releases/download/v3.1.2/erd-v3.1.2-x86_64-pc-windows-msvc.exe",
+                          "raw", "df359e20e5a38384c27b98667d780c5bd5ab1ce4bac739a5fa9c5ed25511a0a1", ["erd.exe"]),
+          "linux-x64": ("https://github.com/solidiquis/erdtree/releases/download/v3.1.2/erd-v3.1.2-x86_64-unknown-linux-gnu.tar.gz",
+                        "tar-gzip", "9354667bc1ef744cb363604d4eb5b6784205b7fb1c283f4c0f9d78e3ad07e42f", ["erd"]),
+      }}),
+    ("direnv", "plugin",
+     "per-directory environment loader (un/ad-hoc env on cd)",
+     "MIT", "https://github.com/direnv/direnv",
+     {"driver": "download", "version": "v2.37.1", "bins": ["direnv"],
+      "assets": {
+          "windows-x64": ("https://github.com/direnv/direnv/releases/download/v2.37.1/direnv.windows-amd64",
+                          "raw", "d96fc8b7cf020c2d4c1dbbc2ccec5fd1cab05b51c491f02c8527a7fa6c50a1cd", ["direnv.exe"]),
+          "linux-x64": ("https://github.com/direnv/direnv/releases/download/v2.37.1/direnv.linux-amd64",
+                        "raw", "1f1b93dd6f38523fde26dfac96151ef9d31a374e3005cd3345fb93555ae0c9b5", ["direnv"]),
+      }}),
+    ("niugit", "plugin",
+     "native Windows git without MSYS (niu-git build); the setup wizard's git pick",
+     "GPL-2.0-only", "https://github.com/unixwin/niu-git",
+     {"driver": "download", "version": "v2.55.0.2", "bins": ["git.exe"],
+      "assets": {
+          "windows-x64": ("https://github.com/unixwin/niu-git/releases/download/v2.55.0.2/niu-git-2.55.0.windows.2-x64.zip",
+                          "zip", "fc293ad2daed66da39286cb58fcae11bb09944b13b1ef1c19151eb9f11bde356", ["git.exe"]),
+      }}),
+    ("thefuck", "plugin",
+     "fixes your previous command (thefuck); no binary release — install via pip or a package manager",
+     "MIT", "https://github.com/nvbn/thefuck",
+     None),
 ]
 
 
@@ -126,12 +234,20 @@ def emit(out, recipe: dict) -> None:
     bins = recipe.get("bins") or []
     if bins:
         out.append("bins = [" + ", ".join(toml_str(b) for b in bins) + "]")
-    for platform, (url, archive, sha) in (recipe.get("assets") or {}).items():
+    # Asset rows: (url, archive, sha256) or (url, archive, sha256, bins) —
+    # per-platform bins override the recipe-level `bins` when archives nest
+    # the binary under different directory names per platform (ripgrep,
+    # fd, bat, dust) or ship bare executables (raw assets).
+    for platform, asset in (recipe.get("assets") or {}).items():
+        url, archive, sha = asset[0], asset[1], asset[2]
+        asset_bins = list(asset[3]) if len(asset) > 3 else None
         out.append(f"[recipe.downloads.{platform}]")
         out.append(f"url = {toml_str(url)}")
         out.append(f"archive = {toml_str(archive)}")
         if sha:
             out.append(f"sha256 = {toml_str(sha)}")
+        if asset_bins:
+            out.append("bins = [" + ", ".join(toml_str(b) for b in asset_bins) + "]")
     out.append("")
 
 

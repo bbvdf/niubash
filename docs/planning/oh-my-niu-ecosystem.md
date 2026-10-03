@@ -1252,3 +1252,65 @@ release 覆盖/insteadOf 只对 GitHub origin/URL 归一化/probe 目标/
 盘/`mirror --help` 与 `plugin --help` 面）。真网络冒烟（设镜像后
 `niu font`/`plugin add` 走镜像 URL）按门禁为可选——传输层重写已被
 上述测试钉死，端到端网络属于环境验证。
+### 14.8 wpm 收缩到命令层（2026-10-03 owner 裁定，wt49/wpmretract）
+
+裁定：**插件下载驱动（`plugins/download.rs`，纯 Rust ureq/rustls + zip/tar
++ sha256）成为唯一的可执行工具安装入口**（跨平台一致）；**wpm 只管 niubash
+的 Unix 命令层**（sed/cp/grep/ls 等随 winuxcmd 树走的工具链，及
+awk/jq/7z/zstd/wget/aria2/rclone/busybox 一类经典 Unix 工具箱），**不再安装
+或推荐 starship/fzf/eza 等应用工具**。落地方式遵守打地鼠禁令（rubash#117
+同族）：**修路径而非造桥接**——不新增"检测 wpm 装过什么"的桥接层，直接把
+推荐面与安装面改道到插件驱动。
+
+**职责表**：
+
+| 平面 | 安装入口 | 管什么 | 不变量 |
+|---|---|---|---|
+| Unix 命令层 | wpm（仅 Windows） | winuxcmd 树与经典 Unix 工具箱；`wpm links rebuild` 命令链接初始化（安装器/包内树）；`wpm update winuxcmd` 命令层更新；`alias apt=wpm`（已装用户的命令层入口别名，按 wpm 在位条件写入） | 不装应用工具；wpm 字符串/命令/探针零出现在非 Windows 构建（编译期 cfg 门控，非运行时） |
+| 应用工具层 | 插件下载驱动 `niu plugin add <recipe-id>` | 二进制应用工具（starship/fzf/eza/bat/fd/ripgrep/zoxide/dust/duf/erdtree/direnv/niugit…，recipes.toml download 行，sha256 逐平台钉死） | 跨平台一致；transport 纯 Rust；冲突门：`~/.niubash/tools/` 已有同 id 则拒绝并指向 `niu plugin tool list`；**不**探测 wpm 的安装状态（那是桥接） |
+
+实施记录（wt49/wpmretract）：
+
+1. **setup 向导**：niu-git 问题的安装分支从 `wpm install niugit` 改道
+   `niu plugin add niugit`（niugit 落为 download recipe，digest 取自
+   niu-git 仓库 `wpm/niugit.json` 官方索引条目并下载实测）；向导保留的
+   wpm 面全部是命令层角色：`wpm links rebuild` 提示、PATH 探针
+   （环境摘要）、`apt` 别名（收紧为 wpm 在位才写 + cfg(windows) 编译门）。
+2. **command-not-found 提示拆双表**（`shell.rs`）：
+   `plugin_recipe_for_command`（应用工具 → `niu plugin add <id>`，跨平台，
+   与 recipes.toml 的 download 行同源对齐）+ `wpm_package_for_command`
+   （命令层 → `wpm install <pkg>`，cfg(windows) 编译门）。应用工具的
+   wpm 提示臂全部删除（delta/sd/kubectl/helix 等尚未有 recipe 的应用
+   工具不再出 wpm 提示，也不出插件提示——不指向死动词）。
+3. **冲突门**：`install_executable` 前置拒绝同 id（`tool_installed`：
+   目录或注册表记录任一命中），错误信息点名 `niu plugin tool list` 与
+   `niu plugin tool remove <id>`；recipe 层把该拒绝渲染为"already
+   installed"健康报告（collection 重放不因此报失败）。
+4. **recipe 索引**：PROBED_TOOLS 应用类补齐 download 行（见下）；
+   erdtree/direnv 上游只发裸可执行文件，驱动补 `ArchiveKind::Raw`
+   （字节写 `bins[0]` + Unix chmod 755）——这是驱动能力补全（同一代码
+   路径服务所有裸 exe 资产），不是逐工具行为码。thefuck 无二进制发行
+   （Python 应用），落 info-only 行如实说明。
+5. **平台红线收口**：doctor / winuxcmd 激活 / 向导的 `wpm links rebuild`
+   提示全部改编译期 cfg 门控；easter_egg 的 `wpm`（typing 子命令别名，
+   words-per-minute）与产品无关，保留。
+6. **字体下载迁纯 Rust**（同日 owner 追加军令）：`fonts.rs` 的
+   `download()` 从系统 curl 子进程改调 `plugins::download::http_get_bytes`
+   + `write_download`——下载逻辑独立纯 Rust 在字体面的补全。
+
+**PROBED_TOOLS 分类**（向导探针 → 各平面）：
+
+| 工具 | 类别 | 安装改道 |
+|---|---|---|
+| starship/fzf/eza/bat/fd/rg(ripgrep)/zoxide/dust/duf/erd(erdtree)/direnv | 应用工具 | `niu plugin add <id>`（download recipe） |
+| thefuck | 应用工具（无二进制发行） | info-only recipe 行（pip/包管理器自理） |
+| git/niu-git | 应用工具 | 向导问题改道 `niu plugin add niugit`（Windows-only 问题保留） |
+| kubectl/docker/npm | 运行时探针（环境摘要） | 不由向导安装，无推荐入口 |
+| wpm（Windows-only 探针） | 命令层 | 探针保留；`apt` 别名入口保留 |
+
+遗留（报船长/owner 裁定，不在本车道动）：
+`docs/src/advanced-usage.md` Elevated Commands 节的 gsudo 仍指向
+`wpm install gsudo`——gsudo 属应用工具，改道需要一个 gsudo download
+recipe（涉及 UAC/提权平面归属），待裁定；命令层与应用层的分界线
+（awk/jq/7z 归命令层）如 owner 意在更严格的"仅随产品走"口径，则
+`wpm_package_for_command` 需再收缩。

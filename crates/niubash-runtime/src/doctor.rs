@@ -78,9 +78,18 @@ pub fn run_doctor() -> anyhow::Result<()> {
         )?;
         critical_passed += 1;
     } else {
+        // Windows-only recovery text: the wpm command-layer verb exists only
+        // there, and the `wpm` string must not surface in non-Windows
+        // builds — compile-time gate, not a runtime check.
+        #[cfg(windows)]
         writeln!(
             out,
             "  {warn} command links       missing (ls/cat/grep) — restart niu or run `wpm links rebuild`"
+        )?;
+        #[cfg(not(windows))]
+        writeln!(
+            out,
+            "  {warn} command links       missing (ls/cat/grep) — restart niu"
         )?;
     }
 

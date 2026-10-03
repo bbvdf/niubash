@@ -5007,3 +5007,204 @@ sha256 = "321f0dd7af8340a5f2e6a8fec6538a04f617486f9ec70d878f91c09cd8deef22"
 url = "https://github.com/starship/starship/releases/download/v1.26.0/starship-aarch64-unknown-linux-musl.tar.gz"
 archive = "tar-gzip"
 sha256 = "dc30189378d2f2e287384e8a692d3f95ad1df64cf0e8c36aa9201516028aed6b"
+[[recipe]]
+id = "ripgrep"
+category = "plugin"
+summary = "fast recursive grep (rg) with regex defaults and .gitignore respect"
+license = "MIT OR Unlicense"
+url = "https://github.com/BurntSushi/ripgrep"
+driver = "download"
+version = "15.2.0"
+bins = ["rg"]
+[recipe.downloads.windows-x64]
+url = "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-pc-windows-msvc.zip"
+archive = "zip"
+sha256 = "71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5"
+bins = ["ripgrep-15.2.0-x86_64-pc-windows-msvc/rg.exe"]
+[recipe.downloads.linux-x64]
+url = "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz"
+archive = "tar-gzip"
+sha256 = "33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c"
+bins = ["ripgrep-15.2.0-x86_64-unknown-linux-musl/rg"]
+
+[[recipe]]
+id = "fd"
+category = "plugin"
+summary = "fast, user-friendly find (fd) with sane defaults and color output"
+license = "MIT OR Apache-2.0"
+url = "https://github.com/sharkdp/fd"
+driver = "download"
+version = "v10.4.2"
+bins = ["fd"]
+[recipe.downloads.windows-x64]
+url = "https://github.com/sharkdp/fd/releases/download/v10.4.2/fd-v10.4.2-x86_64-pc-windows-msvc.zip"
+archive = "zip"
+sha256 = "b2816e506390a89941c63c9187d58a3cc10e9a55f2ef0685f9ea0eccaf7c98c8"
+bins = ["fd-v10.4.2-x86_64-pc-windows-msvc/fd.exe"]
+[recipe.downloads.linux-x64]
+url = "https://github.com/sharkdp/fd/releases/download/v10.4.2/fd-v10.4.2-x86_64-unknown-linux-gnu.tar.gz"
+archive = "tar-gzip"
+sha256 = "def59805cd14b5651b68990855f426ad087f3b96881296d963910431ba3143c8"
+bins = ["fd-v10.4.2-x86_64-unknown-linux-gnu/fd"]
+
+[[recipe]]
+id = "bat"
+category = "plugin"
+summary = "cat(1) clone with syntax highlighting and git integration"
+license = "MIT OR Apache-2.0"
+url = "https://github.com/sharkdp/bat"
+driver = "download"
+version = "v0.26.1"
+bins = ["bat"]
+[recipe.downloads.windows-x64]
+url = "https://github.com/sharkdp/bat/releases/download/v0.26.1/bat-v0.26.1-x86_64-pc-windows-msvc.zip"
+archive = "zip"
+sha256 = "0f729b4b6f5f28d395c641eacc2e9ff68d0096b85aa0eec344aa62425144b69b"
+bins = ["bat-v0.26.1-x86_64-pc-windows-msvc/bat.exe"]
+[recipe.downloads.linux-x64]
+url = "https://github.com/sharkdp/bat/releases/download/v0.26.1/bat-v0.26.1-x86_64-unknown-linux-gnu.tar.gz"
+archive = "tar-gzip"
+sha256 = "726f04c8f576a7fd18b7634f1bbf2f915c43494c1c0f013baa3287edb0d5a2a3"
+bins = ["bat-v0.26.1-x86_64-unknown-linux-gnu/bat"]
+
+[[recipe]]
+id = "eza"
+category = "plugin"
+summary = "modern ls replacement with icons, git status, and tree view"
+license = "MIT"
+url = "https://github.com/eza-community/eza"
+driver = "download"
+version = "v0.23.5"
+bins = ["eza"]
+[recipe.downloads.windows-x64]
+url = "https://github.com/eza-community/eza/releases/download/v0.23.5/eza.exe_x86_64-pc-windows-gnu.zip"
+archive = "zip"
+sha256 = "c830638c844a5b89d39ba662b5549903a71fa539018e813880f5b8afa77bac2e"
+bins = ["eza.exe"]
+[recipe.downloads.linux-x64]
+url = "https://github.com/eza-community/eza/releases/download/v0.23.5/eza_x86_64-unknown-linux-gnu.tar.gz"
+archive = "tar-gzip"
+sha256 = "35c70c5c43c29108075e58b893234c67ef585f0b53a7eaf8e9e7d4eec9f339b4"
+bins = ["eza"]
+
+[[recipe]]
+id = "zoxide"
+category = "plugin"
+summary = "smarter cd that learns your habits (z/zi with fzf integration)"
+license = "MIT"
+url = "https://github.com/ajeetdsouza/zoxide"
+driver = "download"
+version = "v0.10.0"
+bins = ["zoxide"]
+[recipe.downloads.windows-x64]
+url = "https://github.com/ajeetdsouza/zoxide/releases/download/v0.10.0/zoxide-0.10.0-x86_64-pc-windows-msvc.zip"
+archive = "zip"
+sha256 = "f465ae548f8754c8e7edbc60b45fbf58c92bfe123db83d790252d6810fa5daf1"
+bins = ["zoxide.exe"]
+[recipe.downloads.linux-x64]
+url = "https://github.com/ajeetdsouza/zoxide/releases/download/v0.10.0/zoxide-0.10.0-x86_64-unknown-linux-musl.tar.gz"
+archive = "tar-gzip"
+sha256 = "2d93385b99f3e82cf2701609a1bffcad863fbeb75aa3fe7eb6be4d29be68b1ae"
+bins = ["zoxide"]
+
+[[recipe]]
+id = "dust"
+category = "plugin"
+summary = "du + tree: intuitive disk usage analyzer"
+license = "Apache-2.0"
+url = "https://github.com/bootandy/dust"
+driver = "download"
+version = "v1.2.4"
+bins = ["dust"]
+[recipe.downloads.windows-x64]
+url = "https://github.com/bootandy/dust/releases/download/v1.2.4/dust-v1.2.4-x86_64-pc-windows-msvc.zip"
+archive = "zip"
+sha256 = "eb08d642f016787bb9fc918a4dc5f34665463657fddf83a40f2441cbf020fb4c"
+bins = ["dust-v1.2.4-x86_64-pc-windows-msvc/dust.exe"]
+[recipe.downloads.linux-x64]
+url = "https://github.com/bootandy/dust/releases/download/v1.2.4/dust-v1.2.4-x86_64-unknown-linux-gnu.tar.gz"
+archive = "tar-gzip"
+sha256 = "707cfdbfb9d2dc536f8c3853815bbe98a01012f2772463835edae06816551160"
+bins = ["dust-v1.2.4-x86_64-unknown-linux-gnu/dust"]
+
+[[recipe]]
+id = "duf"
+category = "plugin"
+summary = "disk usage/free utility with a clean tabular display"
+license = "MIT"
+url = "https://github.com/muesli/duf"
+driver = "download"
+version = "v0.9.1"
+bins = ["duf"]
+[recipe.downloads.windows-x64]
+url = "https://github.com/muesli/duf/releases/download/v0.9.1/duf_0.9.1_windows_x86_64.zip"
+archive = "zip"
+sha256 = "503934be81f847d9ddb1b739834217480633435ad16515dd199e372c0b2e1afc"
+bins = ["duf.exe"]
+[recipe.downloads.linux-x64]
+url = "https://github.com/muesli/duf/releases/download/v0.9.1/duf_0.9.1_linux_x86_64.tar.gz"
+archive = "tar-gzip"
+sha256 = "5add851e7062c5e56939abb664705e4d14fa2d06289490aff31d51f153832de7"
+bins = ["duf"]
+
+[[recipe]]
+id = "erdtree"
+category = "plugin"
+summary = "modern tree/disk-usage hybrid (erd) with parallel traversal"
+license = "MIT"
+url = "https://github.com/solidiquis/erdtree"
+driver = "download"
+version = "v3.1.2"
+bins = ["erd"]
+[recipe.downloads.windows-x64]
+url = "https://github.com/solidiquis/erdtree/releases/download/v3.1.2/erd-v3.1.2-x86_64-pc-windows-msvc.exe"
+archive = "raw"
+sha256 = "df359e20e5a38384c27b98667d780c5bd5ab1ce4bac739a5fa9c5ed25511a0a1"
+bins = ["erd.exe"]
+[recipe.downloads.linux-x64]
+url = "https://github.com/solidiquis/erdtree/releases/download/v3.1.2/erd-v3.1.2-x86_64-unknown-linux-gnu.tar.gz"
+archive = "tar-gzip"
+sha256 = "9354667bc1ef744cb363604d4eb5b6784205b7fb1c283f4c0f9d78e3ad07e42f"
+bins = ["erd"]
+
+[[recipe]]
+id = "direnv"
+category = "plugin"
+summary = "per-directory environment loader (un/ad-hoc env on cd)"
+license = "MIT"
+url = "https://github.com/direnv/direnv"
+driver = "download"
+version = "v2.37.1"
+bins = ["direnv"]
+[recipe.downloads.windows-x64]
+url = "https://github.com/direnv/direnv/releases/download/v2.37.1/direnv.windows-amd64"
+archive = "raw"
+sha256 = "d96fc8b7cf020c2d4c1dbbc2ccec5fd1cab05b51c491f02c8527a7fa6c50a1cd"
+bins = ["direnv.exe"]
+[recipe.downloads.linux-x64]
+url = "https://github.com/direnv/direnv/releases/download/v2.37.1/direnv.linux-amd64"
+archive = "raw"
+sha256 = "1f1b93dd6f38523fde26dfac96151ef9d31a374e3005cd3345fb93555ae0c9b5"
+bins = ["direnv"]
+
+[[recipe]]
+id = "niugit"
+category = "plugin"
+summary = "native Windows git without MSYS (niu-git build); the setup wizard's git pick"
+license = "GPL-2.0-only"
+url = "https://github.com/unixwin/niu-git"
+driver = "download"
+version = "v2.55.0.2"
+bins = ["git.exe"]
+[recipe.downloads.windows-x64]
+url = "https://github.com/unixwin/niu-git/releases/download/v2.55.0.2/niu-git-2.55.0.windows.2-x64.zip"
+archive = "zip"
+sha256 = "fc293ad2daed66da39286cb58fcae11bb09944b13b1ef1c19151eb9f11bde356"
+bins = ["git.exe"]
+
+[[recipe]]
+id = "thefuck"
+category = "plugin"
+summary = "fixes your previous command (thefuck); no binary release — install via pip or a package manager"
+license = "MIT"
+url = "https://github.com/nvbn/thefuck"

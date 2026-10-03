@@ -34,8 +34,9 @@ POSIX emulation layer, no `cygwin1.dll` / `msys-2.0.dll`, and no
 path-translation machinery anywhere in the stack. Every process niubash
 starts is an ordinary Win32 process, and niubash itself has **no runtime
 dependency on Python, Node.js, or any other language toolchain** (the setup
-wizard can optionally install modern CLI tools via `wpm` — that is a
-convenience, never a dependency).
+wizard can optionally install modern CLI tools through the built-in plugin
+download driver — pure Rust, cross-platform — which is a convenience, never
+a dependency).
 
 **There is no path-conversion layer — by design.** MSYS-family shells live
 in a Unix-looking world and must heuristically translate to Windows, and

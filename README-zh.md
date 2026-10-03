@@ -31,8 +31,9 @@ bash 兼容 shell：语言引擎（[rubash](https://github.com/unixwin/rubash)�
 它**不是 MSYS2、不是 Cygwin、不是 Git Bash、也不是 WSL**——整个技术栈里
 没有 POSIX 模拟层，没有 `cygwin1.dll` / `msys-2.0.dll`，也没有任何路径
 转换机器。niubash 启动的每个进程都是普通的 Win32 进程；niubash 本体
-**不依赖 Python、Node.js 或任何语言运行时**（setup 向导可以通过 `wpm`
-可选安装一批现代 CLI 工具——那是便利，不是依赖）。
+**不依赖 Python、Node.js 或任何语言运行时**（setup 向导可以通过内置的
+插件下载驱动——纯 Rust、跨平台——可选安装一批现代 CLI 工具，那是便利，
+不是依赖）。
 
 **没有路径转换层——这是设计，不是优化。** MSYS 系 shell 活在一个
 Unix 外观的世界里，必须靠启发式规则翻译成 Windows 路径；而永远猜对的

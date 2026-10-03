@@ -12,8 +12,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 #[cfg(windows)]
 use std::process::Command;
-#[cfg(windows)]
-use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::interactive_menu::{self, pad_display, Selection};
@@ -150,20 +148,25 @@ fn setup_undo_lines(home: &std::path::Path, journal: &SetupJournal) -> Vec<Strin
     lines
 }
 
-/// niu-git wpm package name and install command, taken read-only from the
-/// niu-git repo docs (`D:/repo/niu-git` README "WPM package" section and
-/// `wpm/niugit.json`, the official-index entry). The wizard only ever shows
-/// this command; it runs it solely on an explicit "Install" pick.
+/// niu-git recipe id in the compiled-in plugin recipe index. The wizard only
+/// ever names this recipe; it installs solely on an explicit "Install" pick.
+/// Owner ruling 2026-10-03 (wpm retraction to the command layer): the plugin
+/// download driver is the single executable-tool install entry, so the old
+/// `wpm install niugit` form is gone — the wizard drives the recipe instead.
+/// Windows-only because niu-git itself is Windows-native git (the topic and
+/// the question never appear on other platforms).
 #[cfg(windows)]
-const NIUGIT_WPM_PACKAGE: &str = "niugit";
-/// Windows-only (owner directive): the wpm install form and the `wpm` string
-/// itself must never appear on other platforms — gate the command const and
-/// the whole niu-git machinery at compile time.
+const NIUGIT_RECIPE_ID: &str = "niugit";
+/// The exact CLI equivalent of the wizard's Install pick (shown in the menu
+/// and the summary row). Windows-only, same gate as the question.
 #[cfg(windows)]
-const NIUGIT_INSTALL_COMMAND: &str = "wpm install niugit";
+const NIUGIT_ADD_COMMAND: &str = "niu plugin add niugit";
 
-/// Tools probed on PATH during preflight; drives the environment summary and
-/// the completion-pack candidates.
+/// Tools probed on PATH during preflight; drives the environment summary.
+/// These are application tools (plus git/docker/npm style runtimes) — probes
+/// only: installing them is the plugin download driver's job
+/// (`niu plugin add <recipe-id>`), never wpm's (owner ruling 2026-10-03:
+/// wpm retracts to the bundled Unix command layer).
 const PROBED_TOOLS: &[&str] = &[
     "git", "fzf", "eza", "bat", "starship", "zoxide", "fd", "rg", "dust", "duf", "erd", "direnv",
     "kubectl", "docker", "npm", "thefuck",
@@ -389,7 +392,6 @@ fn builtin_presets() -> Vec<Preset> {
         ("..", "cd .."),
         ("...", "cd ../.."),
         ("cls", "clear"),
-        ("apt", "wpm"),
     ]
     .iter()
     .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -418,6 +420,19 @@ fn builtin_presets() -> Vec<Preset> {
             [(alias.to_string(), cmd.to_string())].into_iter().collect(),
         );
     }
+    // Command-layer entry alias (kept per the 2026-10-03 wpm retraction
+    // ruling): `apt` opens the bundled Unix command layer for users who
+    // actually have wpm — it is an entry point, never a tool-install
+    // recommendation (application tools install through the plugin driver).
+    // Conditional on the probe, and Windows-only at compile time: the `wpm`
+    // string must never surface in non-Windows builds.
+    #[cfg(windows)]
+    recommended_cond_aliases.insert(
+        "wpm".to_string(),
+        [("apt".to_string(), "wpm".to_string())]
+            .into_iter()
+            .collect(),
+    );
 
     vec![
         Preset {
@@ -741,7 +756,11 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
         );
     }
 
-    if cfg!(windows) && io.interactive && !probe.command_links {
+    // Windows-only at compile time: the recovery hint names the wpm
+    // command-layer verb, and `wpm` must never surface in non-Windows
+    // builds (the command links themselves are a Windows-only concept).
+    #[cfg(windows)]
+    if io.interactive && !probe.command_links {
         println!();
         println!(
             "  \u{26a0}\u{fe0f}  {}",
@@ -845,9 +864,11 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
     let collection_pick = ask_plugin_collection(&mut io, &t);
 
     // --- Q3: niu-git, offered once (never auto-installed, never nagged) ---
-    // Windows-only question: the wpm install form exists only on Windows,
-    // and Linux/macOS users already have native git — the topic (and the
-    // `wpm` string itself) must never appear on other platforms.
+    // Windows-only question: niu-git is Windows-native git, and Linux/macOS
+    // users already have native git. The install itself runs through the
+    // cross-platform plugin download driver (owner ruling 2026-10-03: the
+    // plugin driver is the only executable-tool install entry; wpm no
+    // longer installs application tools).
     let niu_git = match ask_niu_git(&mut io, &t, &home, &probe) {
         Some(choice) => choice,
         None => return Ok(()), // cancelled at the niu-git question
@@ -874,9 +895,9 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
 
     let backup_path = write_rc_and_mark_done(&home, &cfg, lang)?;
 
-    // wpm exists only on Windows (owner directive): the Install branch —
-    // and the call into the wpm-backed installer — compiles only there.
-    // Non-Windows wizard paths never reach NiuGitChoice::Install
+    // The niu-git question is Windows-only (niu-git is Windows-native git):
+    // the Install branch — and the recipe-driven install — compiles only
+    // there. Non-Windows wizard paths never reach NiuGitChoice::Install
     // (ask_niu_git returns Skip), so only the answer memory remains.
     #[cfg(windows)]
     if niu_git == NiuGitChoice::Install {
@@ -1033,9 +1054,10 @@ enum NiuGitChoice {
     NeverShow,
 }
 
-// --- niu-git ask: Windows-only at compile time (owner directive) ---
-// The wpm install form and every `wpm` string exist only on Windows builds;
-// other platforms get a Skip stub and contain none of it.
+// --- niu-git ask: Windows-only at compile time (niu-git is Windows-native
+// git; on other platforms native git already exists). The install itself is
+// cross-platform machinery: the plugin download driver (pure Rust), never
+// an external package manager.
 #[cfg(windows)]
 fn ask_niu_git(
     io: &mut WizardIo,
@@ -1054,7 +1076,7 @@ fn ask_niu_git(
             format!(
                 "{}  {}",
                 pad_display(t.tr("Install"), 14),
-                NIUGIT_INSTALL_COMMAND
+                NIUGIT_ADD_COMMAND
             ),
             format!(
                 "{}  {}",
@@ -1186,37 +1208,26 @@ fn write_niu_git_answer(home: &std::path::Path, value: &str) {
     }
 }
 
-/// Run the niu-git install the user explicitly picked — the only path that
-/// ever invokes wpm here. The "installed" marker is only recorded after a
-/// successful install, so a failed install stays retryable.
+/// Run the niu-git install the user explicitly picked — through the plugin
+/// download driver (`niu plugin add niugit`), which is the single
+/// executable-tool install entry (owner ruling 2026-10-03: wpm retracts to
+/// the Unix command layer and no longer installs application tools). The
+/// "installed" marker is only recorded after a successful install, so a
+/// failed install stays retryable.
 #[cfg(windows)]
 fn install_niu_git(home: &std::path::Path, lang: Lang) {
-    let Some(mut wpm) = wpm_command() else {
-        println!(
-            "  \u{26a0}\u{fe0f}  {} {}",
-            lang.tr("wpm not available — install later with:"),
-            NIUGIT_INSTALL_COMMAND
-        );
-        return;
-    };
-    println!("  \u{1f4e6}  {}", NIUGIT_INSTALL_COMMAND);
-    let status = wpm
-        .arg("install")
-        .arg(NIUGIT_WPM_PACKAGE)
-        .stdin(Stdio::null())
-        .status();
-    match status {
-        Ok(status) if status.success() => {
+    println!("  \u{1f4e6}  {NIUGIT_ADD_COMMAND}");
+    match crate::plugins::recipes::install(NIUGIT_RECIPE_ID) {
+        Ok(report) => {
+            println!("    - {}", report.summary);
             write_niu_git_answer(home, "installed");
             println!("  \u{2705}  {}", lang.tr("niu-git installed"));
+            for step in &report.next {
+                println!("    {step}");
+            }
         }
-        Ok(status) => println!(
-            "  \u{26a0}\u{fe0f}  {} (exit {})",
-            lang.tr("niu-git install failed — no other changes were made"),
-            status.code().unwrap_or(1)
-        ),
         Err(err) => println!(
-            "  \u{26a0}\u{fe0f}  {}: {err}",
+            "  \u{26a0}\u{fe0f}  {}: {err:#}",
             lang.tr("niu-git install failed — no other changes were made")
         ),
     }
@@ -1350,11 +1361,12 @@ fn print_config_summary(
     row(
         "niu-git",
         match niu_git {
-            // The wpm install text is Windows-only (owner directive); on
-            // other platforms the summary shows the same "skipped" the
-            // wizard actually did (ask_niu_git always returns Skip there).
+            // The plugin-driver install text is Windows-only (the question
+            // exists only there); on other platforms the summary shows the
+            // same "skipped" the wizard actually did (ask_niu_git always
+            // returns Skip there).
             #[cfg(windows)]
-            NiuGitChoice::Install => NIUGIT_INSTALL_COMMAND.to_string(),
+            NiuGitChoice::Install => NIUGIT_ADD_COMMAND.to_string(),
             NiuGitChoice::NeverShow => t.tr("don't ask again").to_string(),
             NiuGitChoice::Skip => t.tr("skipped").to_string(),
         },
@@ -1388,7 +1400,10 @@ fn write_rc_and_mark_done(
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/// `wpm` when the command link is on PATH, else `winuxcmd.exe wpm`.
+/// `wpm` when the command link is on PATH, else `winuxcmd.exe wpm`. The
+/// command-layer probe (environment summary / `apt` alias condition); the
+/// wizard never installs anything through it — tool installs go through the
+/// plugin download driver (owner ruling 2026-10-03).
 #[cfg(windows)]
 fn wpm_command() -> Option<Command> {
     if on_path("wpm") {
@@ -1601,6 +1616,7 @@ fn zh(en: &str) -> Option<&'static str> {
             "WinuxCmd 命令链接似乎缺失（ls/cat/grep/ln）。",
         "They are created automatically on startup; if Unix commands still" =>
             "它们会在启动时自动创建；若设置完成后 Unix 命令仍",
+        #[cfg(windows)]
         "fail after setup, restart niu or run `wpm links rebuild`." =>
             "无法使用，请重启 niu 或运行 `wpm links rebuild`。",
 
@@ -1659,8 +1675,6 @@ fn zh(en: &str) -> Option<&'static str> {
             "  \u{2502}  独立的 GPLv2 项目；无论选不选，现有 git 照常工作",
         "  \u{2502}  a separate GPLv2 project — native Windows git without MSYS" =>
             "  \u{2502}  独立的 GPLv2 项目 —— 无 MSYS 的 Windows 原生 git",
-        "wpm not available — install later with:" =>
-            "wpm 不可用 —— 之后可用以下命令安装：",
         "niu-git installed" => "niu-git 已安装",
         "niu-git install failed — no other changes were made" =>
             "niu-git 安装失败 —— 其他内容未做任何改动",

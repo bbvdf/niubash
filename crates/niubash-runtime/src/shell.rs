@@ -2583,6 +2583,21 @@ where
     }
 
     let search = shell_quote(command);
+
+    // Application tools with a compiled-in plugin recipe: the driver is the
+    // single executable-tool install entry on every platform (owner ruling
+    // 2026-10-03 — wpm retracts to the Unix command layer and stops
+    // installing application tools).
+    if let Some(recipe) = plugin_recipe_for_command(command) {
+        lines.push(format!(
+            "niubash: try 'niu plugin add {recipe}' to add {command}"
+        ));
+    }
+
+    // The wpm channel survives only for the bundled Unix command layer
+    // (awk/jq/7z/…), and only on Windows — wpm does not exist elsewhere and
+    // the string must not surface in non-Windows builds.
+    #[cfg(windows)]
     if let Some(package) = wpm_package_for_command(command) {
         lines.push(format!(
             "niubash: try 'wpm install {}' to add {}",
@@ -2609,6 +2624,32 @@ where
     lines
 }
 
+/// Application tools that own a compiled-in plugin download recipe: their
+/// install hint names the recipe (cross-platform — the download driver runs
+/// everywhere). Keep in sync with `assets/plugins/recipes.toml`: an entry
+/// here without a recipe row would print a dead verb.
+fn plugin_recipe_for_command(command: &str) -> Option<&'static str> {
+    match command {
+        "rg" => Some("ripgrep"),
+        "fd" => Some("fd"),
+        "fzf" => Some("fzf"),
+        "bat" => Some("bat"),
+        "eza" => Some("eza"),
+        "zoxide" => Some("zoxide"),
+        "dust" => Some("dust"),
+        "duf" => Some("duf"),
+        "erd" => Some("erdtree"),
+        "direnv" => Some("direnv"),
+        "starship" => Some("starship"),
+        _ => None,
+    }
+}
+
+/// Bundled Unix command-layer packages wpm still manages (owner ruling
+/// 2026-10-03): the classic Unix toolbox that travels with the winuxcmd
+/// tree — text/data filters, archive and transfer utilities. Application
+/// tools are NOT here; they install through the plugin driver.
+#[cfg(windows)]
 fn wpm_package_for_command(command: &str) -> Option<&'static str> {
     match command {
         "awk" => Some("awk"),
@@ -2618,62 +2659,10 @@ fn wpm_package_for_command(command: &str) -> Option<&'static str> {
         "ncat" => Some("ncat"),
         "7z" | "7zz" => Some("7zip"),
         "zstd" | "unzstd" | "zstdcat" => Some("zstd"),
-        "rg" => Some("ripgrep"),
-        "fd" => Some("fd"),
-        "fzf" => Some("fzf"),
-        "bat" => Some("bat"),
-        "delta" => Some("delta"),
-        "sd" => Some("sd"),
-        "hyperfine" => Some("hyperfine"),
-        "just" => Some("just"),
-        "dust" => Some("dust"),
-        "duf" => Some("duf"),
-        "procs" => Some("procs"),
-        "btm" => Some("bottom"),
         "wget" => Some("wget"),
         "aria2c" => Some("aria2"),
         "rclone" => Some("rclone"),
-        "eza" => Some("eza"),
-        "lsd" => Some("lsd"),
-        "zoxide" => Some("zoxide"),
-        "starship" => Some("starship"),
-        "chezmoi" => Some("chezmoi"),
-        "gh" => Some("gh"),
-        "glab" => Some("glab"),
-        "lazygit" => Some("lazygit"),
-        "lazydocker" => Some("lazydocker"),
-        "kubectl" => Some("kubectl"),
-        "helm" => Some("helm"),
-        "k9s" => Some("k9s"),
-        "tofu" => Some("opentofu"),
-        "sqlite3" => Some("sqlite"),
-        "duckdb" => Some("duckdb"),
-        "pandoc" => Some("pandoc"),
-        "shellcheck" => Some("shellcheck"),
-        "shfmt" => Some("shfmt"),
-        "hadolint" => Some("hadolint"),
-        "tokei" => Some("tokei"),
-        "scc" => Some("scc"),
-        "watchexec" => Some("watchexec"),
-        "miniserve" => Some("miniserve"),
-        "xh" => Some("xh"),
-        "grpcurl" => Some("grpcurl"),
-        "age" | "age-keygen" => Some("age"),
-        "sops" => Some("sops"),
-        "cosign" => Some("cosign"),
-        "trivy" => Some("trivy"),
-        "syft" => Some("syft"),
-        "grype" => Some("grype"),
-        "oras" => Some("oras"),
-        "crane" => Some("crane"),
-        "restic" => Some("restic"),
-        "yazi" => Some("yazi"),
-        "ouch" => Some("ouch"),
-        "erd" => Some("erdtree"),
-        "micro" => Some("micro"),
-        "hx" => Some("helix"),
         "busybox" => Some("busybox"),
-        "ffmpeg" | "ffprobe" => Some("ffmpeg"),
         _ => None,
     }
 }
@@ -3583,11 +3572,18 @@ niu_git_comp() {
 
     #[test]
     fn native_command_not_found_lines_include_available_windows_package_managers() {
+        // rg is an application tool with a compiled-in download recipe: the
+        // install hint names the plugin driver (owner ruling 2026-10-03 —
+        // wpm retracted to the Unix command layer), never wpm.
         let lines = native_command_not_found_hint_lines("rg", |command| {
             matches!(command, "winget" | "scoop")
         });
 
-        assert!(lines.contains(&"niubash: try 'wpm install ripgrep' to add rg".to_string()));
+        assert!(lines.contains(&"niubash: try 'niu plugin add ripgrep' to add rg".to_string()));
+        assert!(
+            !lines.iter().any(|line| line.contains("wpm")),
+            "application tools must not recommend wpm: {lines:?}"
+        );
         assert!(lines.contains(&"niubash: package search hints:".to_string()));
         assert!(lines.contains(&"  winget search --name 'rg'".to_string()));
         assert!(lines.contains(&"  scoop search 'rg'".to_string()));
@@ -3596,9 +3592,63 @@ niu_git_comp() {
 
     #[test]
     fn native_command_not_found_hint_lines_include_wpm_without_search() {
-        let lines = native_command_not_found_hint_lines("awk", |_| false);
+        // awk is bundled Unix command layer: wpm keeps managing it, and the
+        // hint stays wpm-only (Windows builds; the wpm channel compiles only
+        // there).
+        #[cfg(windows)]
+        {
+            let lines = native_command_not_found_hint_lines("awk", |_| false);
 
-        assert_eq!(lines, vec!["niubash: try 'wpm install awk' to add awk"]);
+            assert_eq!(lines, vec!["niubash: try 'wpm install awk' to add awk"]);
+        }
+        // On other platforms the command layer has no wpm channel at all.
+        #[cfg(not(windows))]
+        {
+            let lines = native_command_not_found_hint_lines("awk", |_| false);
+            assert!(lines.is_empty(), "{lines:?}");
+        }
+    }
+
+    #[test]
+    fn plugin_recipe_hints_stay_cross_platform_and_recipe_backed() {
+        // Every hint here must name a compiled-in recipe row (a dead verb
+        // would be worse than no hint) — guarded by name against the seed
+        // index so a renamed recipe fails loudly.
+        for (command, recipe) in [
+            ("rg", "ripgrep"),
+            ("fd", "fd"),
+            ("fzf", "fzf"),
+            ("bat", "bat"),
+            ("eza", "eza"),
+            ("zoxide", "zoxide"),
+            ("dust", "dust"),
+            ("duf", "duf"),
+            ("erd", "erdtree"),
+            ("direnv", "direnv"),
+            ("starship", "starship"),
+        ] {
+            assert_eq!(plugin_recipe_for_command(command), Some(recipe));
+            assert!(
+                crate::plugins::recipes::recipe(recipe).is_some_and(|row| {
+                    matches!(
+                        row.driver,
+                        Some(crate::plugins::recipes::RecipeDriver::Download { .. })
+                    )
+                }),
+                "hint recipe '{recipe}' for '{command}' has no download row in the seed index"
+            );
+            let lines = native_command_not_found_hint_lines(command, |_| false);
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.contains(&format!("niu plugin add {recipe}"))),
+                "{command}: {lines:?}"
+            );
+            assert!(
+                !lines.iter().any(|line| line.contains("wpm")),
+                "{command} is an application tool — no wpm channel: {lines:?}"
+            );
+        }
     }
 
     #[test]

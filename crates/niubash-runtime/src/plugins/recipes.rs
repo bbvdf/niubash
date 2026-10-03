@@ -392,6 +392,20 @@ fn install_download(
     downloads: &BTreeMap<String, DownloadAsset>,
     bins: &[String],
 ) -> anyhow::Result<RecipeInstall> {
+    // Conflict gate (owner ruling 2026-10-03, wpm retraction): the download
+    // driver refuses a same-id reinstall (see download::install_executable);
+    // the recipe layer renders that refusal as a report, so a re-applied
+    // collection entry reads "already installed", not "failed".
+    if download::tool_installed(&found.id) {
+        return Ok(RecipeInstall {
+            recipe_id: found.id.clone(),
+            summary: format!(
+                "tool '{}' is already installed — see `niu plugin tool list`",
+                found.id
+            ),
+            next: vec![format!("niu plugin tool remove {}", found.id)],
+        });
+    }
     let asset = download::resolve_platform_asset(downloads)?;
     let mut asset = asset.clone();
     if asset.bins.is_empty() {
@@ -634,6 +648,57 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The PROBED_TOOLS application class owns download rows (owner ruling
+    /// 2026-10-03, wpm retraction): every wizard-probe application tool is
+    /// installable through the plugin driver on windows-x64 and linux-x64
+    /// (thefuck excepted — no binary release, info-only), and every asset
+    /// row names its exact in-archive bin path.
+    #[test]
+    fn application_tools_have_download_rows_per_platform() {
+        for id in [
+            "starship", "fzf", "ripgrep", "fd", "bat", "eza", "zoxide", "dust", "duf", "erdtree",
+            "direnv", "niugit",
+        ] {
+            let found = recipe(id).unwrap_or_else(|| panic!("missing tool recipe '{id}'"));
+            let Some(RecipeDriver::Download {
+                downloads, bins, ..
+            }) = &found.driver
+            else {
+                panic!("tool recipe '{id}' must use the download driver");
+            };
+            assert!(
+                downloads.contains_key("windows-x64"),
+                "'{id}' has no windows-x64 row: {downloads:?}"
+            );
+            if id != "niugit" {
+                // niu-git is Windows-native git by design; everything else
+                // installs cross-platform.
+                assert!(
+                    downloads.contains_key("linux-x64"),
+                    "'{id}' has no linux-x64 row: {downloads:?}"
+                );
+            }
+            for (platform, asset) in downloads {
+                // Driver precedence (install_download): per-asset bins first,
+                // then the recipe-level `bins` (archive-root binaries).
+                assert!(
+                    !asset.bins.is_empty() || !bins.is_empty(),
+                    "'{id}' platform '{platform}' names no bin path"
+                );
+                assert!(
+                    asset.sha256.as_deref().is_some_and(|s| !s.is_empty()),
+                    "'{id}' platform '{platform}' pins no sha256"
+                );
+            }
+        }
+        // thefuck ships no binaries: the row exists and explains instead.
+        let fuck = recipe("thefuck").expect("thefuck recipe");
+        assert!(
+            fuck.driver.is_none(),
+            "thefuck is info-only (no binary release)"
+        );
     }
 
     #[test]

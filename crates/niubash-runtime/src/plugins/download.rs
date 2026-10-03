@@ -43,12 +43,15 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
 /// Declared client, as GitHub asks of API/download clients.
 const USER_AGENT: &str = concat!("niubash-plugin-driver/", env!("CARGO_PKG_VERSION"));
 
-/// Archive container of a downloadable asset.
+/// Archive container of a downloadable asset. `Raw` covers release shapes
+/// that ship the bare executable itself (direnv, erdtree): the bytes are
+/// written to `<bins[0]>` instead of being unpacked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ArchiveKind {
     Zip,
     TarGzip,
+    Raw,
 }
 
 impl ArchiveKind {
@@ -56,6 +59,7 @@ impl ArchiveKind {
         match self {
             Self::Zip => "zip",
             Self::TarGzip => "tar-gzip",
+            Self::Raw => "raw",
         }
     }
 }
@@ -221,6 +225,26 @@ fn unpack_archive(kind: ArchiveKind, bytes: &[u8], dest: &Path) -> anyhow::Resul
             let mut archive = tar::Archive::new(decoder);
             archive.unpack(dest).context("extracting tar.gz archive")?;
         }
+        ArchiveKind::Raw => {
+            bail!("raw assets are written by install_executable, not unpacked");
+        }
+    }
+    Ok(())
+}
+
+/// Write a `Raw` asset: the bytes are the executable itself, stored under
+/// `dest/<name>` and marked executable on Unix (a zip/tar entry would carry
+/// the mode; a bare download has to set it).
+fn write_raw_executable(bytes: &[u8], dest: &Path, name: &str) -> anyhow::Result<()> {
+    fs::create_dir_all(dest)?;
+    let path = dest.join(name);
+    let mut file = File::create(&path).with_context(|| format!("writing {}", path.display()))?;
+    file.write_all(bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("chmod {}", path.display()))?;
     }
     Ok(())
 }
@@ -280,6 +304,23 @@ fn unpack_and_verify_bins(
 /// Install (or reinstall over) one executable tool. `bins` are paths inside
 /// the archive; missing ones are an error (mason fails the install when the
 /// declared bin is absent — same contract here).
+/// True when a tool with this id is already installed (directory or
+/// registry record). The single source for the conflict gate below and the
+/// recipe layer's already-installed report.
+pub fn tool_installed(id: &str) -> bool {
+    tools_root().join(id).exists() || read_tool_registry().iter().any(|tool| tool.id == id)
+}
+
+/// Install one executable tool. `bins` are paths inside the archive;
+/// missing ones are an error (mason fails the install when the declared bin
+/// is absent — same contract here).
+///
+/// Conflict gate (owner ruling 2026-10-03, wpm retraction): the download
+/// driver is the only tool-install entry, so an id that already owns
+/// `~/.niubash/tools/<id>` is a **refusal**, not a silent reinstall — name
+/// the inventory verb so the user can inspect or remove first. wpm's own
+/// install state is deliberately NOT probed: that would be a bridge between
+/// the two planes, and removing bridges is the point of the retraction.
 pub fn install_executable(
     id: &str,
     version: &str,
@@ -299,6 +340,12 @@ fn commit_install(
     asset: &DownloadAsset,
     bytes: &[u8],
 ) -> anyhow::Result<ToolInstall> {
+    if tool_installed(id) {
+        bail!(
+            "tool '{id}' is already installed — see `niu plugin tool list`; \
+             remove it first with `niu plugin tool remove {id}`"
+        );
+    }
     let root = tools_root();
     let staging = root.join(".staging");
     fs::create_dir_all(&staging)?;
@@ -327,6 +374,26 @@ fn commit_install(
     let bin_paths = unpack_and_verify_bins(asset, bytes, &stage_dir, id).inspect_err(|_| {
         let _ = fs::remove_dir_all(&stage_dir);
     })?;
+    match asset.archive {
+        ArchiveKind::Raw => {
+            let name = asset.bins.first().ok_or_else(|| {
+                anyhow!("recipe declares no binaries for {id} (raw assets need one)")
+            })?;
+            write_raw_executable(&bytes, &stage_dir, name)?;
+        }
+        _ => unpack_archive(asset.archive, &bytes, &stage_dir)?,
+    }
+
+    // Verify the declared bins exist in the unpacked tree before committing.
+    let mut bin_paths = Vec::new();
+    for bin in &asset.bins {
+        let rel = bin.replace('\\', "/");
+        let path = stage_dir.join(&rel);
+        if !path.is_file() {
+            bail!("recipe declares bin '{bin}' for {id} but it is not in the archive");
+        }
+        bin_paths.push(PathBuf::from(&rel));
+    }
 
     let dest = root.join(id);
     if dest.exists() {
@@ -535,6 +602,70 @@ mod tests {
         let dest = tempfile::tempdir().unwrap();
         unpack_archive(ArchiveKind::TarGzip, &bytes, dest.path()).unwrap();
         assert!(dest.path().join("tool").is_file());
+    }
+
+    #[test]
+    fn raw_executables_are_written_under_the_declared_bin() {
+        let dest = tempfile::tempdir().unwrap();
+        write_raw_executable(b"MZfake", dest.path(), "erd.exe").unwrap();
+        assert_eq!(
+            std::fs::read(dest.path().join("erd.exe")).unwrap(),
+            b"MZfake"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dest.path().join("erd.exe"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o111, 0o111, "raw executables must be +x on unix");
+        }
+        // Raw is not an unpack container: the archive unpacker refuses it.
+        let err = unpack_archive(ArchiveKind::Raw, b"x", dest.path())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("raw"), "{err}");
+    }
+
+    #[test]
+    fn install_refuses_an_existing_tool_id_before_any_download() {
+        // Conflict gate (owner ruling 2026-10-03): a same-id install is a
+        // refusal naming `niu plugin tool list`. The gate fires before the
+        // HTTP fetch, so this test stays offline.
+        let _guard = crate::test_support::PROCESS_STATE_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::env::set_var("NIU_PLUGIN_TOOLS_ROOT", root.path());
+        std::fs::create_dir_all(root.path().join("fzf")).unwrap();
+        let asset = DownloadAsset {
+            url: "https://example.invalid/never-fetched.zip".into(),
+            archive: ArchiveKind::Zip,
+            sha256: None,
+            bins: vec![],
+        };
+        let err = install_executable("fzf", "v0", &asset)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("already installed"), "{err}");
+        assert!(err.contains("niu plugin tool list"), "{err}");
+        assert!(err.contains("niu plugin tool remove fzf"), "{err}");
+        // The registry record alone also counts as installed.
+        std::fs::remove_dir_all(root.path().join("fzf")).unwrap();
+        write_tool_registry(&[ToolRecord {
+            id: "fzf".into(),
+            version: "v0".into(),
+            url: "https://example.invalid".into(),
+            archive_sha256: "abc".into(),
+            pinned: true,
+            path: root.path().join("fzf"),
+            bins: vec!["fzf.exe".into()],
+            installed_at: "1".into(),
+        }])
+        .unwrap();
+        assert!(tool_installed("fzf"));
+        assert!(install_executable("fzf", "v0", &asset).is_err());
+        assert!(!tool_installed("other"));
+        std::env::remove_var("NIU_PLUGIN_TOOLS_ROOT");
     }
 
     #[test]

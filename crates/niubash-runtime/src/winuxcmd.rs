@@ -380,37 +380,42 @@ fn auto_activate_bundled_winuxcmd(exe: &Path) {
     // portable and installed layouts on one activation path and no longer
     // depends on the bundled activation script sitting next to the
     // executable. Output is captured so non-interactive `-c`/`-C` runs stay
-    // quiet and deterministic.
-    let root = installation_root(exe);
-    match Command::new(exe)
-        .args(["wpm", "links", "rebuild", "--root"])
-        .arg(&root)
-        .arg("--force")
-        .output()
+    // quiet and deterministic. Windows-only at compile time: `wpm` is a
+    // Windows-only channel (the string must not surface in non-Windows
+    // builds, and winuxcmd.exe is a Windows binary anyway).
+    #[cfg(windows)]
     {
-        Ok(output) if output.status.success() => {
-            log::debug!(
-                "winuxcmd activation completed via wpm links rebuild (root {})",
-                root.display()
-            );
-            if has_required_command_links(dir) {
-                return;
+        let root = installation_root(exe);
+        match Command::new(exe)
+            .args(["wpm", "links", "rebuild", "--root"])
+            .arg(&root)
+            .arg("--force")
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                log::debug!(
+                    "winuxcmd activation completed via wpm links rebuild (root {})",
+                    root.display()
+                );
+                if has_required_command_links(dir) {
+                    return;
+                }
+                log::debug!(
+                    "wpm links rebuild reported success but expected links are still missing in {}",
+                    dir.display()
+                );
             }
-            log::debug!(
-                "wpm links rebuild reported success but expected links are still missing in {}",
-                dir.display()
-            );
-        }
-        Ok(output) => {
-            log::debug!(
-                "wpm links rebuild failed with status {}; falling back to activation script",
-                output.status
-            );
-        }
-        Err(err) => {
-            log::debug!(
-                "failed to launch wpm links rebuild: {err}; falling back to activation script"
-            );
+            Ok(output) => {
+                log::debug!(
+                    "wpm links rebuild failed with status {}; falling back to activation script",
+                    output.status
+                );
+            }
+            Err(err) => {
+                log::debug!(
+                    "failed to launch wpm links rebuild: {err}; falling back to activation script"
+                );
+            }
         }
     }
 

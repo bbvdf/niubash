@@ -182,6 +182,21 @@ niu plugin disable oh-my-bash # removes the block; the built-in floor returns
 rewritten. Use `niu plugin list` and `niu plugin discover` for the current
 inventory and state.
 
+Executable CLI tools (starship, fzf, eza, bat, fd, ripgrep, zoxide, dust,
+duf, erdtree, direnv, niu-git …) install through the same plugin system's
+download driver — pure Rust, checksum-pinned, identical on every platform:
+
+```sh
+niu plugin add fzf        # download + sha256 verify into ~/.niubash/tools
+niu plugin enable fzf     # write the PATH block
+niu plugin tool list      # what is installed through the driver
+```
+
+The Unix command layer (`ls`, `cat`, `grep`, … plus classic toolbox extras
+like `awk`/`jq`) is a separate plane owned by wpm on Windows
+(`wpm links rebuild`, `wpm update winuxcmd`); application tools never
+install through wpm.
+
 ## What next
 
 - [Plugin System Direction](../planning/plugin-system-direction.md) for the v3 plugin model
