@@ -187,13 +187,17 @@ fn curl_command() -> Command {
 }
 
 fn download(url: &str, dest: &Path) -> Result<()> {
+    // Transport-layer mirror rewrite (§14.8): the recorded font source stays
+    // the canonical nerd-fonts GitHub release; only the request goes through
+    // the active mirror when one is configured.
+    let url = crate::plugins::mirrors::rewrite_download_url(url);
     let status = curl_command()
         .arg("-fSL")
         .arg("--retry")
         .arg("2")
         .arg("-o")
         .arg(dest)
-        .arg(url)
+        .arg(&url)
         .stdin(Stdio::null())
         .status()
         .context("run curl.exe")?;

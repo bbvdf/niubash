@@ -164,8 +164,13 @@ fn write_tool_registry(tools: &[ToolRecord]) -> anyhow::Result<()> {
 
 /// Pure-Rust HTTP GET over rustls. Follows redirects (GitHub release
 /// downloads are 302 to the CDN), enforces the size cap and timeout.
+/// Mirror rewriting (§14.8) happens here, at the transport layer: the
+/// caller's URL stays the canonical origin (tool records keep GitHub URLs
+/// so registries stay portable); only the actual request is redirected
+/// through the active mirror.
 pub fn http_get_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
-    let response = ureq::get(url)
+    let url = super::mirrors::rewrite_download_url(url);
+    let response = ureq::get(&url)
         .timeout(HTTP_TIMEOUT)
         .set("User-Agent", USER_AGENT)
         .call()

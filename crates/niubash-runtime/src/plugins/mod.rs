@@ -19,13 +19,16 @@
 //! 2026-10-03): [`recipes`] is the data index over the ecosystem,
 //! [`download`] the pure-Rust direct-binary driver, [`distros`] the
 //! collection manifests (LazyVim extras pattern), and [`ui`] the menu-level
-//! view over the same verbs.
+//! view over the same verbs. [`mirrors`] is the transport-layer
+//! China-network mirroring (§14.8): rewrites downloads and git fetches,
+//! never the recorded origins.
 
 pub mod assets;
 pub mod catalog;
 pub mod descriptors;
 pub mod distros;
 pub mod download;
+pub mod mirrors;
 pub mod recipes;
 pub mod sources;
 pub mod spec;

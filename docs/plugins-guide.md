@@ -165,6 +165,47 @@ niu plugin enable <id>[/<asset>]   # declare + materialize
   entry; `niu plugin list` shows every candidate with its tag, enable
   with `niu plugin enable <id>/<relative/path>.sh`.
 
+## Downloads stall? Configure a mirror
+
+Every plugin, tool, font, and self-update download comes from GitHub. If
+that is slow or unreachable from your network (common in mainland China),
+point niubash at a mirror URL you trust — one command:
+
+```sh
+niu plugin mirror set https://your-mirror.example.com/
+# back to direct connection:
+niu plugin mirror set none
+```
+
+The mirror is a **transport concern only**: the spec, the lockfile, and
+tool records keep canonical GitHub URLs, so an install made through a
+mirror is byte-identical to a direct one (checksum verification is
+unaffected — a mirror is never a trust signal). Only `https://github.com/`
+requests are rewritten; anything else passes through untouched.
+
+`niu plugin mirror test` probes GitHub and your configured mirror;
+`niu doctor` does the same probe when no mirror is configured and suggests
+the command above (it never switches anything by itself).
+
+Git-only mirrors and per-channel overrides live in
+`~/.niubash/mirrors.toml` (see `niu plugin mirror --help`):
+
+```toml
+schema = "niubash:mirrors@0.1.0"
+active = "custom"
+
+[github]
+prefix = "https://your-mirror.example.com/"    # downloads
+git_instead_of = "https://your-git-mirror/"    # git clone/fetch
+
+[github.releases]
+prefix = "https://your-release-mirror/"        # release assets only
+```
+
+niubash ships **no bundled mirror list**: community mirror services are
+unsupported and may disappear at any time — the examples written as
+comments in the config file are starting points, not endorsements.
+
 ## Environment overrides
 
 | Variable | Effect |
@@ -172,8 +213,10 @@ niu plugin enable <id>[/<asset>]   # declare + materialize
 | `NIU_PLUGIN_SPEC` | Alternate spec file location |
 | `NIU_PLUGIN_SOURCES_ROOT` | Alternate install root (default `~/.niubash/sources`) |
 | `NIU_PLUGIN_BOOTSTRAP` | `off` disables the rc bootstrap line |
+| `NIU_MIRRORS` | Alternate mirror config (default `~/.niubash/mirrors.toml`) |
 
 Design references: `docs/planning/oh-my-niu-ecosystem.md` §14.6 (three
-layers, descriptor table, declarative spec), §14.4 (no shims). A compact
+layers, descriptor table, declarative spec), §14.4 (no shims), §14.8
+(manager bundles with the product; download/git mirroring). A compact
 machine-readable companion for agents lives in
 `docs/plugins-quickref.md`.

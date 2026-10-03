@@ -527,20 +527,31 @@ struct FetchedSource {
     commit_sha: Option<String>,
 }
 
-fn git_clone_to(staging: &Path, origin: &str, ref_name: &str) -> anyhow::Result<()> {
-    let mut command = Command::new("git");
-    // OMB has no .gitattributes; CRLF would kill sourcing (§9).
-    command
-        .arg("-c")
-        .arg("core.autocrlf=false")
-        .arg("clone")
-        .arg("--depth")
-        .arg("1");
+/// The full `git` argument list for a shallow clone of `origin` at
+/// `ref_name`, including the CRLF guard and the active mirror's insteadOf
+/// config (§14.8: the recorded origin stays canonical — GitHub URL in the
+/// registry, mirror applied only as a git config key at transport time).
+/// Pure, so the insteadOf wiring is testable without spawning git.
+fn git_clone_arg_list(origin: &str, ref_name: &str) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "-c".into(),
+        // OMB has no .gitattributes; CRLF would kill sourcing (§9).
+        "core.autocrlf=false".into(),
+    ];
+    args.extend(super::mirrors::git_clone_args(origin));
+    args.extend(["clone".into(), "--depth".into(), "1".into()]);
     if ref_name != "HEAD" {
-        command.arg("--branch").arg(ref_name);
+        args.extend(["--branch".into(), ref_name.to_string()]);
     }
-    command.arg(origin).arg(staging);
-    let status = command
+    args.push(origin.to_string());
+    args
+}
+
+fn git_clone_to(staging: &Path, origin: &str, ref_name: &str) -> anyhow::Result<()> {
+    let args = git_clone_arg_list(origin, ref_name);
+    let status = Command::new("git")
+        .args(&args)
+        .arg(staging)
         .status()
         .with_context(|| "failed to run git; is git.exe on PATH?")?;
     if !status.success() {
@@ -554,14 +565,19 @@ fn git_clone_to(staging: &Path, origin: &str, ref_name: &str) -> anyhow::Result<
 
 /// Fetch one exact commit without a branch clone: init + shallow
 /// `fetch origin <sha>` + checkout FETCH_HEAD. Works on GitHub (allows
-/// fetching reachable SHAs) and local repositories.
+/// fetching reachable SHAs) and local repositories. Mirror insteadOf
+/// config rides along (§14.8): every subcommand gets the same `-c` keys —
+/// insteadOf only affects URL resolution at fetch time, so `remote add`
+/// keeps storing the canonical origin.
 fn git_fetch_commit_to(staging: &Path, origin: &str, commit: &str) -> anyhow::Result<()> {
+    let mirror_args = super::mirrors::git_clone_args(origin);
     let run = |args: &[&str]| -> anyhow::Result<()> {
         let status = Command::new("git")
             .arg("-C")
             .arg(staging)
             .arg("-c")
             .arg("core.autocrlf=false")
+            .args(&mirror_args)
             .args(args)
             .status()
             .with_context(|| "failed to run git; is git.exe on PATH?")?;
@@ -1494,6 +1510,66 @@ mod tests {
         assert!(!removed.exists());
         assert!(read_source_registry().is_empty());
         assert!(source_theme_entries().is_empty());
+
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    /// §14.8 iron invariant, git side: a configured insteadOf mirror adds
+    /// `-c url.<mirror>.insteadOf=https://github.com/` to every clone /
+    /// fetch-by-sha invocation while the origin argument stays canonical
+    /// (the registry keeps GitHub URLs; the mirror is transport-only).
+    /// Exercised on the pure arg builder — the observable contract git
+    /// receives; `git_fetch_commit_to` splices the very same
+    /// `mirrors::git_clone_args(origin)` result into its subcommands.
+    #[test]
+    fn git_clone_args_carry_instead_of_mirror_for_github_origins_only() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let temp = unique_temp_dir("mirror-args");
+        let config = temp.join("mirrors.toml");
+        fs::write(
+            &config,
+            concat!(
+                "schema = \"niubash:mirrors@0.1.0\"\n",
+                "active = \"custom\"\n",
+                "\n[github]\n",
+                "git_instead_of = \"https://git.example.com/github.com\"\n",
+            ),
+        )
+        .unwrap();
+        let _guard = EnvVarGuard::set("NIU_MIRRORS", &config);
+
+        let origin = "https://github.com/ohmybash/oh-my-bash.git";
+        let args = git_clone_arg_list(origin, "HEAD");
+        let expected_pair = [
+            "-c",
+            "url.https://git.example.com/github.com.insteadOf=https://github.com/",
+        ];
+        assert!(
+            args.windows(2).any(|window| window == expected_pair),
+            "clone args missing insteadOf pair: {args:?}"
+        );
+        // The origin handed to `git clone` is still the canonical URL —
+        // git does the rewrite, the recorded origin never changes.
+        assert_eq!(args.last().map(String::as_str), Some(origin));
+        assert!(args.contains(&"clone".to_string()));
+
+        // Without a mirror config the args carry no insteadOf keys.
+        let _guard = EnvVarGuard::set("NIU_MIRRORS", &temp.join("absent.toml"));
+        let args = git_clone_arg_list(origin, "v1");
+        assert!(
+            !args.iter().any(|arg| arg.contains("insteadOf")),
+            "unexpected insteadOf without a mirror: {args:?}"
+        );
+        assert!(args.contains(&"--branch".to_string()));
+        assert!(args.contains(&"v1".to_string()));
+
+        // Local (non-GitHub) origins never get mirror config.
+        let _guard = EnvVarGuard::set("NIU_MIRRORS", &config);
+        let args = git_clone_arg_list("D:/repo/local-origin", LOCAL_ORIGIN_REF);
+        assert!(
+            !args.iter().any(|arg| arg.contains("insteadOf")),
+            "local origin must not be mirrored: {args:?}"
+        );
 
         let _ = fs::remove_dir_all(&temp);
     }

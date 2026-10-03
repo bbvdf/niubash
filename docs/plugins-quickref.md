@@ -41,6 +41,7 @@ oh-my-niu-ecosystem.md` §14.6. All verbs: `niu plugin --help`.
 | `restore [<id>]` / `rollback <id>` / `clean` | Lockfile verbs | 0 |
 | `discover` | Read-only overview | 0 |
 | `source <sub>` | Full source protocol (add/trust/sign/verify/remove/update/rollback/list) | — |
+| `mirror <sub>` | Transport mirroring: `list`, `set <url\|none>`, `test` | non-zero on garbage URL |
 
 ## Sync row actions
 
@@ -76,6 +77,16 @@ dropped, tree kept), `degraded` (tree missing → `niu plugin restore`),
 8. **Engine zero plugin special-cases**: rubash source contains no plugin
    dispatch (comments citing ecosystem scripts as regression provenance
    only; audited read-only 2026-10-02).
+9. **Mirrors are transport-only (§14.8)**: `~/.niubash/mirrors.toml`
+   (`NIU_MIRRORS`) rewrites `https://github.com/` download requests
+   (`[github] prefix`, `[github.releases] prefix` override) and injects
+   `git -c url.<base>.insteadOf` for clone/fetch; spec/registry/tool
+   records keep canonical URLs; missing/malformed/unknown config degrades
+   to direct; no auto-select (doctor probes 3s and suggests only); zero
+   bundled mirror list (community services are comments in the generated
+   file). Pinned by plugins::mirrors unit tests, sources.rs
+   `git_clone_args_carry_instead_of_mirror_for_github_origins_only`,
+   tests/plugin_mirrors.rs.
 
 ## Spec schema (`niubash:plugin-spec@0.1.0`)
 
@@ -98,4 +109,5 @@ tree kept.
 ## Env
 
 `NIU_PLUGIN_SPEC` (spec path), `NIU_PLUGIN_SOURCES_ROOT` (install root),
-`NIU_PLUGIN_BOOTSTRAP=off` (disable rc bootstrap line).
+`NIU_PLUGIN_BOOTSTRAP=off` (disable rc bootstrap line), `NIU_MIRRORS`
+(mirror config path, default `~/.niubash/mirrors.toml`).

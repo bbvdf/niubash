@@ -1,0 +1,179 @@
+//! Mirror pipeline CLI tests (design §14.8, wt49/bmirror): `niu plugin
+//! mirror set <url>` is the one-command configuration face — it validates
+//! and normalizes a pasted mirror URL, round-trips through
+//! `~/.niubash/mirrors.toml` (env-scoped for the test), and `mirror list`
+//! reports the active channels. The transport invariants themselves (prefix
+//! rewrite, release override, git insteadOf, canonical origins in records)
+//! are pinned in the `plugins::mirrors` unit tests and the sources.rs
+//! arg-builder test; here we pin the user-facing control surface.
+use std::fs;
+use std::path::PathBuf;
+use std::process::{Command, Output};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn niu_binary() -> PathBuf {
+    let p = PathBuf::from(env!("CARGO_BIN_EXE_niu"));
+    if p.exists() {
+        return p;
+    }
+    let mut fallback = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    fallback.push("target");
+    fallback.push("debug");
+    fallback.push(if cfg!(windows) { "niu.exe" } else { "niubash" });
+    fallback
+}
+
+fn run_niu_with_env(args: &[&str], envs: &[(&str, String)]) -> Output {
+    let mut command = Command::new(niu_binary());
+    command.args(args);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    command
+        .output()
+        .unwrap_or_else(|err| panic!("failed to run niu {args:?}: {err}"))
+}
+
+fn assert_success(output: &Output, context: &str) {
+    assert!(
+        output.status.success(),
+        "{context} failed with {}:\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn stdout_text(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn temp_dir(name: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("niubash-{name}-{}-{nanos}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// `set <url>` → normalized prefix on disk, `list` shows the channels,
+/// `set none` returns to direct while preserving the section for a
+/// one-line re-enable.
+#[test]
+fn mirror_set_url_roundtrip_and_disable() {
+    let home = temp_dir("mirror-cli");
+    let config = home.join("mirrors.toml");
+    let envs = [("NIU_MIRRORS", config.to_string_lossy().into_owned())];
+
+    // Direct by default.
+    let out = run_niu_with_env(&["plugin", "mirror", "list"], &envs);
+    assert_success(&out, "mirror list (default)");
+    let text = stdout_text(&out);
+    assert!(text.contains("direct connection"), "{text}");
+
+    // set normalizes the missing trailing slash.
+    let out = run_niu_with_env(
+        &["plugin", "mirror", "set", "https://mirror.example.com"],
+        &envs,
+    );
+    assert_success(&out, "mirror set url");
+    let text = stdout_text(&out);
+    assert!(text.contains("https://mirror.example.com/"), "{text}");
+
+    let written = fs::read_to_string(&config).unwrap();
+    assert!(written.contains("niubash:mirrors@0.1.0"));
+    assert!(written.contains("active = \"custom\""));
+    assert!(written.contains("prefix = \"https://mirror.example.com/\""));
+    // The community-service caveat ships in the file, not as a preset.
+    assert!(written.contains("UNSUPPORTED"));
+
+    // list reports the active channel.
+    let out = run_niu_with_env(&["plugin", "mirror", "list"], &envs);
+    assert_success(&out, "mirror list (custom)");
+    let text = stdout_text(&out);
+    assert!(text.contains("custom mirror active"), "{text}");
+    assert!(text.contains("https://mirror.example.com/"), "{text}");
+
+    // set none goes back to direct but keeps the section.
+    let out = run_niu_with_env(&["plugin", "mirror", "set", "none"], &envs);
+    assert_success(&out, "mirror set none");
+    let out = run_niu_with_env(&["plugin", "mirror", "list"], &envs);
+    assert_success(&out, "mirror list (none)");
+    let text = stdout_text(&out);
+    assert!(text.contains("direct connection"), "{text}");
+    let written = fs::read_to_string(&config).unwrap();
+    assert!(
+        written.contains("prefix = \"https://mirror.example.com/\""),
+        "custom section must survive set none:\n{written}"
+    );
+
+    let _ = fs::remove_dir_all(&home);
+}
+
+/// Garbage input is refused without touching an existing config, and the
+/// help surface exists (the documented gate for this lane).
+#[test]
+fn mirror_set_rejects_garbage_and_help_exists() {
+    let home = temp_dir("mirror-cli-reject");
+    let config = home.join("mirrors.toml");
+    let envs = [("NIU_MIRRORS", config.to_string_lossy().into_owned())];
+
+    let out = run_niu_with_env(&["plugin", "mirror", "set", "not a url"], &envs);
+    assert!(
+        !out.status.success(),
+        "garbage mirror url must be rejected: {}",
+        stdout_text(&out)
+    );
+    assert!(!config.exists(), "rejected set must not create the file");
+
+    let out = run_niu_with_env(&["plugin", "mirror", "--help"], &envs);
+    assert_success(&out, "mirror --help");
+    let text = stdout_text(&out);
+    for needed in ["set <mirror-url>", "set none", "test", "git_instead_of"] {
+        assert!(text.contains(needed), "help missing '{needed}':\n{text}");
+    }
+
+    let out = run_niu_with_env(&["plugin", "--help"], &envs);
+    assert_success(&out, "plugin --help");
+    let text = stdout_text(&out);
+    assert!(
+        text.contains("mirror <command>"),
+        "plugin help must list the mirror noun:\n{text}"
+    );
+
+    let _ = fs::remove_dir_all(&home);
+}
+
+/// A hand-edited config (git-only insteadOf mirror) is reported by `list`
+/// with its channel — the file is a first-class editing surface.
+#[test]
+fn mirror_list_reports_hand_edited_git_only_config() {
+    let home = temp_dir("mirror-cli-git");
+    let config = home.join("mirrors.toml");
+    fs::write(
+        &config,
+        concat!(
+            "schema = \"niubash:mirrors@0.1.0\"\n",
+            "active = \"custom\"\n",
+            "\n[github]\n",
+            "git_instead_of = \"https://git.example.com/github.com\"\n",
+        ),
+    )
+    .unwrap();
+    let envs = [("NIU_MIRRORS", config.to_string_lossy().into_owned())];
+
+    let out = run_niu_with_env(&["plugin", "mirror", "list"], &envs);
+    assert_success(&out, "mirror list (git-only)");
+    let text = stdout_text(&out);
+    assert!(text.contains("custom mirror active"), "{text}");
+    assert!(
+        text.contains("https://git.example.com/github.com"),
+        "{text}"
+    );
+    assert!(text.contains("insteadOf"), "{text}");
+
+    let _ = fs::remove_dir_all(&home);
+}

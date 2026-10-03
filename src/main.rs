@@ -1353,6 +1353,9 @@ fn run_plugin_command(args: &[String]) -> anyhow::Result<()> {
         // Download-driver tools (direct binaries): the install/remove
         // channel of `driver = "download"` recipes.
         "tool" | "tools" => run_plugin_tool_command(&args[3..]),
+        // Transport-layer mirroring (§14.8): a configurable URL-rewrite
+        // pipeline, not a curated source list.
+        "mirror" | "mirrors" => run_plugin_mirror_command(&args[3..]),
         // Menu-level UI (lazy view IA): sections by state, verbs from the
         // command table, actions through the same runtime calls.
         "ui" => niubash_runtime::plugins::ui::run_ui(),
@@ -2533,6 +2536,195 @@ fn print_plugin_tool_usage() {
     println!("  remove <id>            Remove a tool (PATH block, dir, record)");
 }
 
+/// `niu plugin mirror` — the China-network download/git mirroring control
+/// face (§14.8). The pipeline is configurable, not curated: the user pastes
+/// a mirror URL they trust, `set` makes every plugin download / git fetch
+/// go through it, and the lockfile keeps canonical GitHub origins.
+fn run_plugin_mirror_command(args: &[String]) -> anyhow::Result<()> {
+    use niubash_runtime::plugins::mirrors;
+    let Some(verb) = args.first() else {
+        print_plugin_mirror_usage();
+        return Ok(());
+    };
+    match verb.as_str() {
+        "-h" | "--help" | "help" => {
+            print_plugin_mirror_usage();
+            Ok(())
+        }
+        "list" | "show" => {
+            match mirrors::load_mirror_config() {
+                Err(err) => {
+                    println!(
+                        "{} mirrors.toml unreadable: {err}",
+                        niubash_runtime::text_style::yellow("!")
+                    );
+                    println!(
+                        "  fix or delete {} (downloads currently go direct)",
+                        mirrors::mirrors_path().display()
+                    );
+                }
+                Ok(_) => {
+                    let resolved = mirrors::resolve_active_mirror();
+                    if resolved.is_none() {
+                        println!(
+                            "{} direct connection (no mirror)",
+                            niubash_runtime::text_style::green("mirror:")
+                        );
+                    } else {
+                        println!(
+                            "{} custom mirror active",
+                            niubash_runtime::text_style::green("mirror:")
+                        );
+                        if let Some(prefix) = resolved.download_prefix.as_deref() {
+                            println!("  downloads   {prefix}<github-url>");
+                        }
+                        if let Some(prefix) = resolved.release_prefix.as_deref() {
+                            println!("  releases    {prefix}<github-url>");
+                        }
+                        if let Some(base) = resolved.git_instead_of_base.as_deref() {
+                            println!("  git         {base} (insteadOf https://github.com/)");
+                        }
+                        let unknown = mirrors::load_mirror_config()
+                            .ok()
+                            .flatten()
+                            .and_then(|config| config.active)
+                            .is_some_and(|active| active != "none" && active != "custom");
+                        if unknown {
+                            println!(
+                                "{} unknown 'active' value — degrading to direct",
+                                niubash_runtime::text_style::yellow("!")
+                            );
+                        }
+                    }
+                    println!("  config      {}", mirrors::mirrors_path().display());
+                }
+            }
+            println!();
+            println!("Set one with:    niu plugin mirror set <mirror-url>");
+            println!("Go direct with: niu plugin mirror set none");
+            Ok(())
+        }
+        "set" => {
+            let Some(target) = args.get(1) else {
+                anyhow::bail!("plugin mirror set requires a mirror url, or 'none' for direct")
+            };
+            if target == "none" {
+                mirrors::set_direct()?;
+                println!(
+                    "{} downloads and git fetches now go direct",
+                    niubash_runtime::text_style::green("Set:")
+                );
+                return Ok(());
+            }
+            let prefix = mirrors::set_custom_prefix(target)?;
+            println!(
+                "{} mirror {prefix}",
+                niubash_runtime::text_style::green("Set:")
+            );
+            println!("  GitHub downloads now request {prefix}<github-url>; git fetches use it too");
+            println!(
+                "  only when [github] git_instead_of is set (edit {}).",
+                mirrors::mirrors_path().display()
+            );
+            println!(
+                "  {}",
+                niubash_runtime::text_style::dim(
+                    "community mirrors may disappear at any time — verify with `niu plugin mirror test`"
+                )
+            );
+            Ok(())
+        }
+        "test" => {
+            let mirror = mirrors::resolve_active_mirror();
+            println!(
+                "{}",
+                niubash_runtime::text_style::bold("Mirror reachability")
+            );
+            let direct = probe_and_print("direct GitHub", "https://github.com/");
+            if let Some(url) = mirrors::mirror_probe_url(&mirror) {
+                probe_and_print(&format!("mirror ({})", mirror.name), &url);
+            } else if direct {
+                println!(
+                    "  {} no mirror configured — this is fine unless downloads stall",
+                    niubash_runtime::text_style::dim("note:")
+                );
+            } else {
+                println!(
+                    "  {} GitHub is unreachable from here — you may be behind a network",
+                    niubash_runtime::text_style::yellow("suggest:")
+                );
+                println!(
+                    "  {} that needs a mirror (e.g. mainland China). Configure one you trust:",
+                    niubash_runtime::text_style::yellow(" ")
+                );
+                println!("     niu plugin mirror set <mirror-url>");
+                println!(
+                    "     {}",
+                    niubash_runtime::text_style::dim(&format!(
+                        "then edit {} for git-only mirrors or release overrides",
+                        mirrors::mirrors_path().display()
+                    ))
+                );
+            }
+            Ok(())
+        }
+        unknown => anyhow::bail!("unknown plugin mirror subcommand '{unknown}'"),
+    }
+}
+
+/// Probe one URL with the shared 3s timeout and print the verdict. Returns
+/// whether it was reachable.
+fn probe_and_print(label: &str, url: &str) -> bool {
+    match niubash_runtime::plugins::mirrors::probe_reachability(
+        url,
+        niubash_runtime::plugins::mirrors::PROBE_TIMEOUT,
+    ) {
+        Ok(elapsed) => {
+            println!(
+                "  {} {:<24} {:>4} ms  {}",
+                niubash_runtime::text_style::green("ok"),
+                label,
+                elapsed.as_millis(),
+                niubash_runtime::text_style::dim(url)
+            );
+            true
+        }
+        Err(err) => {
+            println!(
+                "  {} {:<24}        {}",
+                niubash_runtime::text_style::red("xx"),
+                label,
+                niubash_runtime::text_style::dim(&err)
+            );
+            false
+        }
+    }
+}
+
+fn print_plugin_mirror_usage() {
+    println!("Usage:  niu plugin mirror <command>");
+    println!();
+    println!("Transport-layer mirroring for GitHub plugin downloads and git");
+    println!("fetches (the lockfile keeps canonical origins — mirrors only");
+    println!("affect the network request). Configure any mirror you trust;");
+    println!("community mirror services are unsupported and may disappear.");
+    println!();
+    println!("  list                    Show the active mirror and config path");
+    println!("  set <mirror-url>        Route GitHub downloads through a prefix");
+    println!("                          mirror (url gets a trailing '/' if missing)");
+    println!("  set none                Go back to direct connection");
+    println!("  test                    Probe GitHub (and the active mirror)");
+    println!();
+    println!("Config file (edit directly for git-only mirrors / release overrides):");
+    println!("  schema = \"niubash:mirrors@0.1.0\"");
+    println!("  active = \"custom\"");
+    println!("  [github]");
+    println!("  prefix = \"https://your-mirror.example.com/\"   # downloads");
+    println!("  git_instead_of = \"https://your-git-mirror/\"    # git clone/fetch");
+    println!("  [github.releases]");
+    println!("  prefix = \"https://your-release-mirror/\"         # release assets");
+}
+
 /// `niu plugin list [--json]` — sources, their assets, and activation
 /// state (the first-class inventory of the external ecosystem).
 fn run_plugin_list_command(args: &[String]) -> anyhow::Result<()> {
@@ -2843,6 +3035,8 @@ fn print_plugin_usage() {
     println!("  distro <command>         Collections: list, import <repo|path>,");
     println!("                           remove <name>, apply <name>");
     println!("  tool <command>           Downloaded binaries: list, remove <id>");
+    println!("  mirror <command>         Download/git mirroring: list,");
+    println!("                           set <url|none>, test");
     println!();
     println!("  source <command>         Full source protocol (add/trust/sign/");
     println!("                           verify/remove/update/rollback/list)");

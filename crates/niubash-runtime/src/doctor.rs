@@ -200,6 +200,60 @@ pub fn run_doctor() -> anyhow::Result<()> {
         }
     }
 
+    // ── Advisory: download/git mirroring (§14.8, China-network comfort) ──
+    // Probe only — the product never auto-switches a mirror; the user
+    // pastes the URL they trust (`niu plugin mirror set <url>`).
+    match crate::plugins::mirrors::load_mirror_config() {
+        Err(err) => {
+            writeln!(
+                out,
+                "  {warn} download mirror      {} unreadable ({err}) — downloads go direct",
+                crate::plugins::mirrors::mirrors_path().display()
+            )?;
+        }
+        Ok(_) => {
+            let mirror = crate::plugins::mirrors::resolve_active_mirror();
+            if !mirror.is_none() {
+                let channel = mirror
+                    .download_prefix
+                    .clone()
+                    .or(mirror.git_instead_of_base.clone())
+                    .unwrap_or_else(|| "(no rewrite channels set)".to_string());
+                writeln!(
+                    out,
+                    "  {info} download mirror      custom active ({channel}) — \
+                     `niu plugin mirror set none` to disable"
+                )?;
+            } else {
+                let reachable = crate::plugins::mirrors::probe_reachability(
+                    "https://github.com/",
+                    crate::plugins::mirrors::PROBE_TIMEOUT,
+                )
+                .is_ok();
+                if reachable {
+                    writeln!(out, "  {info} download mirror      direct GitHub reachable")?;
+                } else {
+                    writeln!(
+                        out,
+                        "  {warn} download mirror      GitHub unreachable — you may need a \
+                         mirror (e.g. mainland China)"
+                    )?;
+                    writeln!(
+                        out,
+                        "  {warn}                      configure one you trust: \
+                         `niu plugin mirror set <mirror-url>`"
+                    )?;
+                    writeln!(
+                        out,
+                        "  {warn}                      (edit {} for git-only \
+                         mirrors; no auto-switch)",
+                        crate::plugins::mirrors::mirrors_path().display()
+                    )?;
+                }
+            }
+        }
+    }
+
     if crate::setup_wizard::wizard_lang_is_chinese() {
         writeln!(
             out,

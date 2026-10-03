@@ -1135,3 +1135,120 @@ PROMPT_COMMAND 执行、PS1 认领/释放同步、PS0 渲染与标题解析（de
 框架退役，无运行时注册路径）。文档如实记录两件事：今天的 bash 原生钩子面
 （PROMPT_COMMAND/PS0/trap/PS1 认领），与"niu 原生命名钩子待外部生态模型
 owner 裁定"。
+
+### 14.8 管理器 bundle 裁定 + wpm 学习 + 镜像管道（2026-10-03，wt49/bmirror）
+
+Owner 四条输入（前三条 2026-10-03 布置，第四条同日追加调整）：
+
+1. "用 bundle 的形式提供 这样就不用下载那个插件管理器本身"——插件
+   管理器（含下载驱动）随产品 bundle 走；
+2. "wpm 有什么可以学习的地方"；
+3. "源/proxy 怎么让中国用户用的舒服 能不能复用别人的各种国内源的
+   下载渠道"；
+4. 追加："wpm 的源不稳定……我不知道怎么弄了反正"——**镜像源稳定性
+   不可依赖，做管道不做源**：用户自己知道去哪找能用的镜像 URL，
+   我们的工作是让贴进来就能用。
+
+#### 14.8.1 裁定 1 落地：管理器=产品 bundle 的一部分（现状即目标形态）
+
+现状审计：niubash 没有、也不需要"可下载的插件管理器"这个产物——
+管理器是编译进 `niubash-runtime` 的 `plugins` 模块（sources/download/
+recipes/spec/trust/mirrors/…），随 niu 安装包分发，用户零额外安装、
+零额外更新通道。**下载驱动（ureq/rustls 纯 Rust，owner 裁定
+2026-10-03）与管理器本体已经是 bundle 内置**，裁定与现状一致；本节
+做的是把它写成规范。
+
+与 niubash#145 退役的 bundle 的区别（防混淆）：#145 退役的是
+oh-my-niu 内置主题/插件**内容栈**（bundle 里装的是插件数据）；本裁定
+说的是**管理器本身**（bundle 里装的是管理代码）。前者退役、后者内置，
+两层并行不悖：内容一律走外部 GitHub 生态（§14.1 裁定 2），管理面是
+产品的一部分。
+
+载体控制（owner 问"用什么样的载体控制"）——控制面三层，版本随产品：
+
+| 层 | 载体 | 角色 |
+|---|---|---|
+| CLI 动词 | `niu plugin <verb>`（add/enable/sync/trust/mirror/…） | 糖 |
+| 声明式 spec | `~/.niubash/plugins.toml`（§14.6.3） | 唯一事实源 |
+| 锁 | `sources/registry.toml`（schema `@0.3.0`）+ `tools/registry.toml` | 装了什么（commit+checksum 钉） |
+
+产品版本=管理器版本：不设独立版本号、不设管理器自身的更新器（自更
+新走产品 `niu update` 通道，self_update.rs）。
+
+#### 14.8.2 wpm 学习点对照（读源码 `wpm.cpp`，4231 行，WinuxCmd 0.4.0）
+
+| wpm 机制 | 源码锚点 | niu 的采纳 |
+|---|---|---|
+| 四内置源（GitHub canonical / jsdelivr CDN / release-pinned / China mirror），region+priority 排序，`user_sources` 合并 | `kBuiltinIndex`（wpm.cpp:67）、`merged_sources`（:318） | **学习架构思想，不照搬实现**。wpm 必须选源是因为它拉自己的包索引（index.json 本身要选镜像）；niu 的生态源在 GitHub（owner/repo 直达），**没有"索引源"要选**，镜像纯粹是网络层优化。落地为镜像管道（14.8.3） |
+| auto 源选择：3s probe 最高优先源 → `stable_partition` cn 源前置；**排序不淘汰**（每个源失败仍被依次尝试） | `try_fetch_index`（wpm.cpp:2975-3034） | 学习"probe 只重排、永不拦截"原则；niu 形态=probe 只建议不自动切（owner 追加裁定） |
+| China mirror 实战：`gh.caomengxuan666.com` nginx cache proxy；artifact `urls` 数组 mirror 在前、GitHub origins 兜底 | `kBuiltinIndex` official-cn（:104-113）、`artifact_urls`（:1939） | 学习 URL 形状：prefix 式 `<mirror>/<完整 GitHub URL>` 是 ghproxy 类服务的通用形态；niu 落地为用户自填 prefix（`niu plugin mirror set <url>`），fallback 语义由"set none 一键回直连"承担 |
+| 双传输栈：WinHttp 主 + `URLDownloadToFileW`(urlmon) 兜底，进度条 | `http_get` / `with_urlmon_fallback`（wpm.cpp:811-876） | **不需要**：niu 下载驱动是纯 Rust ureq/rustls，跨平台无 Win32 兜底需求 |
+| `--proxy` + 归一化（剥 scheme/auth/path）+ env 链（WPM_\*_PROXY→HTTPS_PROXY→ALL_PROXY）+ NO_PROXY bypass + IE/WPAD 自动代理检测 | `normalize_proxy_server` 等（:1052-1230） | **不需要（现状够用）**：ureq 走标准 env 代理；显式 --proxy/WPAD 是 WinHttp 时代的包袱。未来用户报需求再议 |
+| `--from` manifest（文件/URL → `[packages]` 批装） | `install_from_manifest`（:2770） | **已有等价物且语义更纯**：`plugins.toml` 声明式多条目 + `sync`（spec 是事实源），加 `distro` 合集（LazyVim extras 形态） |
+| `--json` 机器可读输出 | 各 list 命令 | **部分已有**：`niu plugin list --json`；mirror 面单值配置、无脚本消费场景，暂不加 |
+| index 本地缓存（index.json + `last_success_source`）+ artifact 缓存（sha256 键命中免下） | `load_index` / `cached_artifact_is_valid`（:1663） | **已有更强等价**：recipes.toml 编译进二进制（零网络、零陈旧）；重装一致性由 checksum 校验承担 |
+| `probe_url` 轻量可达性：GET 收到响应头即断、3s、只影响排序 | `probe_url`（wpm.cpp:1516） | **采纳**：`niu plugin mirror test` 与 doctor 行（HEAD、3s；4xx/5xx 也算可达——服务器应答即证明网络路径，wpm 同义） |
+
+#### 14.8.3 镜像管道（核心实现）
+
+裁定链：§14.1-2"不 vendor，外部下载"（所有内容来自 GitHub）+
+"中国用户用的舒服"（复用国内镜像渠道）+"源不稳定"（管道化）。
+
+**模型**——`~/.niubash/mirrors.toml`（`NIU_MIRRORS` 可覆盖，测试/
+便携场景；schema `niubash:mirrors@0.1.0`）：
+
+```toml
+schema = "niubash:mirrors@0.1.0"
+active = "custom"          # "none"（默认直连）| "custom"
+
+[github]
+prefix = "https://your-mirror.example.com/"     # 前缀式（ghproxy 类）：
+                                                # 请求发 <prefix><完整 GitHub URL>
+git_instead_of = "https://your-git-mirror/"     # git 专用（gitclone 类）：
+                                                # git -c url.<base>.insteadOf=https://github.com/
+
+[github.releases]
+prefix = "https://your-release-mirror/"         # release 资产专用前缀（优先于 prefix）
+```
+
+**CLI**：`niu plugin mirror list | set <url|none> | test`。`set <url>`
+校验 https/http 前缀并归一化尾部斜杠（"贴进来就能用"）；`set none`
+回直连但保留 `[github]` 段（一行翻回）。社区镜像示例只以**注释**存在
+于生成的配置文件（"UNSUPPORTED and may disappear at any time —
+verify before use"），预置源数量为零。
+
+**管道接线（重写全部发生在传输层）**：
+
+| 通道 | 接线点 | 记录面（不动） |
+|---|---|---|
+| 工具/配方下载 | `plugins/download.rs http_get_bytes` 内部 rewrite | `ToolRecord.url` = canonical |
+| git clone / fetch-by-sha | `plugins/sources.rs git_clone_arg_list` + `git_fetch_commit_to` 注入 `-c url.<base>.insteadOf=…` | origin 参数与 registry = canonical |
+| 字体 | `fonts.rs download()`（curl 通道）rewrite | `NERD_FONTS_RELEASE` 常量 = canonical |
+| 自更新 | `self_update.rs download_asset` rewrite | `asset.browser_download_url` = canonical |
+| 探测 | doctor 行（active=none 时 probe GitHub 3s）+ `mirror test` | —— |
+
+**铁律不变量**：
+
+1. **重写只在传输层**：spec/registry/ToolRecord/recipes 里的 URL 一律
+   canonical GitHub——锁文件跨机跨网可移植；镜像装出的树与直连装出的
+   树逐字节等价（checksum 校验照常，**镜像不是信任信号**，trust 协议
+   不受影响）。
+2. **只重写 `https://github.com/` 前缀**（http、其他 host、本地路径、
+   `git@` SSH 直通）——镜像不得静默截获它不代理的流量。
+3. **降级纪律**：配置缺失/坏 TOML/未知 active → 传输层一律退直连
+   （镜像配置问题永不弄坏下载）；`mirror list` 与 doctor 显式报告
+   该状况。
+4. **无 auto-select**：probe 只建议（wpm 教训的正向面——它的 auto
+   也只重排不拦截），切不切、贴哪个 URL 是用户的决定。
+5. **预置源=0**（owner 追加裁定）：社区镜像服务的死活不是产品责任。
+
+**验收（全部为测试）**：`plugins/mirrors.rs` 单测 13 条（重写矩阵/
+release 覆盖/insteadOf 只对 GitHub origin/URL 归一化/probe 目标/
+缺档-坏档-未知名降级/set 往返与 custom 段保留）；`sources.rs`
+`git_clone_args_carry_instead_of_mirror_for_github_origins_only`
+（clone 参数携带 insteadOf 对、origin 仍 canonical、本地 origin 不
+镜像、无配置时零 insteadOf）；`tests/plugin_mirrors.rs` 二进制级 3
+条（set 归一化往返+list 报告+set none 保留段落/垃圾 URL 拒绝且不落
+盘/`mirror --help` 与 `plugin --help` 面）。真网络冒烟（设镜像后
+`niu font`/`plugin add` 走镜像 URL）按门禁为可选——传输层重写已被
+上述测试钉死，端到端网络属于环境验证。
