@@ -2,6 +2,29 @@
 
 All notable changes to Niubash are documented in this file.
 
+## [Unreleased]
+
+### Fixes
+
+- **Download driver refused verified Windows archives** (wt49/smokesweep,
+  found by the 1.3.0 smoke suite): recipes declare extension-less bins
+  (mason shape, `bins = ["fzf"]`) but Windows archives ship `fzf.exe`, so
+  `niu plugin recipe add fzf` failed with "declares bin 'fzf' but it is
+  not in the archive" after a successful sha256-pinned download. Bin
+  verification now resolves `<bin>.exe` on Windows (exact name preferred),
+  the tool registry records the resolved on-disk name, and a failed
+  install no longer leaves `.staging/<id>.unpacked` residue behind.
+  Audit ledger: `docs/download-surface-audit.md`.
+
+### Tests
+
+- **1.3.0 smoke suite** (wt49/smokesweep): `scripts/smoke-test-1.3.0.sh`
+  runs the release checklist end-to-end (install chain, download channel,
+  defaults-as-floor, setup preset, basics) against a sandboxed HOME with
+  timeout guards, network legs skippable; `tests/smoke_1_3_0.rs` is the
+  CI mirror with per-invocation deadlines and opt-in network legs
+  (`NIU_SMOKE_NETWORK=1`).
+
 ## [1.2.5] - 2026-10-02
 
 ### Fixes

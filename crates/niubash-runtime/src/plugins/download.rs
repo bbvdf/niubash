@@ -235,6 +235,48 @@ pub struct ToolInstall {
     pub pinned_checksum: bool,
 }
 
+/// Resolve one declared bin to the file actually present in the unpacked
+/// tree. Recipes declare bins without a platform extension (mason shape:
+/// `bins = ["fzf"]`), but Windows archives ship `fzf.exe`; the driver
+/// accepts either, preferring the exact name, and returns the on-disk
+/// relative path so the registry records reality (wt49/smokesweep: found
+/// by the 1.3.0 smoke on `niu plugin recipe add fzf`, which refused the
+/// verified archive because `fzf` was declared but `fzf.exe` shipped).
+fn resolve_bin(stage_dir: &Path, bin: &str) -> Option<String> {
+    let rel = bin.replace('\\', "/");
+    let direct = stage_dir.join(&rel);
+    if direct.is_file() {
+        return Some(rel);
+    }
+    if cfg!(windows) {
+        let exe = format!("{rel}.exe");
+        if stage_dir.join(&exe).is_file() {
+            return Some(exe);
+        }
+    }
+    None
+}
+
+/// Unpack `bytes` into `stage_dir`, then verify every declared bin resolves
+/// to a file in the tree; returns the resolved relative paths. Any failure
+/// must leave the caller's staging clean (handled by the caller).
+fn unpack_and_verify_bins(
+    asset: &DownloadAsset,
+    bytes: &[u8],
+    stage_dir: &Path,
+    id: &str,
+) -> anyhow::Result<Vec<PathBuf>> {
+    unpack_archive(asset.archive, bytes, stage_dir)?;
+    let mut bin_paths = Vec::new();
+    for bin in &asset.bins {
+        match resolve_bin(stage_dir, bin) {
+            Some(rel) => bin_paths.push(PathBuf::from(rel)),
+            None => bail!("recipe declares bin '{bin}' for {id} but it is not in the archive"),
+        }
+    }
+    Ok(bin_paths)
+}
+
 /// Install (or reinstall over) one executable tool. `bins` are paths inside
 /// the archive; missing ones are an error (mason fails the install when the
 /// declared bin is absent — same contract here).
@@ -243,12 +285,25 @@ pub fn install_executable(
     version: &str,
     asset: &DownloadAsset,
 ) -> anyhow::Result<ToolInstall> {
+    let bytes = http_get_bytes(&asset.url)?;
+    commit_install(id, version, asset, &bytes)
+}
+
+/// The install protocol after transport: checksum gate, staging unpack,
+/// bin verification, atomic commit, registry write. Split from
+/// [`install_executable`] so the staging discipline is testable without
+/// the network.
+fn commit_install(
+    id: &str,
+    version: &str,
+    asset: &DownloadAsset,
+    bytes: &[u8],
+) -> anyhow::Result<ToolInstall> {
     let root = tools_root();
     let staging = root.join(".staging");
     fs::create_dir_all(&staging)?;
 
-    let bytes = http_get_bytes(&asset.url)?;
-    let actual = sha256_hex(&bytes);
+    let actual = sha256_hex(bytes);
     let pinned = match &asset.sha256 {
         Some(pin) => {
             if !actual.eq_ignore_ascii_case(pin) {
@@ -266,18 +321,12 @@ pub fn install_executable(
     if stage_dir.exists() {
         fs::remove_dir_all(&stage_dir)?;
     }
-    unpack_archive(asset.archive, &bytes, &stage_dir)?;
-
-    // Verify the declared bins exist in the unpacked tree before committing.
-    let mut bin_paths = Vec::new();
-    for bin in &asset.bins {
-        let rel = bin.replace('\\', "/");
-        let path = stage_dir.join(&rel);
-        if !path.is_file() {
-            bail!("recipe declares bin '{bin}' for {id} but it is not in the archive");
-        }
-        bin_paths.push(PathBuf::from(&rel));
-    }
+    // Unpack and verify the declared bins as one fallible step: a failed
+    // install (bad archive, missing bin) leaves no staging residue, so the
+    // next attempt — or `tool list` — never observes half-installed state.
+    let bin_paths = unpack_and_verify_bins(asset, bytes, &stage_dir, id).inspect_err(|_| {
+        let _ = fs::remove_dir_all(&stage_dir);
+    })?;
 
     let dest = root.join(id);
     if dest.exists() {
@@ -293,7 +342,12 @@ pub fn install_executable(
         archive_sha256: actual,
         pinned,
         path: dest.clone(),
-        bins: asset.bins.clone(),
+        // The resolved on-disk names (`fzf.exe` on Windows for a declared
+        // `fzf`), so the registry and `tool list` show what actually shipped.
+        bins: bin_paths
+            .iter()
+            .map(|rel| rel.to_string_lossy().into_owned())
+            .collect(),
         installed_at: now_timestamp(),
     };
     let mut tools = read_tool_registry();
@@ -373,6 +427,11 @@ pub fn resolve_platform_asset(
 mod tests {
     use super::*;
 
+    /// Both env-override tests below mutate the process-global
+    /// `NIU_PLUGIN_TOOLS_ROOT`; cargo runs tests in parallel, so they take
+    /// this lock to stay serialized.
+    static TOOLS_ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn zip_bytes(names_and_contents: &[(&str, &[u8])]) -> Vec<u8> {
         let mut cursor = std::io::Cursor::new(Vec::new());
         {
@@ -409,6 +468,65 @@ mod tests {
         let dest = tempfile::tempdir().unwrap();
         unpack_archive(ArchiveKind::Zip, &bytes, dest.path()).unwrap();
         assert!(dest.path().join("bin").join("tool.exe").is_file());
+    }
+
+    /// wt49/smokesweep regression: recipes declare extension-less bins
+    /// (`bins = ["fzf"]`); Windows archives ship `fzf.exe`. The install
+    /// protocol must resolve the `.exe` (Windows only), record the resolved
+    /// name in the registry, and leave no staging residue when a declared
+    /// bin is genuinely missing (found by the 1.3.0 smoke on
+    /// `niu plugin recipe add fzf`, which refused the verified archive
+    /// because `fzf` was declared but `fzf.exe` shipped).
+    #[test]
+    fn extensionless_bin_resolves_windows_exe_and_cleans_staging() {
+        let _guard = TOOLS_ROOT_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::env::set_var("NIU_PLUGIN_TOOLS_ROOT", root.path());
+        let staging = root.path().join(".staging");
+
+        // Windows archive shape: fzf.exe at the root, bin declared as "fzf".
+        let payload: &[(&str, &[u8])] = if cfg!(windows) {
+            &[("fzf.exe", b"MZfake"), ("LICENSE", b"mit")]
+        } else {
+            &[("fzf", b"#!/bin/sh\n"), ("LICENSE", b"mit")]
+        };
+        let bytes = zip_bytes(payload);
+
+        // Failure leg: a declared bin present in no form. The install
+        // refuses AND removes its staging unpack dir (no residue).
+        let missing = DownloadAsset {
+            url: "https://example.invalid/missing.zip".into(),
+            archive: ArchiveKind::Zip,
+            sha256: None,
+            bins: vec!["nowhere".into()],
+        };
+        let err = commit_install("m", "1.0.0", &missing, &bytes)
+            .map(|install| install.record.bins)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("declares bin 'nowhere'"), "{err}");
+        assert!(
+            !staging.join("m.unpacked").exists(),
+            "failed install must not leave staging residue"
+        );
+
+        // Success leg: the extensionless declaration resolves to the
+        // platform's on-disk name, and the registry records it.
+        let asset = DownloadAsset {
+            url: "https://example.invalid/fzf.zip".into(),
+            archive: ArchiveKind::Zip,
+            sha256: None,
+            bins: vec!["fzf".into()],
+        };
+        let install = commit_install("f", "1.0.0", &asset, &bytes).unwrap();
+        let expected = if cfg!(windows) { "fzf.exe" } else { "fzf" };
+        assert_eq!(install.record.bins, vec![expected.to_string()]);
+        assert!(install.record.path.join(expected).is_file());
+        assert!(read_tool_registry()
+            .iter()
+            .any(|tool| tool.id == "f" && tool.bins == vec![expected.to_string()]));
+
+        std::env::remove_var("NIU_PLUGIN_TOOLS_ROOT");
     }
 
     #[test]
@@ -453,6 +571,7 @@ mod tests {
 
     #[test]
     fn tool_registry_roundtrip_in_tmp_root() {
+        let _guard = TOOLS_ROOT_LOCK.lock().unwrap();
         let root = tempfile::tempdir().unwrap();
         // SAFETY-free env override for the duration of the test.
         std::env::set_var("NIU_PLUGIN_TOOLS_ROOT", root.path());
