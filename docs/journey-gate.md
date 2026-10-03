@@ -1,0 +1,133 @@
+# The Golden User Journey Gate
+
+The owner's directive (2026-10-04, verbatim intent):
+
+> 你现在的测试逻辑完完全全不是按照用户使用来的!交互式你根本不测!…必须改革测试方式
+> ("Your current test logic is completely not how users use it! You don't
+> test interactive at all! … the testing method must be reformed.")
+
+The answer is this gate: **the owner's own transcripts become the automated
+release blocker.** `scripts/journey/golden-journey.py` walks the exact
+journey a real user walked on 2026-10-03/04 — not a synthetic shape — over
+a real ConPTY (pywinpty + pyte, the `scripts/smoke-wizard-journey.py`
+pattern), in a sandboxed HOME (`USERPROFILE` and `HOME` both overridden;
+`USERPROFILE` wins in this product, a known pitfall, so both point at the
+sandbox and the real `~/.niubash` is never touched).
+
+## The journey (J1–J6)
+
+| Step | The user's move | The gate asserts |
+| --- | --- | --- |
+| J1 fresh-install first contact | install, run `niu`, no `~/.niubash` anything | the v-banner + wizard appear: welcome block, environment panel, "No external themes installed yet" |
+| J2 wizard full run | collection **full** → Apply → watch the clones → **Trust now (现在信任)** → gallery → pick `powerline-multiline` | clone progress lines appear; the trust question appears; gallery lists >60 themes; `~/.niubashrc` written with the theme, `~/.niubash/plugins.toml` written, undo receipts listed on the finish screen; the REPL prompt is alive afterwards |
+| J3 activation | `source ~/.niubashrc` in the live session | ZERO syntax errors anywhere |
+| J4 new terminal ×3 | open three fresh `niu` sessions | no `Cloning into` (no re-downloads), no "not declared" nags, at most the documented per-source `awaiting-trust` notices, prompt renders |
+| J5 daily battery | `ls \| wc -l`, `echo hi \| cat -n`, `cd ~ && pwd`, `[[ a != b ]] && echo ok` | each produces output, not errors; prompt still alive after each |
+| J6 trust + activate bash-completion | `niu plugin trust bash-completion` → `source ~/.niubashrc` → new terminal | trust reports success; ZERO syntax errors — bash_completion included |
+
+Exit code `0` only if every assertion holds. The run writes:
+
+- `verdict.json` / `verdict.txt` — the per-step, per-assertion verdict;
+- `transcripts/*.txt` — full screen captures (scrollback included) at
+  every notable moment;
+- `run.json` + `sandbox-kept.txt` — where the sandbox lived (kept for
+  diagnosis when the gate is red, deleted when green).
+
+### Known-fails are told, not hidden
+
+The `KNOWN_FAILS` table at the top of the script registers failures with
+their owning ticket. A match still makes the gate **RED** — the gate's
+job is to tell the truth — but the verdict names the ticket so the red is
+*expected-red until that lane lands*, not a mystery. When the fix lands,
+the pattern simply stops matching and the gate goes green without edits.
+Currently registered:
+
+- `wt56-bash-completion-syntax` (lane wt56, alias family) — the
+  `bash_completion: line 1376: syntax error in conditional expression`
+  the owner hit on 2026-10-03; the gate observed it again on its first
+  full run at J6 (fresh terminal after `niu plugin trust
+  bash-completion`).
+- `bash-preexec-recipe-entry` (recipe seed) — the `full` collection's
+  bash-preexec recipe names entry `bash-preexec`, but upstream
+  rcaloras/bash-preexec ships `bash-preexec.sh`, so the apply reports
+  `1 entries failed`.
+
+Unregistered failures stay plain RED. A red gate blocks the release
+until each red is either fixed or registered — registering is labeling,
+never waiving.
+
+### Network reality
+
+The journey clones the real origins, so it inherits the network's truth:
+a flaky path to github.com (TLS handshake resets, `curl 56 schannel`)
+fails the gate honestly with the git error lines in the transcripts.
+That is not a product bug and not a waiver candidate — re-run the gate
+when the network recovers, exactly like a user would.
+
+## How to run locally
+
+```sh
+cargo build --release
+python scripts/journey/golden-journey.py target/release/niu.exe
+```
+
+Requirements: Windows (ConPTY), `python -m pip install pywinpty pyte`,
+git on PATH (the journey makes the same real clones the user's terminal
+did — no offline mirror, no seeded fixtures), `ls`/`cat` on PATH for the
+battery (WinuxCmd on a user machine; Git for Windows on a CI runner),
+network access to github.com.
+
+Options: `--artifacts DIR` (default
+`target/journey-results/<timestamp>`), `--keep-sandbox DIR` (create the
+sandbox under a directory you choose; it is kept on red, removed on
+green).
+
+## How the gate blocks release
+
+`.github/workflows/release.yml` has a `journey` job that runs on
+`windows-2025`: it resolves the release tag, **preserves the current
+`scripts/journey/` from master, checks out the tag's own source, builds
+`niu.exe` fresh inside the job** (stale-binary discipline — the artifact
+is never reused), installs `pywinpty`/`pyte`, and runs the journey. The
+`release` job declares `needs: [build-windows, journey]`, so no GitHub
+Release is published while the journey is red. The verdict and the full
+transcripts upload as the `journey-verdict` artifact (always, even on
+failure — 14-day retention) so a red gate can be diagnosed from the run
+page alone.
+
+The "preserve current gate, checkout old tag" step mirrors the packager
+preservation in `build-windows`: a `workflow_dispatch` release of an old
+tag must be gated by the *current* journey while building that tag's own
+source. (A genuinely old tag may lack strings the current gate waits for;
+the gate failing on an ancient tag is honest — release it only if you
+mean it.)
+
+## How to add a step
+
+A step is a **real user transcript, never a synthetic shape**:
+
+1. Record what the user actually did — the exact commands, the exact
+   menu answers, the exact terminal observations (screenshots/transcripts
+   beat memory; date them).
+2. Append a `J7`… block in `journey()` following the existing shape: one
+   `verdict.step(...)`, `step.check(...)` for every user-visible fact,
+   `verdict.capture(...)` at the moments a human would look at.
+3. Assert what the USER sees (screen text, files under the sandbox
+   `~/.niubash`), never internals. If the honest expectation is red
+   today, register a KNOWN-FAIL with the owning ticket instead of
+   weakening the assertion.
+4. Re-run the journey end-to-end and paste the verdict into the PR.
+
+If your step can be probed offline (no network, no ConPTY), it belongs in
+`scripts/smoke-wizard-journey.py` or the Rust tests instead — the golden
+journey is for exactly the interactive, online, whole-product class.
+
+## The standing rule
+
+**Every interactive-class fix ships with a journey step or an `-i` e2e
+test.** If a change touches the wizard, menus, prompt rendering, rc
+activation, trust flow, plugin sync startup behavior, or anything a user
+watches happen in a terminal, the PR carries either a new step in this
+journey or an interactive end-to-end test exercising the real flow.
+"Green on synthetic shapes" is not evidence for this class — that is the
+directive.

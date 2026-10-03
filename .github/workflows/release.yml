@@ -562,9 +562,84 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  journey:
+    name: golden user journey (release gate)
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Checkout rubash path dependency
+        run: git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/unixwin/rubash.git ../rubash
+
+      - name: Resolve release inputs
+        id: release
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ inputs.tag }}"
+          } else {
+            $tag = "${{ github.ref_name }}"
+          }
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Invalid release tag '$tag'"
+          }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      # Same discipline as the packager preservation in build-windows: a
+      # workflow_dispatch of an old tag must run the CURRENT journey gate
+      # (old tags predate it), against that tag's own source build.
+      - name: Preserve current journey gate
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path (Join-Path $env:RUNNER_TEMP "journey") | Out-Null
+          Copy-Item -Recurse -LiteralPath scripts/journey -Destination (Join-Path $env:RUNNER_TEMP "journey") -Force
+
+      - name: Checkout release tag
+        shell: pwsh
+        run: |
+          git fetch --tags --force
+          git checkout "${{ steps.release.outputs.tag }}"
+          New-Item -ItemType Directory -Force -Path scripts | Out-Null
+          Copy-Item -Recurse -Force (Join-Path $env:RUNNER_TEMP "journey") scripts/journey
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1.11
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Build niu from the tag's own source
+        run: cargo build --locked --release
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install journey dependencies
+        run: pip install pywinpty pyte
+
+      - name: Run the golden user journey
+        shell: pwsh
+        run: |
+          python scripts/journey/golden-journey.py `
+            (Resolve-Path target/release/niu.exe) `
+            --artifacts journey-artifacts
+
+      - name: Upload journey verdict + transcripts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: journey-verdict
+          path: journey-artifacts
+          if-no-files-found: error
+          retention-days: 14
+
   release:
     runs-on: ubuntu-latest
-    needs: [build-windows, build-linux, build-macos]
+    needs: [build-windows, build-linux, build-macos, journey]
     steps:
       - uses: actions/checkout@v4.2.2
 
