@@ -1,0 +1,15 @@
+# Repo-wide cargo configuration.
+#
+# Test threads: the suite mutates the process environment (wizard/plugin
+# state tests set HOME/USERPROFILE/NIU_PLUGIN_*; the embedded engine writes
+# process env for `export`/`unset`/`cd`). On Windows, concurrent
+# SetEnvironmentVariableW from one thread can make another thread's
+# GetEnvironmentVariableW observe a stale block — an env-guarded test then
+# reads the real profile instead of its sandbox (observed wt61/journeyfix,
+# 2026-10-04: `post_install_declined_trust_changes_nothing` saw
+# `NIU_PLUGIN_SOURCES_ROOT` vanish mid-test with no unlocked writer in the
+# crate; single-threaded runs are 100% green). libtest is therefore pinned
+# to one thread for every `cargo test` in this repo — local and CI alike.
+# Cost measured 2026-10-04: workspace tests 45s parallel -> 2m29s serial.
+[env]
+RUST_TEST_THREADS = "1"

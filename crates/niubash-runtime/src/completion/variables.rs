@@ -154,6 +154,11 @@ mod tests {
 
     #[test]
     fn test_get_environment_variables() {
+        // Mutates the process env: serialize with every other env-touching
+        // test (Windows env races — wt61).
+        let _env_lock = crate::test_support::PROCESS_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Inject a deterministic variable so this test does not depend on host env shape.
         std::env::set_var("NIU_TEST_ENV", "1");
         let vars = VariableCompleter::get_environment_variables();

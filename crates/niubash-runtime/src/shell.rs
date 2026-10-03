@@ -3974,6 +3974,9 @@ niu_git_comp() {
     #[cfg(windows)]
     #[test]
     fn installed_winuxcmd_root_maps_host_path_helpers() {
+        // Mutates the process env (NIU_ROOT): serialize with every other
+        // env-touching test (Windows env races — wt61).
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _root_guard = EnvVarGuard::set_value("NIU_ROOT", "");
         let root = unique_temp_dir("niubash-installed-root");
         let configured = root.join("root");
