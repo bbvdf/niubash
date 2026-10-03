@@ -1,0 +1,179 @@
+# Niubash Plugins Guide
+
+The plugin system treats the **external bash ecosystem as first-class
+content**: any sourceable bash — a known plugin manager (oh-my-bash,
+bash-it, bash-completion), a tree installed by bpkg, or an arbitrary wild
+repo / single-file plugin — installs on explicit command, earns activation
+only through a trust review, and loads through its **own** loader, never
+through a niubash re-implementation of it.
+
+The declarative spec `~/.niubash/plugins.toml` is the single source of
+truth for *what should be installed and enabled*. The CLI verbs are sugar
+over the spec; `niu plugin sync` reconciles the spec with the machine.
+
+## The three layers
+
+| Layer | What lives there | Example |
+|---|---|---|
+| Base (wild) | Any repo or file with sourceable `*.sh` / `*.bash` | `niu plugin add rcrowley/bash-preexec`, a gist-style `spark.bash` |
+| Managers | oh-my-bash, bash-it, bash-completion, bpkg trees | `niu plugin add oh-my-bash` |
+| Red lines | Engine has zero plugin special-cases; no shims | framework plugins fail *identically* to GNU bash when sourced bare |
+
+Wild sources are enumerated **honestly**: every `*.sh`/`*.bash` file is
+listed as a candidate with a tag (`script`, `fragment`,
+`installer/test-like — review before sourcing`, `bpkg script`). Nothing is
+hidden and niubash never guesses "the" entry — you pick files explicitly.
+Enabling a file adds one guarded line to the managed rc block:
+
+```sh
+if [ -r "${NIU_PLUGIN_SOURCES_ROOT:-$HOME/.niubash/sources}/<id>/<file>" ]; then
+  . "${NIU_PLUGIN_SOURCES_ROOT:-$HOME/.niubash/sources}/<id>/<file>"
+fi
+```
+
+This is byte-faithful to manually sourcing the file under GNU bash —
+including the errors a plugin produces when its framework is missing
+(§14.4, no shims; see *Troubleshooting*).
+
+## The spec: `~/.niubash/plugins.toml`
+
+```toml
+schema = "niubash:plugin-spec@0.1.0"
+
+[[sources]]
+target = "oh-my-bash"            # catalog id | owner/repo | git url | local path
+enable = ["git", "npm"]          # manager-native selection (OMB: plugins=() rc arrays)
+theme  = "agnoster"              # optional: OSH_THEME / BASH_IT_THEME; absent = unmanaged
+
+[[sources]]
+target = "rcrowley/bash-preexec" # wild file source: GitHub shorthand
+id     = "bash-preexec"          # bound automatically at first sync
+enable = ["bash-preexec.sh"]     # asset names are tree-relative paths
+```
+
+Fields:
+
+| Field | Meaning |
+|---|---|
+| `target` | The reproducible origin exactly as resolvable at sync time: catalog id, `owner/repo`, git url, or a local path. An explicit `--path`/`--url` at add time is stored as the target (a catalog id would otherwise re-resolve to the network URL). |
+| `id` | Source id. Managers: the manager id (one install per machine). Wild/bpkg: derived from the origin tail at first sync and written back. |
+| `kind` | Optional adapter pin (e.g. `bpkg` for an adopted tree): later syncs reinstall through that adapter and *refuse* if the tree stops matching its fingerprint. |
+| `ref` | Git ref for the first fetch only; later syncs never move the lockfile pin — `niu plugin update` does. |
+| `enable` | Enabled assets in the manager's own vocabulary: OMB rc arrays, bash-it `enabled/` entries, per-file source lines for wild/bpkg. |
+| `theme` | Theme pick. Absent means "unmanaged": a hand-set theme variable survives syncs. `theme = ''` explicitly clears it. |
+
+The spec declares *what should exist*; the registry
+(`~/.niubash/sources/registry.toml`, schema `@0.3.0`) locks *what exists*
+(commit + tree checksum pins) and remembers the last selection the spec
+materialized (`spec_enabled`/`spec_theme`). This is the same spec + lock
+pair lazy.nvim/vim-plug use.
+
+## Three ways to add a plugin
+
+| Command | Spec entry written | Notes |
+|---|---|---|
+| `niu plugin add oh-my-bash` | `target = "oh-my-bash"`, `id = "oh-my-bash"` | Catalog shorthand; installs from the official origin |
+| `niu plugin add rcrowley/bash-preexec` | `target = "rcrowley/bash-preexec"` | Wild source; id derived (`bash-preexec`) and bound at first sync |
+| `niu plugin add bpkg --path <dir>` | `target = "<dir>"`, `kind = "bpkg"` | Adopt a tree `bpkg install` already downloaded; per-package id; npm-shaped `package.json` is refused |
+
+Every `add` lands the source **untrusted**: nothing activates until you
+review and trust it. All three are one spec entry + one sync under the
+hood — you can equally hand-edit the spec and run `niu plugin sync`.
+
+## What `niu plugin sync` does
+
+`niu plugin sync` reconciles spec and machine (lazy.nvim `:Lazy sync`
+semantics):
+
+- **declared, not installed** → fetch through the add pipeline. The fetch
+  gate runs automatically; the **trust gate never does** — the source
+  lands untrusted and sync prints the exact `niu plugin trust <id>`.
+- **declared, installed, trusted** → the managed rc block / enabled tree
+  is (re)materialized **from the spec, idempotently**: an unchanged spec
+  produces a byte-identical rc.
+- **installed, untrusted** → reported as `awaiting-trust`.
+- **installed, not declared** → suggested for cleanup, never auto-deleted.
+  `niu plugin sync --prune` is the explicit confirm.
+
+`niu plugin sync --bootstrap` is the same reconciliation in its quiet
+startup form — wired into `~/.niubashrc` by the setup wizard as a single
+line, silent when everything is in sync. Disable it by setting
+`NIU_PLUGIN_BOOTSTRAP=off`. `niu doctor` carries an advisory line showing
+the spec reconciliation state (declared / missing / undeclared / no spec).
+
+### Merge semantics: spec vs your hand edits
+
+`sync` computes `prev` (the selection the spec last materialized — the
+spec-owned set only), reads the live block, and treats everything in the
+live block that is not in `prev` as **hand-added**:
+
+- the new materialized set is `next(spec) ∪ hand_added`;
+- entries the spec dropped (`prev − next`) are removed;
+- hand-added entries survive **every** sync — they are never absorbed
+  into the spec's own set, so a later spec change cannot remove what you
+  typed by hand (remove hand entries by editing the rc or via
+  `niu plugin disable`);
+- a theme: the spec's pick wins when declared; a spec that declares none
+  keeps the current (manual) theme.
+
+bash-it's `enabled/` directory is reconciled with the same rule.
+
+## The trust flow
+
+```text
+niu plugin add <target>      # installs untrusted (fetch gate)
+niu plugin trust <id>        # review output, then activate the source
+                             # (hash-lock tier: tree checksum pinned)
+niu plugin enable <id>[/<asset>]   # declare + materialize
+```
+
+- **Trust review** (`niu plugin trust`) shows origin, version, license and
+  the tree checksum before flipping the gate.
+- The default tier is a checksum lock. `niu plugin source sign <id>`
+  pins the tree with a local signature; updates then re-gate until
+  re-signed (`niu plugin source verify <id>` checks either tier).
+- Untrusted sources never contribute assets: `niu plugin list` hides them
+  and `enable` refuses.
+- Lockfile verbs: `update` moves the pin to the ref's tip, `restore`
+  rebuilds the tree from the pin, `rollback` returns to the previous
+  state, `clean` removes staging leftovers and orphaned trees.
+
+## Troubleshooting
+
+- **`_omb_module_require: command not found` when sourcing a plugin file
+  directly** — that is *correct* fidelity, not a bug: a framework plugin
+  (e.g. bashmarks) sourced without its manager produces exactly the error
+  GNU bash produces. Enable it through the manager
+  (`niu plugin enable oh-my-bash/bashmarks`) so the framework's own loader
+  provides the dependency. niubash deliberately ships no shim (§14.4).
+- **`source ... does not look like 'bpkg'`** — the adopted tree's manifest
+  does not match the bpkg fingerprint (a `bpkg.json`/`package.json` whose
+  `scripts` is an *array* of file paths). npm's object-shaped `scripts`
+  is rejected by design; adopt such trees as plain file sources instead
+  (drop the `bpkg` kind).
+- **`no supported plugin manager detected ... no sourceable *.sh/*.bash
+  files either`** — the repo has nothing niubash could honestly source.
+- **`installed but not declared in the spec`** — an imperative install
+  (`niu plugin source add`) with no spec entry; declare it or prune it
+  explicitly.
+- **`awaiting-trust` rows after sync** — sync never flips the trust gate;
+  run the printed `niu plugin trust <id>` after reviewing.
+- **`tree missing — repair with niu plugin restore <id>`** — the guarded
+  loader no-ops silently at startup (the native fallback chain stays
+  intact); restore rebuilds from the lockfile pin.
+- **wild source enable says `pick one`** — file sources never guess an
+  entry; `niu plugin list` shows every candidate with its tag, enable
+  with `niu plugin enable <id>/<relative/path>.sh`.
+
+## Environment overrides
+
+| Variable | Effect |
+|---|---|
+| `NIU_PLUGIN_SPEC` | Alternate spec file location |
+| `NIU_PLUGIN_SOURCES_ROOT` | Alternate install root (default `~/.niubash/sources`) |
+| `NIU_PLUGIN_BOOTSTRAP` | `off` disables the rc bootstrap line |
+
+Design references: `docs/planning/oh-my-niu-ecosystem.md` §14.6 (three
+layers, descriptor table, declarative spec), §14.4 (no shims). A compact
+machine-readable companion for agents lives in
+`docs/plugins-quickref.md`.

@@ -1,9 +1,15 @@
 //! Asset-level activation for trusted external sources — `niu plugin
 //! list/enable/disable` operating on the *real* manager assets
 //! (oh-my-bash themes/plugins/aliases/completions, bash-it components,
-//! bash-completion as a whole), each through the manager's own selection
-//! mechanism (§11: preserve the native layout; owner ruling 2026-10-02:
-//! the external ecosystem is the first-class content).
+//! bash-completion as a whole, and per-file sources for wild plugins and
+//! bpkg packages), each through the manager's own selection mechanism
+//! (§11: preserve the native layout; owner ruling 2026-10-02: the external
+//! ecosystem is the first-class content).
+//!
+//! Since §14.6.3 the CLI verbs are *sugar over the declarative spec*
+//! (`~/.niubash/plugins.toml`): `enable`/`disable` edit the spec and run
+//! the reconciler (`plugins::sync`), which materializes the managed blocks
+//! idempotently. The spec is the source of truth; the rc block is derived.
 //!
 //! Activation state lives where the manager itself looks for it:
 //!
@@ -16,11 +22,15 @@
 //!   the guarded loader live in the managed rc block.
 //! * bash-completion — one managed loader block; activation is
 //!   whole-source.
+//! * wild file sources / bpkg packages — one guarded `. <path>` line per
+//!   enabled file inside the managed block (§14.4: byte-faithful to
+//!   manually sourcing the file under GNU bash, missing functions and
+//!   all).
 //!
 //! Every block keeps the adapter's existence guard, so a missing tree is a
 //! silent no-op at startup (iron law 2: the fallback chain never breaks).
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -30,6 +40,7 @@ use super::sources::{
     adapter_for, list_sources, read_source_registry, SelectionModel, SourceAsset, SourceAssetKind,
     SourceRecord, SourceStatus,
 };
+use super::spec::{self, PluginSpec, SpecSource};
 use crate::path_utils::shell_home_dir;
 
 /// Marker pair wrapping one managed block in `~/.niubashrc`. Managed lines
@@ -80,7 +91,10 @@ pub struct ActivationOutcome {
 #[derive(Debug, Clone, Default)]
 struct BlockState {
     theme: Option<String>,
-    arrays: BTreeMap<&'static str, Vec<String>>,
+    arrays: BTreeSet<&'static str>,
+    array_items: Vec<(String, Vec<String>)>,
+    /// DirectFiles: tree-relative paths of enabled files.
+    files: Vec<String>,
 }
 
 fn shell_quote(value: &str) -> String {
@@ -90,14 +104,29 @@ fn shell_quote(value: &str) -> String {
 /// Parse a block body back into state. Only understands the lines this
 /// module writes (single-quoted words); anything unrecognized is ignored
 /// and will be re-rendered canonically on the next write.
-fn parse_block(body: &str, model: &SelectionModel) -> BlockState {
+fn parse_block(body: &str, model: &SelectionModel, record_id: &str) -> BlockState {
     const NO_ARRAYS: &[(&str, SourceAssetKind)] = &[];
     let (theme_var, arrays) = match model {
         SelectionModel::LoaderArrays { arrays, theme_var } => (Some(*theme_var), *arrays),
-        SelectionModel::EnabledDir { theme_var, .. } => (Some(*theme_var), NO_ARRAYS),
-        SelectionModel::WholeSource => (None, NO_ARRAYS),
+        SelectionModel::EnabledDir { theme_var } => (Some(*theme_var), NO_ARRAYS),
+        SelectionModel::WholeSource | SelectionModel::DirectFiles => (None, NO_ARRAYS),
     };
     let mut state = BlockState::default();
+    if let SelectionModel::DirectFiles = model {
+        let prefix =
+            format!(". \"${{NIU_PLUGIN_SOURCES_ROOT:-$HOME/.niubash/sources}}/{record_id}/");
+        for raw in body.lines() {
+            let line = raw.trim();
+            if let Some(rest) = line.strip_prefix(&prefix) {
+                if let Some(relative) = rest.strip_suffix('"') {
+                    if !relative.is_empty() && !state.files.iter().any(|f| f == relative) {
+                        state.files.push(relative.to_string());
+                    }
+                }
+            }
+        }
+        return state;
+    }
     for raw in body.lines() {
         let line = raw.trim();
         let Some((name, value)) = line.split_once('=') else {
@@ -112,7 +141,17 @@ fn parse_block(body: &str, model: &SelectionModel) -> BlockState {
             // Array assignment: plugins=('a' 'b')
             let items = split_quoted_words(inner);
             if let Some((var, _)) = arrays.iter().find(|(var, _)| *var == name) {
-                state.arrays.entry(var).or_default().extend(items);
+                match state
+                    .array_items
+                    .iter_mut()
+                    .find(|(existing, _)| existing == var)
+                {
+                    Some((_, list)) => list.extend(items),
+                    None => {
+                        state.arrays.insert(var);
+                        state.array_items.push((var.to_string(), items));
+                    }
+                }
             }
         } else if Some(name) == theme_var {
             // Theme assignment: OSH_THEME='name'
@@ -177,22 +216,27 @@ fn split_quoted_words(text: &str) -> Vec<String> {
     words
 }
 
-/// Render a managed block: theme line, selection arrays, then the
-/// adapter's guarded loader snippet, wrapped in markers.
+/// Render a managed block: theme line, selection arrays (or per-file
+/// guarded source lines for DirectFiles), then the adapter's guarded
+/// loader snippet, wrapped in markers.
 fn render_block(record: &SourceRecord, model: &SelectionModel, state: &BlockState) -> String {
     let adapter = adapter_for(&record.adapter).expect("adapter for a rendered block");
     let mut body = String::new();
     let theme_var = match model {
         SelectionModel::LoaderArrays { theme_var, .. } => Some(*theme_var),
-        SelectionModel::EnabledDir { theme_var, .. } => Some(*theme_var),
-        SelectionModel::WholeSource => None,
+        SelectionModel::EnabledDir { theme_var } => Some(*theme_var),
+        SelectionModel::WholeSource | SelectionModel::DirectFiles => None,
     };
     if let (Some(var), Some(theme)) = (theme_var, &state.theme) {
         body.push_str(&format!("{}={}\n", var, shell_quote(theme)));
     }
     if let SelectionModel::LoaderArrays { arrays, .. } = model {
         for (var, _) in arrays.iter() {
-            if let Some(items) = state.arrays.get(var) {
+            if let Some((_, items)) = state
+                .array_items
+                .iter()
+                .find(|(existing, _)| existing == var)
+            {
                 if !items.is_empty() {
                     let quoted: Vec<String> = items.iter().map(|i| shell_quote(i)).collect();
                     body.push_str(&format!("{}=({})\n", var, quoted.join(" ")));
@@ -200,7 +244,23 @@ fn render_block(record: &SourceRecord, model: &SelectionModel, state: &BlockStat
             }
         }
     }
-    body.push_str(&adapter.loader_snippet(record));
+    if let SelectionModel::DirectFiles = model {
+        let base = format!(
+            "${{NIU_PLUGIN_SOURCES_ROOT:-$HOME/.niubash/sources}}/{}",
+            record.id
+        );
+        let mut files = state.files.clone();
+        files.sort();
+        files.dedup();
+        for file in files {
+            let path = format!("{base}/{file}");
+            body.push_str(&format!("if [ -r \"{path}\" ]; then\n  . \"{path}\"\nfi\n"));
+        }
+    }
+    let loader = adapter.loader_snippet(record);
+    if !loader.is_empty() {
+        body.push_str(&loader);
+    }
     format!(
         "{}\n{}{}\n",
         begin_marker(&record.id),
@@ -213,6 +273,22 @@ fn render_block(record: &SourceRecord, model: &SelectionModel, state: &BlockStat
 fn read_managed_block(id: &str) -> Option<String> {
     let text = fs::read_to_string(rc_file()).ok()?;
     extract_block(&text, id)
+}
+
+/// Read one managed block *including* markers (for change detection).
+fn managed_block_text(id: &str) -> Option<String> {
+    let text = fs::read_to_string(rc_file()).ok()?;
+    let begin = begin_marker(id);
+    let end = end_marker(id);
+    let start = text.lines().position(|line| line.trim() == begin)?;
+    let stop = text
+        .lines()
+        .skip(start + 1)
+        .position(|line| line.trim() == end)?
+        + start
+        + 1;
+    let block: Vec<&str> = text.lines().skip(start).take(stop - start + 1).collect();
+    Some(block.join("\n") + "\n")
 }
 
 fn extract_block(text: &str, id: &str) -> Option<String> {
@@ -314,7 +390,9 @@ pub fn build_theme_block(source_id: &str, theme: &str) -> Option<String> {
     let model = adapter.selection_model();
     let state = BlockState {
         theme: Some(theme.to_string()),
-        arrays: BTreeMap::new(),
+        arrays: BTreeSet::new(),
+        array_items: Vec::new(),
+        files: Vec::new(),
     };
     Some(render_block(&record, &model, &state))
 }
@@ -392,6 +470,22 @@ fn tree_disable(record: &SourceRecord, asset: &SourceAsset) -> anyhow::Result<()
     Ok(())
 }
 
+/// Fully deactivate a source without touching the rest of its tree: the
+/// managed rc block goes, and for `enabled/` managers (bash-it) the tree
+/// entries go too. Used when the spec stops declaring a source it owned
+/// (§14.6.3: spec is the truth; the tree itself is only ever removed by
+/// `niu plugin source remove`).
+pub fn deactivate_block(record: &SourceRecord) {
+    let _ = remove_managed_block(&record.id);
+    if let Some(adapter) = adapter_for(&record.adapter) {
+        if let SelectionModel::EnabledDir { .. } = adapter.selection_model() {
+            for asset in adapter.list_assets(&record.path) {
+                let _ = tree_disable(record, &asset);
+            }
+        }
+    }
+}
+
 // ── Overview ─────────────────────────────────────────────────────────────────
 
 /// Compute `niu plugin list` rows: every registered source with its assets
@@ -420,7 +514,7 @@ pub fn asset_overview() -> Vec<SourceReport> {
         let block = read_managed_block(&record.id);
         let state = block
             .as_deref()
-            .map(|body| parse_block(body, &model))
+            .map(|body| parse_block(body, &model, &record.id))
             .unwrap_or_default();
         let assets = adapter
             .list_assets(&record.path)
@@ -447,21 +541,23 @@ fn asset_enabled(
 ) -> bool {
     match (model, asset.kind) {
         (SelectionModel::WholeSource, _) => false, // informational; whole-source activation
+        (SelectionModel::DirectFiles, _) => state.files.iter().any(|f| f == &asset.name),
         (_, SourceAssetKind::Theme) => state.theme.as_deref() == Some(asset.name.as_str()),
         (SelectionModel::EnabledDir { .. }, _) => !enabled_entries(record, asset).is_empty(),
         (SelectionModel::LoaderArrays { arrays, .. }, kind) => {
             arrays.iter().any(|(var, array_kind)| {
                 *array_kind == kind
                     && state
-                        .arrays
-                        .get(var)
-                        .is_some_and(|items| items.iter().any(|item| item == &asset.name))
+                        .array_items
+                        .iter()
+                        .find(|(existing, _)| existing == var)
+                        .is_some_and(|(_, items)| items.iter().any(|item| item == &asset.name))
             })
         }
     }
 }
 
-// ── Enable / disable ─────────────────────────────────────────────────────────
+// ── Enable / disable (spec sugar; §14.6.3) ───────────────────────────────────
 
 /// Resolve an enable/disable target: a source id (`oh-my-bash`), a
 /// qualified asset (`oh-my-bash/git`), or a bare asset name that must be
@@ -476,7 +572,8 @@ enum Target {
 
 fn resolve_target(name: &str) -> anyhow::Result<Target> {
     let records = read_source_registry();
-    // Qualified form: <source-id>/<asset-name>.
+    // Qualified form: <source-id>/<asset-name>. Asset names of file sources
+    // are tree-relative paths, so only the FIRST '/' splits the pair.
     if let Some((source_id, asset_name)) = name.split_once('/') {
         if let Some(record) = records.iter().find(|record| record.id == source_id) {
             if let Some(asset) = find_asset(record, asset_name) {
@@ -560,214 +657,496 @@ fn check_gate(target: Target, record: &SourceRecord) -> anyhow::Result<Target> {
     Ok(target)
 }
 
-/// `niu plugin enable <target>`: activate a source (managed loader block)
-/// or a single asset through its manager's own selection mechanism.
+/// The spec target a record is declared by (its recorded origin).
+fn spec_target_for_record(record: &SourceRecord) -> String {
+    record.url.clone()
+}
+
+/// Find or create the spec entry owning a record (matched by explicit id,
+/// catalog id, or recorded origin).
+fn upsert_spec_entry<'a>(spec: &'a mut PluginSpec, record: &SourceRecord) -> &'a mut SpecSource {
+    let id = record.id.clone();
+    if let Some(index) = spec.entry_index_for_id(&id) {
+        return &mut spec.sources[index];
+    }
+    if let Some(index) = spec
+        .sources
+        .iter()
+        .position(|source| source.target == record.url)
+    {
+        // Bind the derived id explicitly so future syncs match directly.
+        spec.sources[index].id = Some(id);
+        return &mut spec.sources[index];
+    }
+    spec.sources.push(SpecSource {
+        target: spec_target_for_record(record),
+        id: Some(id),
+        kind: None,
+        ref_name: None,
+        theme: None,
+        enable: Vec::new(),
+    });
+    let last = spec.sources.len() - 1;
+    &mut spec.sources[last]
+}
+
+/// Names currently enabled for a record (its live selection: rc block
+/// arrays / files, or bash-it enabled/ entries), used when adopting an
+/// existing imperative install into the spec.
+fn current_selection(record: &SourceRecord, model: &SelectionModel) -> Vec<String> {
+    let Some(adapter) = adapter_for(&record.adapter) else {
+        return Vec::new();
+    };
+    match model {
+        SelectionModel::WholeSource => Vec::new(),
+        SelectionModel::EnabledDir { .. } => adapter
+            .list_assets(&record.path)
+            .into_iter()
+            .filter(|asset| !enabled_entries(record, asset).is_empty())
+            .map(|asset| asset.name)
+            .collect(),
+        SelectionModel::LoaderArrays { .. } | SelectionModel::DirectFiles => {
+            let Some(body) = read_managed_block(&record.id) else {
+                return Vec::new();
+            };
+            let state = parse_block(&body, model, &record.id);
+            let mut names: Vec<String> = state
+                .array_items
+                .iter()
+                .flat_map(|(_, items)| items.iter().cloned())
+                .collect();
+            names.extend(state.files);
+            names
+        }
+    }
+}
+
+fn current_theme(record: &SourceRecord, model: &SelectionModel) -> Option<String> {
+    read_managed_block(&record.id)
+        .as_deref()
+        .map(|body| parse_block(body, model, &record.id).theme)
+        .unwrap_or(None)
+}
+
+/// `niu plugin enable <target>` — spec sugar (§14.6.3): declare the source
+/// and/or asset in `~/.niubash/plugins.toml`, then sync, which materializes
+/// the manager's own selection mechanism (rc arrays, enabled/ entries, or
+/// guarded per-file source lines).
 pub fn enable(name: &str) -> anyhow::Result<ActivationOutcome> {
     let target = resolve_target(name)?;
-    match target {
+    let mut spec = spec::load_spec()?.unwrap_or_default();
+    let (_record, summary) = match target {
         Target::Source(record) => {
             let adapter = adapter_for(&record.adapter)
                 .ok_or_else(|| anyhow!("unknown adapter '{}'", record.adapter))?;
             let model = adapter.selection_model();
-            // Preserve any existing selection (theme/arrays) in the block.
-            let state = read_managed_block(&record.id)
-                .as_deref()
-                .map(|body| parse_block(body, &model))
-                .unwrap_or_default();
-            let block = render_block(&record, &model, &state);
-            let rc = write_managed_block(&record.id, &block)?;
-            Ok(ActivationOutcome {
-                summary: format!(
-                    "source '{}' activated — guarded loader added to {}",
+            if let SelectionModel::DirectFiles = model {
+                // Honest presentation (§14.6.1): no guessed "unique entry"
+                // for wild file sources — list the candidates.
+                let candidates: Vec<String> = adapter
+                    .list_assets(&record.path)
+                    .into_iter()
+                    .map(|a| a.name)
+                    .collect();
+                bail!(
+                    "source '{}' sources files individually — no guessed entry; pick one (`niu plugin list`): {}",
                     record.id,
-                    rc.display()
+                    candidates.join(", ")
+                );
+            }
+            let entry = upsert_spec_entry(&mut spec, &record);
+            if !matches!(model, SelectionModel::WholeSource) {
+                // Adopt the live selection so the spec describes reality.
+                let selection = current_selection(&record, &model);
+                for item in selection {
+                    if !entry.enable.contains(&item) {
+                        entry.enable.push(item);
+                    }
+                }
+                if entry.theme.is_none() {
+                    entry.theme = current_theme(&record, &model);
+                }
+            }
+            (
+                record.clone(),
+                format!(
+                    "source '{}' declared in the spec and activated through its own loader",
+                    record.id
                 ),
-                undo: format!("niu plugin disable {}", record.id),
-            })
+            )
         }
         Target::Asset { record, asset } => {
             let adapter = adapter_for(&record.adapter)
                 .ok_or_else(|| anyhow!("unknown adapter '{}'", record.adapter))?;
             let model = adapter.selection_model();
-            match (&model, asset.kind) {
-                (SelectionModel::WholeSource, _) => bail!(
+            if let SelectionModel::WholeSource = model {
+                bail!(
                     "'{}' activates as a whole source; run `niu plugin enable {}` instead",
                     record.id,
                     record.id
-                ),
-                (model, SourceAssetKind::Theme) => {
-                    let theme_var = match model {
-                        SelectionModel::LoaderArrays { theme_var, .. }
-                        | SelectionModel::EnabledDir { theme_var, .. } => *theme_var,
-                        SelectionModel::WholeSource => unreachable!(),
-                    };
-                    let state = current_state(&record, &model);
-                    let mut state = state;
-                    state.theme = Some(asset.name.clone());
-                    let block = render_block(&record, &model, &state);
-                    let rc = write_managed_block(&record.id, &block)?;
-                    Ok(ActivationOutcome {
-                        summary: format!(
-                            "theme '{}' ({}) enabled via {} in {}",
-                            asset.name,
-                            record.id,
-                            theme_var,
-                            rc.display()
-                        ),
-                        undo: format!("niu plugin disable {}", asset.name),
-                    })
+                );
+            }
+            let entry = upsert_spec_entry(&mut spec, &record);
+            if asset.kind == SourceAssetKind::Theme {
+                entry.theme = Some(asset.name.clone());
+                (
+                    record.clone(),
+                    format!(
+                        "theme '{}' ({}) declared in the spec; synced to the manager's theme variable",
+                        asset.name, record.id
+                    ),
+                )
+            } else {
+                if !entry.enable.contains(&asset.name) {
+                    entry.enable.push(asset.name.clone());
                 }
-                (SelectionModel::EnabledDir { .. }, _) => {
-                    tree_enable(&record, &asset)?;
-                    // The loader block must exist for the entry to load.
-                    ensure_block(&record, &model)?;
-                    Ok(ActivationOutcome {
-                        summary: format!(
-                            "'{}' ({}) enabled — {} now loads it",
-                            asset.name, record.id, record.id
-                        ),
-                        undo: format!("niu plugin disable {}", asset.name),
-                    })
-                }
-                (SelectionModel::LoaderArrays { arrays, .. }, kind) => {
-                    let var = arrays
-                        .iter()
-                        .find(|(_, array_kind)| *array_kind == kind)
-                        .map(|(var, _)| *var)
-                        .ok_or_else(|| {
-                            anyhow!(
-                                "adapter '{}' has no selection array for {kind:?}",
-                                record.adapter
-                            )
-                        })?;
-                    let mut state = current_state(&record, &model);
-                    let items = state.arrays.entry(var).or_default();
-                    if !items.iter().any(|item| item == &asset.name) {
-                        items.push(asset.name.clone());
-                    }
-                    let block = render_block(&record, &model, &state);
-                    let rc = write_managed_block(&record.id, &block)?;
-                    Ok(ActivationOutcome {
-                        summary: format!(
-                            "'{}' ({}) added to {}=() in {}",
-                            asset.name,
-                            record.id,
-                            var,
-                            rc.display()
-                        ),
-                        undo: format!("niu plugin disable {}", asset.name),
-                    })
-                }
+                (
+                    record.clone(),
+                    format!(
+                        "'{}' ({}) declared in the spec; synced through the manager's own selection",
+                        asset.name, record.id
+                    ),
+                )
             }
         }
-    }
+    };
+    spec::save_spec(&spec)?;
+    super::sync::sync_spec(super::sync::SyncOptions::default())?;
+    Ok(ActivationOutcome {
+        summary,
+        undo: format!("niu plugin disable {name}"),
+    })
 }
 
-/// `niu plugin disable <target>`: remove the source's loader block, or
-/// drop one asset from the selection (theme line, rc array, or bash-it
-/// enabled/ entry).
+/// `niu plugin disable <target>` — spec sugar: drop the asset (or the whole
+/// declaration) from the spec and sync; the managed rc block follows.
 pub fn disable(name: &str) -> anyhow::Result<ActivationOutcome> {
     let target = resolve_target(name)?;
-    match target {
+    let mut spec = spec::load_spec()?.unwrap_or_default();
+    let (record, removed_entry, summary) = match target {
         Target::Source(record) => {
-            if remove_managed_block(&record.id)? {
-                Ok(ActivationOutcome {
-                    summary: format!(
-                        "source '{}' deactivated — loader block removed from {} \
-                         (the installed tree is untouched)",
-                        record.id,
-                        rc_file().display()
-                    ),
-                    undo: format!("niu plugin enable {}", record.id),
-                })
-            } else {
-                Ok(ActivationOutcome {
-                    summary: format!(
-                        "source '{}' was not activated (no block to remove)",
-                        record.id
-                    ),
-                    undo: format!("niu plugin enable {}", record.id),
-                })
-            }
+            let index = spec.entry_index_for_id(&record.id);
+            (
+                record.clone(),
+                index.is_some(),
+                format!(
+                    "source '{}' deactivated — spec entry removed, loader block dropped \
+                     (tree kept; delete fully with `niu plugin source remove {}`)",
+                    record.id, record.id
+                ),
+            )
         }
         Target::Asset { record, asset } => {
-            let adapter = adapter_for(&record.adapter)
-                .ok_or_else(|| anyhow!("unknown adapter '{}'", record.adapter))?;
-            let model = adapter.selection_model();
-            match (&model, asset.kind) {
-                (SelectionModel::WholeSource, _) => bail!(
-                    "'{}' activates as a whole source; run `niu plugin disable {}` instead",
-                    record.id,
-                    record.id
-                ),
-                (_, SourceAssetKind::Theme) => {
-                    let mut state = current_state(&record, &model);
-                    state.theme = None;
-                    let block = render_block(&record, &model, &state);
-                    let rc = write_managed_block(&record.id, &block)?;
-                    Ok(ActivationOutcome {
-                        summary: format!(
-                            "theme '{}' disabled — prompt falls back to the niubash default ({})",
-                            asset.name,
-                            rc.display()
-                        ),
-                        undo: format!("niu plugin enable {}", asset.name),
-                    })
-                }
-                (SelectionModel::EnabledDir { .. }, _) => {
-                    tree_disable(&record, &asset)?;
-                    Ok(ActivationOutcome {
-                        summary: format!("'{}' ({}) disabled", asset.name, record.id),
-                        undo: format!("niu plugin enable {}", asset.name),
-                    })
-                }
-                (SelectionModel::LoaderArrays { arrays, .. }, kind) => {
-                    let var = arrays
-                        .iter()
-                        .find(|(_, array_kind)| *array_kind == kind)
-                        .map(|(var, _)| *var)
-                        .ok_or_else(|| {
-                            anyhow!(
-                                "adapter '{}' has no selection array for {kind:?}",
-                                record.adapter
-                            )
-                        })?;
-                    let mut state = current_state(&record, &model);
-                    if let Some(items) = state.arrays.get_mut(var) {
-                        items.retain(|item| item != &asset.name);
+            // Edit (or create) the entry so the spec describes the new
+            // state. Adopting the live selection first keeps everything the
+            // user already had; a theme disable pins `theme = ''` — the
+            // explicit "no theme" marker (absent would mean "unmanaged").
+            let entry = upsert_spec_entry(&mut spec, &record);
+            if asset.kind == SourceAssetKind::Theme {
+                entry.theme = Some(String::new());
+            } else {
+                let model = adapter_for(&record.adapter)
+                    .ok_or_else(|| anyhow!("unknown adapter '{}'", record.adapter))?
+                    .selection_model();
+                for item in current_selection(&record, &model) {
+                    if !entry.enable.contains(&item) {
+                        entry.enable.push(item);
                     }
-                    let block = render_block(&record, &model, &state);
-                    let rc = write_managed_block(&record.id, &block)?;
-                    Ok(ActivationOutcome {
-                        summary: format!(
-                            "'{}' ({}) removed from {}=() in {}",
-                            asset.name,
-                            record.id,
-                            var,
-                            rc.display()
-                        ),
-                        undo: format!("niu plugin enable {}", asset.name),
-                    })
                 }
+                entry.enable.retain(|item| item != &asset.name);
             }
+            (
+                record.clone(),
+                false,
+                format!(
+                    "'{}' ({}) removed from the spec and the selection",
+                    asset.name, record.id
+                ),
+            )
+        }
+    };
+    if let Some(index) = spec.entry_index_for_id(&record.id) {
+        if removed_entry {
+            spec.sources.remove(index);
         }
     }
+    spec::save_spec(&spec)?;
+    super::sync::sync_spec(super::sync::SyncOptions::default())?;
+    Ok(ActivationOutcome {
+        summary,
+        undo: format!("niu plugin enable {name}"),
+    })
 }
 
-fn current_state(record: &SourceRecord, model: &SelectionModel) -> BlockState {
-    read_managed_block(&record.id)
-        .as_deref()
-        .map(|body| parse_block(body, model))
-        .unwrap_or_default()
+// ── Spec materialization (the sync engine's writer) ──────────────────────────
+
+/// What one spec materialization pass did to a source.
+#[derive(Debug, Clone)]
+pub struct SpecMaterialization {
+    /// `activated` | `unchanged` | `deactivated` | `unsupported`
+    pub action: String,
+    pub detail: String,
+    /// New `spec_enabled` to persist (None = leave as-is).
+    pub spec_enabled: Option<Vec<String>>,
+    /// New `spec_theme` to persist.
+    pub spec_theme: Option<String>,
 }
 
-fn ensure_block(record: &SourceRecord, model: &SelectionModel) -> anyhow::Result<()> {
-    if read_managed_block(&record.id).is_none() {
-        let state = BlockState::default();
-        let block = render_block(record, model, &state);
-        write_managed_block(&record.id, &block)?;
+/// Materialize one spec entry onto a trusted, non-degraded record
+/// (§14.6.3 merge semantics): the spec's selection plus any hand-added
+/// entries wins; entries the spec dropped (in `prev` but not `next`) are
+/// removed; a hand-set theme survives a spec that does not declare one.
+pub fn materialize_spec_selection(
+    record: &SourceRecord,
+    entry: &SpecSource,
+) -> anyhow::Result<SpecMaterialization> {
+    let Some(adapter) = adapter_for(&record.adapter) else {
+        return Ok(SpecMaterialization {
+            action: "unsupported".to_string(),
+            detail: format!("unknown adapter '{}'", record.adapter),
+            spec_enabled: None,
+            spec_theme: None,
+        });
+    };
+    let model = adapter.selection_model();
+    let materialized = match model {
+        SelectionModel::WholeSource => {
+            // Declared = active; the guarded loader block is the unit.
+            let rendered = render_block(record, &model, &BlockState::default());
+            let unchanged = managed_block_text(&record.id).as_deref() == Some(rendered.as_str());
+            if !unchanged {
+                write_managed_block(&record.id, &rendered)?;
+            }
+            SpecMaterialization {
+                action: if unchanged { "unchanged" } else { "activated" }.to_string(),
+                detail: "whole-source guarded loader".to_string(),
+                spec_enabled: Some(Vec::new()),
+                spec_theme: None,
+            }
+        }
+        SelectionModel::DirectFiles => {
+            let assets = adapter.list_assets(&record.path);
+            let known: Vec<&str> = assets.iter().map(|a| a.name.as_str()).collect();
+            let (next, unknown) = filter_known(&entry.enable, &known);
+            let current = current_selection(record, &model);
+            let prev = record.spec_enabled.clone().unwrap_or_default();
+            let hand_added = diff_keep_order(&current, &prev);
+            let mut final_names = next.clone();
+            for hand in hand_added {
+                if !final_names.contains(&hand) {
+                    final_names.push(hand);
+                }
+            }
+            let state = BlockState {
+                theme: None,
+                arrays: BTreeSet::new(),
+                array_items: Vec::new(),
+                files: final_names.clone(),
+            };
+            let (action, detail) = apply_block(record, &model, &state, !final_names.is_empty())?;
+            SpecMaterialization {
+                action,
+                detail: detail_with_unknown(detail, &unknown),
+                // Persist the SPEC-OWNED selection only (`next`), not the
+                // union with hand-added entries: `prev` must stay "what the
+                // spec last materialized" so hand additions remain
+                // hand-added on every later sync. Absorbing them into prev
+                // would let the next spec-side removal kill them one sync
+                // after the user typed them.
+                spec_enabled: Some(next),
+                spec_theme: None,
+            }
+        }
+        SelectionModel::LoaderArrays { .. } | SelectionModel::EnabledDir { .. } => {
+            let assets = adapter.list_assets(&record.path);
+            let known: Vec<&str> = assets.iter().map(|a| a.name.as_str()).collect();
+            let (next, unknown) = filter_known(&entry.enable, &known);
+            let current = current_selection(record, &model);
+            let prev = record.spec_enabled.clone().unwrap_or_default();
+            let hand_added = diff_keep_order(&current, &prev);
+            let mut final_names = next.clone();
+            for hand in hand_added {
+                if !final_names.contains(&hand) {
+                    final_names.push(hand);
+                }
+            }
+            // Theme: the spec's pick wins (`theme = ''` explicitly clears
+            // it); a spec that declares none keeps the current one (manual
+            // choice preserved).
+            let theme = match entry.theme.as_deref() {
+                Some("") => None,
+                Some(theme) => Some(theme.to_string()),
+                None => current_theme(record, &model),
+            };
+            let (action, detail) = match model {
+                SelectionModel::EnabledDir { .. } => {
+                    // Reconcile the tree-side enabled/ entries first.
+                    let mut tree_changed = false;
+                    for asset in &assets {
+                        let wanted = final_names.contains(&asset.name);
+                        let is_on = !enabled_entries(record, asset).is_empty();
+                        if wanted && !is_on {
+                            tree_enable(record, asset)?;
+                            tree_changed = true;
+                        } else if !wanted && is_on {
+                            tree_disable(record, asset)?;
+                            tree_changed = true;
+                        }
+                    }
+                    let state = BlockState {
+                        theme: theme.clone(),
+                        arrays: BTreeSet::new(),
+                        array_items: Vec::new(),
+                        files: Vec::new(),
+                    };
+                    let active = !final_names.is_empty() || theme.is_some();
+                    let (block_action, detail) = apply_block(record, &model, &state, active)?;
+                    let action = if tree_changed
+                        || block_action == "activated"
+                        || block_action == "deactivated"
+                    {
+                        if final_names.is_empty() && theme.is_none() {
+                            "deactivated".to_string()
+                        } else {
+                            "activated".to_string()
+                        }
+                    } else {
+                        block_action
+                    };
+                    (action, detail)
+                }
+                _ => {
+                    // Start from the live parsed block so hand-added
+                    // entries (even ones niu cannot enumerate — the
+                    // manager may still know them) keep their exact
+                    // placement; then apply the spec's delta: drop what the
+                    // spec dropped, add what it declares.
+                    let mut state = read_managed_block(&record.id)
+                        .as_deref()
+                        .map(|body| parse_block(body, &model, &record.id))
+                        .unwrap_or_default();
+                    let dropped: Vec<String> = prev
+                        .iter()
+                        .filter(|name| !next.contains(name))
+                        .cloned()
+                        .collect();
+                    for (_, items) in state.array_items.iter_mut() {
+                        items.retain(|item| !dropped.contains(item));
+                    }
+                    if let SelectionModel::LoaderArrays { arrays, .. } = model {
+                        for name in &next {
+                            let already = state
+                                .array_items
+                                .iter()
+                                .any(|(_, items)| items.contains(name));
+                            if already {
+                                continue;
+                            }
+                            let kind = assets
+                                .iter()
+                                .find(|asset| &asset.name == name)
+                                .map(|asset| asset.kind);
+                            let var = arrays.iter().find_map(|(var, array_kind)| {
+                                (Some(*array_kind) == kind).then_some(*var)
+                            });
+                            if let Some(var) = var {
+                                match state
+                                    .array_items
+                                    .iter_mut()
+                                    .find(|(existing, _)| existing == var)
+                                {
+                                    Some((_, items)) => items.push(name.clone()),
+                                    None => {
+                                        state.arrays.insert(var);
+                                        state
+                                            .array_items
+                                            .push((var.to_string(), vec![name.clone()]));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    state.theme = theme.clone();
+                    let active = state.array_items.iter().any(|(_, items)| !items.is_empty())
+                        || theme.is_some();
+                    apply_block(record, &model, &state, active)?
+                }
+            };
+            SpecMaterialization {
+                action,
+                detail: detail_with_unknown(detail, &unknown),
+                // `prev` = the spec-owned selection only (see the
+                // DirectFiles branch): hand-added entries must stay
+                // hand-added across syncs, not become spec-removable one
+                // sync after they were written.
+                spec_enabled: Some(next),
+                spec_theme: entry.theme.clone().filter(|theme| !theme.is_empty()),
+            }
+        }
+    };
+    Ok(materialized)
+}
+
+/// Filter a name list against the known asset names; returns (known, unknown).
+fn filter_known(names: &[String], known: &[&str]) -> (Vec<String>, Vec<String>) {
+    let mut kept = Vec::new();
+    let mut unknown = Vec::new();
+    for name in names {
+        if known.contains(&name.as_str()) {
+            kept.push(name.clone());
+        } else {
+            unknown.push(name.clone());
+        }
     }
-    Ok(())
+    (kept, unknown)
+}
+
+/// `source − remove`, keeping source order.
+fn diff_keep_order(source: &[String], remove: &[String]) -> Vec<String> {
+    source
+        .iter()
+        .filter(|item| !remove.contains(item))
+        .cloned()
+        .collect()
+}
+
+fn detail_with_unknown(detail: String, unknown: &[String]) -> String {
+    if unknown.is_empty() {
+        detail
+    } else {
+        format!(
+            "{detail}; unknown spec asset(s) skipped: {}",
+            unknown.join(", ")
+        )
+    }
+}
+
+/// Write (or drop) the managed block for a state; reports what happened.
+/// `active` says whether anything is activated at all (selection non-empty
+/// or a theme set) — a loader-only block still counts as active for
+/// models whose selection lives outside the rc (bash-it enabled/ entries).
+fn apply_block(
+    record: &SourceRecord,
+    model: &SelectionModel,
+    state: &BlockState,
+    active: bool,
+) -> anyhow::Result<(String, String)> {
+    if !active {
+        let removed = remove_managed_block(&record.id)?;
+        return Ok((
+            if removed { "deactivated" } else { "unchanged" }.to_string(),
+            "nothing enabled — managed block dropped".to_string(),
+        ));
+    }
+    let rendered = render_block(record, model, state);
+    let unchanged = managed_block_text(&record.id).as_deref() == Some(rendered.as_str());
+    if !unchanged {
+        write_managed_block(&record.id, &rendered)?;
+    }
+    Ok((
+        if unchanged { "unchanged" } else { "activated" }.to_string(),
+        "selection materialized into the managed rc block".to_string(),
+    ))
 }
 
 #[cfg(test)]
@@ -876,15 +1255,30 @@ mod tests {
         fs::write(root.join("completions/git.bash"), "# git completion\n").unwrap();
     }
 
+    /// A wild single-file plugin tree (§14.6.1 base layer): a repo with one
+    /// sourceable file plus README/install noise.
+    fn write_wild_fixture(root: &Path) {
+        fs::create_dir_all(root.join("tests")).unwrap();
+        fs::write(
+            root.join("spark.bash"),
+            "#!/usr/bin/env bash\nspark() { echo 'spark!'; }\n",
+        )
+        .unwrap();
+        fs::write(root.join("README.md"), "# spark\n").unwrap();
+        fs::write(root.join("install.sh"), "echo installer\n").unwrap();
+        fs::write(root.join("tests/spark.bats"), "@test 'x' { :; }\n").unwrap();
+    }
+
     struct Sandbox {
         _home: EnvGuard,
         _userprofile: EnvGuard,
         _sources: EnvGuard,
+        _spec: EnvGuard,
         temp: PathBuf,
     }
 
-    /// Isolated HOME + sources root so enable/disable never touch the real
-    /// `~/.niubashrc` or `~/.niubash/sources`.
+    /// Isolated HOME + sources root + spec path so enable/disable/sync
+    /// never touch the real `~/.niubashrc`, sources, or spec.
     fn sandbox(label: &str) -> Sandbox {
         let temp = unique_temp_dir(label);
         let home = temp.join("home");
@@ -895,6 +1289,10 @@ mod tests {
             _sources: EnvGuard::set(
                 "NIU_PLUGIN_SOURCES_ROOT",
                 &temp.join("sources").to_string_lossy(),
+            ),
+            _spec: EnvGuard::set(
+                "NIU_PLUGIN_SPEC",
+                &home.join(".niubash/plugins.toml").to_string_lossy(),
             ),
             temp,
         }
@@ -907,12 +1305,21 @@ mod tests {
             ref_name: None,
             commit: None,
             expected_checksum: None,
+            id: None,
         })
         .expect("fixture add");
     }
 
+    fn trust(id: &str) {
+        super::super::sources::trust_source(id).expect("fixture trust");
+    }
+
     fn rc_text() -> String {
         fs::read_to_string(rc_file()).unwrap_or_default()
+    }
+
+    fn spec_text() -> String {
+        fs::read_to_string(spec::spec_path()).unwrap_or_default()
     }
 
     #[test]
@@ -927,17 +1334,10 @@ mod tests {
         let err = enable("oh-my-bash").expect_err("untrusted enable must fail");
         assert!(err.to_string().contains("untrusted"), "{err}");
         assert!(rc_text().is_empty(), "no rc written on refusal");
-        super::super::sources::trust_source("oh-my-bash").unwrap();
+        trust("oh-my-bash");
 
-        // Source-level enable writes the guarded loader block.
-        enable("oh-my-bash").expect("source enable");
-        let rc = rc_text();
-        assert!(rc.contains(">>> niu source oh-my-bash"), "{rc}");
-        assert!(rc.contains("if [ -r "), "{rc}");
-        assert!(rc.contains(". \"$OSH/oh-my-bash.sh\""), "{rc}");
-        assert!(!rc.contains("OSH_THEME"), "no theme forced: {rc}");
-
-        // Asset-level: plugin/alias/theme through the manager's own knobs.
+        // Asset-level sugar: each enable writes the spec entry, sync
+        // materializes the manager's own rc arrays.
         enable("git").expect("plugin enable");
         enable("cargo").expect("alias enable");
         enable("agnoster").expect("theme enable");
@@ -945,6 +1345,10 @@ mod tests {
         assert!(rc.contains("OSH_THEME='agnoster'"), "{rc}");
         assert!(rc.contains("plugins=('git')"), "{rc}");
         assert!(rc.contains("aliases=('cargo')"), "{rc}");
+        let spec = spec_text();
+        assert!(spec.contains("target = '"), "{spec}");
+        assert!(spec.contains("'git'"), "{spec}");
+        assert!(spec.contains("'agnoster'"), "{spec}");
 
         // Overview reflects the state.
         let overview = asset_overview();
@@ -965,7 +1369,7 @@ mod tests {
         assert!(is_on("cargo"));
         assert!(is_on("agnoster"));
 
-        // Disables reverse each piece; unknown names explain.
+        // Disables reverse each piece through the spec.
         disable("git").expect("plugin disable");
         let rc = rc_text();
         assert!(!rc.contains("plugins=('git')"), "{rc}");
@@ -978,10 +1382,12 @@ mod tests {
             "{err}"
         );
 
-        // Source disable removes the block, keeps the tree.
+        // Source disable removes the declaration and the block, keeps the tree.
+        enable("git").unwrap();
         disable("oh-my-bash").expect("source disable");
         let rc = rc_text();
         assert!(!rc.contains(">>> niu source oh-my-bash"), "{rc}");
+        assert!(!spec_text().contains("target ="), "{}", spec_text());
         assert!(
             box_.temp.join("sources/oh-my-bash/oh-my-bash.sh").is_file(),
             "tree untouched"
@@ -997,7 +1403,7 @@ mod tests {
         write_omb_fixture(&origin);
         let box_ = sandbox("omb-user-rc");
         install(&origin);
-        super::super::sources::trust_source("oh-my-bash").unwrap();
+        trust("oh-my-bash");
 
         // A user-written rc keeps its content through enable/disable.
         fs::write(
@@ -1005,13 +1411,12 @@ mod tests {
             "# my stuff\nexport MY_VAR=1\nalias ll='ls -la'\n",
         )
         .unwrap();
-        enable("oh-my-bash").unwrap();
         enable("git").unwrap();
         let rc = rc_text();
         assert!(rc.contains("# my stuff"), "{rc}");
         assert!(rc.contains("export MY_VAR=1"), "{rc}");
         assert!(rc.contains("alias ll='ls -la'"), "{rc}");
-        disable("oh-my-bash").unwrap();
+        disable("git").unwrap();
         let rc = rc_text();
         assert!(rc.contains("# my stuff"), "{rc}");
         assert!(rc.contains("export MY_VAR=1"), "{rc}");
@@ -1027,7 +1432,7 @@ mod tests {
         write_bash_it_fixture(&origin);
         let box_ = sandbox("bash-it");
         install(&origin);
-        super::super::sources::trust_source("bash-it").unwrap();
+        trust("bash-it");
 
         enable("base").expect("plugin enable");
         let entry = box_
@@ -1067,11 +1472,12 @@ mod tests {
         write_bash_completion_fixture(&origin);
         let box_ = sandbox("bash-completion");
         install(&origin);
-        super::super::sources::trust_source("bash-completion").unwrap();
+        trust("bash-completion");
 
         enable("bash-completion").expect("whole-source enable");
         let rc = rc_text();
         assert!(rc.contains(". \"${NIU_PLUGIN_SOURCES_ROOT:-$HOME/.niubash/sources}/bash-completion/bash_completion\""), "{rc}");
+        assert!(spec_text().contains("bash-completion"), "{}", spec_text());
         // Individual completions are informational only.
         let err = enable("git").expect_err("asset enable must explain");
         assert!(
@@ -1079,6 +1485,82 @@ mod tests {
             "{err}"
         );
         let _ = fs::remove_dir_all(&origin);
+        let _ = fs::remove_dir_all(&box_.temp);
+    }
+
+    #[test]
+    fn wild_file_source_enables_files_directly_and_honestly() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let holder = unique_temp_dir("wild-holder");
+        let origin = holder.join("sparkline");
+        fs::create_dir_all(&origin).unwrap();
+        write_wild_fixture(&origin);
+        let box_ = sandbox("wild");
+        install(&origin);
+        // The wild install derives its id from the origin tail.
+        let record = read_source_registry().into_iter().next().unwrap();
+        assert_eq!(record.id, "sparkline", "{}", record.id);
+        assert_eq!(record.adapter, "file");
+        trust(&record.id);
+
+        // Honest enumeration: every *.sh/*.bash is a candidate, tagged, in
+        // depth order; nothing is hidden and nothing is auto-picked.
+        let adapter = adapter_for("file").unwrap();
+        let assets = adapter.list_assets(&record.path);
+        let names: Vec<(String, Option<String>)> = assets
+            .iter()
+            .map(|a| (a.name.clone(), a.tag.clone()))
+            .collect();
+        assert!(
+            names.contains(&("spark.bash".to_string(), Some("script".to_string()))),
+            "{names:?}"
+        );
+        assert!(
+            names.contains(&(
+                "install.sh".to_string(),
+                Some("installer/test-like — review before sourcing".to_string())
+            )),
+            "install.sh must be listed with its tag, not hidden: {names:?}"
+        );
+        // Non-shell files under tests/ are not candidates at all.
+        assert!(
+            !names.iter().any(|(name, _)| name.starts_with("tests/")),
+            "only *.sh/*.bash are candidates: {names:?}"
+        );
+        // README never appears.
+        assert!(
+            !names.iter().any(|(name, _)| name.contains("README")),
+            "{names:?}"
+        );
+
+        // Source-level enable refuses to guess: it lists the candidates.
+        let err = enable(&record.id).expect_err("no unique entry for wild sources");
+        assert!(err.to_string().contains("pick one"), "{err}");
+        assert!(err.to_string().contains("spark.bash"), "{err}");
+        assert!(rc_text().is_empty(), "nothing sourced yet");
+
+        // Per-file enable writes one guarded source line.
+        enable("spark.bash").expect("file enable");
+        let rc = rc_text();
+        assert!(
+            rc.contains(&format!(
+                "if [ -r \"${{NIU_PLUGIN_SOURCES_ROOT:-$HOME/.niubash/sources}}/{}/spark.bash\" ]; then",
+                record.id
+            )),
+            "{rc}"
+        );
+        assert!(
+            rc.contains(&format!(
+                "  . \"${{NIU_PLUGIN_SOURCES_ROOT:-$HOME/.niubash/sources}}/{}/spark.bash\"",
+                record.id
+            )),
+            "{rc}"
+        );
+
+        // Disable drops the line (and the block with it).
+        disable("spark.bash").expect("file disable");
+        assert!(!rc_text().contains("spark.bash"), "{}", rc_text());
+        let _ = fs::remove_dir_all(&holder);
         let _ = fs::remove_dir_all(&box_.temp);
     }
 
@@ -1092,8 +1574,8 @@ mod tests {
         let box_ = sandbox("ambiguous");
         install(&omb);
         install(&bc);
-        super::super::sources::trust_source("oh-my-bash").unwrap();
-        super::super::sources::trust_source("bash-completion").unwrap();
+        trust("oh-my-bash");
+        trust("bash-completion");
 
         // "git" exists as an OMB plugin and a bash-completion completion.
         let err = enable("git").expect_err("ambiguity must be reported");
@@ -1114,7 +1596,7 @@ mod tests {
         write_omb_fixture(&origin);
         let box_ = sandbox("degraded");
         install(&origin);
-        super::super::sources::trust_source("oh-my-bash").unwrap();
+        trust("oh-my-bash");
         fs::remove_dir_all(box_.temp.join("sources/oh-my-bash")).unwrap();
 
         let err = enable("oh-my-bash").expect_err("degraded enable must fail");

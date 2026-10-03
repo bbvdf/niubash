@@ -17,5 +17,8 @@
 
 pub mod assets;
 pub mod catalog;
+pub mod descriptors;
 pub mod sources;
+pub mod spec;
+pub mod sync;
 pub mod trust;

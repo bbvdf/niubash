@@ -153,6 +153,53 @@ pub fn run_doctor() -> anyhow::Result<()> {
         }
     }
 
+    // ── Advisory: declarative spec reconciliation (§14.6.3) ──────────────
+    match crate::plugins::spec::load_spec() {
+        Err(err) => {
+            writeln!(out, "  {warn} plugin spec         unreadable: {err}")?;
+        }
+        Ok(None) => {
+            writeln!(
+                out,
+                "  {info} plugin spec         none — imperative mode \
+                 (`niu plugin add <target>` creates ~/.niubash/plugins.toml)"
+            )?;
+        }
+        Ok(Some(spec)) => {
+            let registry = crate::plugins::sources::read_source_registry();
+            let declared: Vec<String> = spec
+                .sources
+                .iter()
+                .filter_map(crate::plugins::spec::resolve_entry_id)
+                .collect();
+            let missing: Vec<String> = declared
+                .iter()
+                .filter(|id| !registry.iter().any(|record| record.id == **id))
+                .cloned()
+                .collect();
+            let missing: Vec<&str> = missing.iter().map(String::as_str).collect();
+            let undeclared = registry
+                .iter()
+                .filter(|record| !declared.contains(&record.id))
+                .count();
+            let missing_note = if missing.is_empty() {
+                String::new()
+            } else {
+                format!("; missing: {} (run `niu plugin sync`)", missing.join(", "))
+            };
+            let undeclared_note = if undeclared == 0 {
+                String::new()
+            } else {
+                format!("; {undeclared} installed-but-undeclared (`niu plugin sync` to review)")
+            };
+            writeln!(
+                out,
+                "  {info} plugin spec         {} declared source(s){missing_note}{undeclared_note}",
+                spec.sources.len()
+            )?;
+        }
+    }
+
     if crate::setup_wizard::wizard_lang_is_chinese() {
         writeln!(
             out,

@@ -982,3 +982,123 @@ distribution" 叙述同为历史态，属 roadmap 文档 owner 的改写面。�
 与 `docs/src/architecture.md` 对此的描述与打包现状一致——但产品侧插件动词已对
 bundle 体系硬 bail（niubash#145），"发布包仍在发退役栈" 需发布 lane owner 裁定
 （stop staging 或恢复消费路径），不属地板车道。
+
+### 14.6 任意插件面 + 管理器描述符化 + 声明式 spec（2026-10-03，wt46/anyplug）
+
+Owner 裁定（本节两条输入合并落地）：
+
+1. "可以 source 任意的插件，任意一个 bash 插件或者是管理器；注意不要破坏规则和
+   打地鼠"——插件面从"三个已知管理器"开放为**任意可 source 的 bash**；
+2. 声明式 spec（lazy.vim/vim-plug/zinit 家族）："添加插件应该用配置文件，不只是
+   CLI"——`~/.niubash/plugins.toml` 成为唯一事实源，CLI 降级为糖。
+
+#### 14.6.1 三层模型
+
+| 层 | 内容 | 不变量 |
+|---|---|---|
+| 基础层 | 任意野生 repo/单文件/gist 风 `.bash` 经 `niu plugin add <owner/repo\|url\|path>` 安装为 **file source** | 资产枚举**诚实呈现**：递归列出全部 `*.sh`/`*.bash` 候选（相对路径即资产名，`install.sh`/tests 等仅打标签不隐藏），**不猜唯一入口**；启用=逐文件守卫 source（`. <path>`），与 GNU bash 手动 source 逐字节保真（含缺函数报错保真，14.4 裁定同族）；无候选（纯 README repo）→ add 失败并如实说明 |
+| 管理层 | oh-my-bash / bash-it / bash-completion / **bpkg**（附录 A WP-S3 补齐） | catalog 只是预填简写，**不是准入白名单**——add 对任意 URL/路径开放；bpkg 按"驱动 bpkg 自己的 CLI"实现（`default_origin = None`：下载由 `bpkg install` 完成，niu 仅经 `--path` 接管已装树，指纹 `bpkg.json`/scripts-数组的 `package.json`）；管理器全部**描述符化**（14.6.2） |
+| 红线 | 引擎（rubash）零插件特判；无垫片（14.4） | 引擎源码不出现插件名/管理器名硬编码（审计只读）；框架资产只经原生 loader 启用，niu 不提供任何上游 lib 函数替身 |
+
+#### 14.6.2 描述符化（防打地鼠的正确不变量）
+
+现状审计结论：三个适配器是**手写 struct**（`sources.rs` OhMyBashAdapter 等），
+分发虽非 if-else 链（已是 trait 注册表），但新增管理器仍要写一整个 struct 的
+detect/list_assets/loader_snippet——每多一个管理器就多一份手写码，正是
+rubash#117 禁止的形状在管理器维度的重演。
+
+重构：**一张静态描述符表 + 一个解释器**。`ManagerDescriptor`（数据）声明：
+
+- 身份：id / display / license / origin（`None`=本地安装型）/ summary / install_note
+- 布局指纹 `LayoutFingerprint`：`Files{all, any}`（OMB=`oh-my-bash.sh`；
+  bash-it=`bash_it.sh`+`lib/composure.bash`；bash-completion=`bash_completion`）
+  或 `JsonScriptsArray`（bpkg 清单，npm 的 scripts 对象形状天然排除）
+- 资产枚举 `AssetPattern`：`DirNamed`（`themes/<n>/<n>.theme.sh`）与
+  `Flat{dir, in_available, suffixes, kind}`（aliases/available 等）——OMB、
+  bash-it、bash-completion 三家现有枚举全部可由这两条模式表达
+- 加载 `LoaderSpec`：root 变量 + 入口文件 + 附加导出（OMB 的
+  `NIU_THEME_SOURCE=omb` 即一行数据）
+- 选择 `SelectionSpec`：`LoaderArrays` / `EnabledDir` / `WholeSource` /
+  **`DirectFiles`**（新增：file source 与 bpkg 的逐文件启用）
+
+**新增管理器 = 表里加一行数据，零解释器代码。** bpkg 即以一行落表验证该不变量。
+loader 片段统一为一个模板（root 变量在存在性守卫内赋值+分隔符规范化+导出+source
+入口），OMB/bash-it 的旧模板语义等价（bash-it 原来在守卫外赋值 BASH_IT；统一后
+树缺失时变量不赋值，净效果相同——加载本就不发生）。
+
+file source（野生）与 bpkg 共用 `FileSource` 形状但**每安装一个 id**（管理器是
+一机一份，file source 一插件一份）：id = 显式 `--id`，否则 origin 尾段（repo/
+目录名）净化。`detect_manager_adapter`（仅管理器指纹，供 clean 判孤儿树）与
+`detect_adapter_for_install`（管理器→野生兜底，供 add）分开——**野生兜底绝不
+进 clean 的删除判定**，否则任何含 .sh 的用户目录都会被当孤儿删掉。
+
+#### 14.6.3 声明式 spec（`~/.niubash/plugins.toml`）
+
+```toml
+schema = "niubash:plugin-spec@0.1.0"
+
+[[sources]]
+target = "oh-my-bash"            # catalog id | owner/repo | git url | 本地路径
+enable = ["git", "npm"]          # 启用资产（OMB→plugins=() 数组；bash-it→enabled/）
+theme  = "agnoster"              # 可选主题（OSH_THEME / BASH_IT_THEME）
+
+[[sources]]
+target = "rcrowley/bash-preexec" # 野生 file source：GitHub 简写
+enable = ["bash-preexec.sh"]     # 资产名=树内相对路径
+```
+
+字段补全（实现定稿）：`id`（管理器=管理器 id；野生/bpkg 首次 sync 由 origin
+尾段派生并写回）；`kind`（适配器钉子：`niu plugin add bpkg --path <dir>` 采纳
+的树在后续 sync 强制走 bpkg 指纹，不匹配即拒绝，不静默降级为野生）；`ref`
+（仅首次拉取）。带 `--path`/`--url` 的 add 把显式 origin 原样存为 target——
+存 catalog id 会在 sync 时重解析成官方 GitHub URL 而不是用户的本地树。
+
+- **spec + registry 二件套**（= lazy-lock.json 同构）：spec 声明"要什么"，registry
+  （schema 升 `@0.3.0`，增 `spec_enabled`/`spec_theme` 记录上次同步物化态）钉
+  "装的是什么"（commit_sha + tree sha256）。事实源永远在 spec。
+- **`niu plugin sync` 重定义为对账物化**（:Lazy sync）：声明未装的 → add_source
+  流（fetch 闸自动走，**trust 闸永远不自动**——新装落地 untrusted 并打印
+  `niu plugin trust <id>` 指引）；已装已信的 → rc 托管块由 spec **幂等再生成**；
+  已装未信的 → 报"awaiting trust"；registry 里有而 spec 没声明的 → **只提示清理
+  不自动删**（`niu plugin sync --prune` 才删）。旧"全部刷到 ref tip"语义移交给
+  `niu plugin update`（无参=全部）。
+- **合并语义（OMB 数组 vs 用户手工项）**：记 `prev` = 上次同步**spec 自身**物化
+  的选择集（`spec_enabled` 只记 spec 声明过的已知资产，不含手工项——否则手工项
+  一次 sync 后被吸进 prev，之后的任何 spec 变更都会把它当"spec 删掉的"清掉，这是
+  实现期发现并钉死的存活语义 bug），`hand_added` = 当前块内条目 − prev。新物化集
+  = `next(spec) ∪ hand_added`；prev − next（spec 里删掉的）被移出块。主题：spec
+  声明则生效，未声明保持现状（手工选择不覆写）。bash-it 的 enabled/ 目录用同一
+  规则。**物化幂等**：spec 不变 → 块字节不变（钉死测试）。
+- **CLI 降级为糖**：`add` = 追加 spec 条目 + sync；`enable/disable <资产>` =
+  改 spec 的 enable/theme + sync；`disable <source>` = 删除 spec 条目 + sync
+  （托管块随之下线，树不动，tree 删除仍走 `source remove` 指引）。无 spec 时首次
+  CLI 操作自动建档；存量（registry-only）状态下 sync 只提示"未声明"并给出可粘贴
+  的 TOML 片段，不接管不清理。
+- **首启 bootstrap**：rc 一行引导 `niu plugin sync --bootstrap`（setup 向导写入；
+  `NIU_PLUGIN_BOOTSTRAP=off` 可关）。--bootstrap = 同一对账的安静形态：干净时零
+  输出即退，有缺装则装（trust 仍待人工）并打一行提示；doctor 加 spec 对账行
+  （reconciled / N missing / N undeclared / no spec）。
+
+#### 14.6.4 验收口径（实证集，全部真 clone）
+
+| 形状 | 期望 |
+|---|---|
+| 单文件野生插件（纯 bash） | add→trust→enable（挑文件）→引擎 source 生效；候选清单诚实（不猜入口） |
+| bash-preexec | 同上；preexec/precmd 钩子变量行为与 GNU bash 手动 source 一致 |
+| bpkg 包 | `bpkg install` 形态（deps/<name>）经 `--path` 接管；scripts 逐文件启用 |
+| bashmarks（依赖框架 lib） | 直接 source：缺 `_omb_module_require` 报错与 GNU bash 手动 source 同错同措辞（保真，不垫片）；经 OMB loader 数组启用：正常 |
+| 未知形状 repo（README+install.sh） | add 呈现候选（install.sh 带标签）绝不自动 source；纯无可 source 文件 → 明确失败 |
+
+验收落地（2026-10-02，wt46/anyplug）：五形状全部钉在
+`tests/plugin_anyplug.rs`（离线 fixture 复现各 repo 形状）+
+`tests/plugin_spec_sync.rs`（幂等再生成/合并语义/CLI-spec 一致性/清理提示）。
+bashmarks 负向保真为**字节级对比**：GNU bash（Git Bash）与 niubash 引擎对裸
+source 输出同一行诊断（`line N: _omb_module_require: command not found`）且同
+退出码（0——`.` 返回文件内最后一条命令的状态，即函数定义；这一点两壳一致，
+测试把退出码也钉死）。npm 形状（package.json scripts 为对象）加 kind 钉子时
+被拒（"does not look like 'bpkg'"），不带钉子时落入野生 file 层。
+
+门禁：cargo test --workspace --locked 全绿 + fmt；同步交付 `niu plugin --help`
+新动词、docs/plugins-guide.md（spec 入门/三种添加方式对照/trust 流程/排障）与
+AI 速查（docs/plugins-quickref.md）；引擎树零改动（审计只读：引擎源码对插件/
+管理器名仅出现在注释出处，无字符串字面量特判，2026-10-02 复核）。

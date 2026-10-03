@@ -1,0 +1,9 @@
+{
+  "name": "npm-shape",
+  "version": "1.0.0",
+  "description": "fixture npm package: scripts is an OBJECT, never a bpkg manifest",
+  "scripts": {
+    "test": "echo test",
+    "build": "echo build"
+  }
+}

@@ -1334,9 +1334,15 @@ fi
 unset __niubash_home_drive __niubash_home_rest
 
 {external_block}{alias_block}{theme_note}
+# Plugins are declared in ~/.niubash/plugins.toml (the spec); this one
+# bootstrap line reconciles on startup — quiet when everything is in sync
+# (set NIU_PLUGIN_BOOTSTRAP=off to skip).
+command -v niu >/dev/null 2>&1 && niu plugin sync --bootstrap
+
 # Change things later (nothing here runs automatically):
 #   niu plugin discover          see external sources & themes (read-only)
-#   niu plugin source add        install a plugin-manager source (untrusted)
+#   niu plugin add <target>      declare + install a plugin source
+#   niu plugin sync              reconcile ~/.niubash/plugins.toml with reality
 #   niu plugin source trust      review and activate a source's assets
 #   niu setup                    re-run this guide
 "#,
@@ -1588,9 +1594,12 @@ mod tests {
         assert!(rc.contains("NIU_PROMPT_CWD_STYLE='home'"), "{rc}");
         assert!(rc.contains("NIU_COMPLETION_STYLE='column'"), "{rc}");
         assert!(rc.contains("USERPROFILE"), "{rc}");
-        // The how-to-change-later hints are still there.
+        // The how-to-change-later hints are still there, plus the
+        // one-line spec bootstrap (§14.6.3).
         assert!(rc.contains("niu plugin discover"), "{rc}");
-        assert!(rc.contains("niu plugin source add"), "{rc}");
+        assert!(rc.contains("niu plugin add <target>"), "{rc}");
+        assert!(rc.contains("niu plugin sync"), "{rc}");
+        assert!(rc.contains("niu plugin sync --bootstrap"), "{rc}");
         assert!(rc.contains("niu setup"), "{rc}");
     }
 
@@ -1677,6 +1686,7 @@ mod tests {
             ref_name: None,
             commit: None,
             expected_checksum: None,
+            id: None,
         })
         .expect("fixture source add must succeed");
         crate::plugins::sources::trust_source("oh-my-bash").expect("fixture trust must succeed");

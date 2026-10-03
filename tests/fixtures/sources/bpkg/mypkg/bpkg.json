@@ -1,0 +1,9 @@
+{
+  "name": "mypkg",
+  "version": "1.0.0",
+  "description": "fixture bpkg package: scripts is an array of file paths",
+  "scripts": [
+    "bin/mypkg.sh",
+    "lib/helper.sh"
+  ]
+}
