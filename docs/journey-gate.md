@@ -64,6 +64,58 @@ fails the gate honestly with the git error lines in the transcripts.
 That is not a product bug and not a waiver candidate — re-run the gate
 when the network recovers, exactly like a user would.
 
+### Input delivery is verified, not assumed
+
+Slow runners widen every window where niu is still drawing and the
+ConPTY bridge eats keystrokes (release run 37149660449, J6: the typed
+`niu plugin trust bash-completion` never echoed and the 90s wait timed
+out on a screen still showing the startup banner; same family as wt61's
+"menus drain input queued while they draw"). Local diagnosis of the
+same gate added a second, sharper mode: **the themed prompt's
+per-second clock repaint eats the FIRST input byte typed after idle**
+(`echo` executes as `cho`, `niu` as `iu` — `niu: cho: command not
+found` in the transcripts). So the driver hardens INPUT DELIVERY only —
+four layers, all bounded:
+
+- **settle** — before every send (`send_line`, `answer`, the gallery
+  walk's first arrow), wait for a quiet screen (two polls, no new
+  bytes, no viewport change) or a prompt-ish last non-empty row, at
+  most 15s. A session that has never emitted a byte never counts as
+  settled (that window is the startup-drain loss itself).
+- **wake** — every REPL line is preceded by a kill-line (Ctrl-U): if
+  the editor is about to eat a first byte, it eats the Ctrl-U; if not,
+  the Ctrl-U harmlessly clears the input line. It also wipes any stale
+  input before a retry's retype, so a resend can never concatenate two
+  half-lines. Verified against the release build: Ctrl-U + line (and
+  double Ctrl-U + line) execute clean.
+- **confirm** — after a REPL line, wait up to 10s for its text to
+  appear NEW in the rendered viewport (the editor syntax-highlights
+  input, so the raw bytes never hold the word contiguously —
+  `\x1b[36mecho\x1b[0m ...` — and pre-existing screen text does not
+  count: the awaiting-trust nag literally spells the trust command);
+  after a menu key, wait up to 10s for ANY viewport change (menus read
+  raw and never echo); after Enter, wait 3s for the scroll.
+- **resend once** — when the signal never came, resend the keystroke
+  once and record it. This retries *delivery* only: the
+  expected-output waits (`wait_for`) never retry, so a real product
+  failure still fails the gate.
+
+The gallery's DOWN walk deliberately does not resend per key: repaint
+can lag a delivered arrow, a resent arrow can overshoot the verified
+row, and the walk already self-heals by polling the highlight.
+
+Every resend (and every give-up) lands in a `delivery` ledger inside
+`verdict.json` and as an `INPUT DELIVERY EVENTS` section in
+`verdict.txt` — session, kind (`send_line` / `send_line-enter` /
+`answer`), attempt, keys, reason (including the settle outcome), and
+action (`resend` / `undelivered`). The raw-stream and transcript
+artifact formats are unchanged.
+
+(The first-byte eat itself is product behavior worth its own ticket —
+a human typing at the themed prompt after a clock tick would lose their
+first keypress the same way. The gate works around it in the driver; it
+does not fix it.)
+
 ## How to run locally
 
 ```sh
