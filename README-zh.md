@@ -12,7 +12,7 @@
 
 [![niubash CI](https://github.com/unixwin/niubash/actions/workflows/ci.yml/badge.svg)](https://github.com/unixwin/niubash/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/unixwin/niubash)](https://github.com/unixwin/niubash/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64%20%7C%20ARM64-blue)](https://github.com/unixwin/niubash)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)](https://github.com/unixwin/niubash)
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange)](https://github.com/unixwin/niubash)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/unixwin/niubash)](https://github.com/unixwin/niubash/stargazers)
@@ -31,9 +31,9 @@ bash 兼容 shell：语言引擎（[rubash](https://github.com/unixwin/rubash)�
 它**不是 MSYS2、不是 Cygwin、不是 Git Bash、也不是 WSL**——整个技术栈里
 没有 POSIX 模拟层，没有 `cygwin1.dll` / `msys-2.0.dll`，也没有任何路径
 转换机器。niubash 启动的每个进程都是普通的 Win32 进程；niubash 本体
-**不依赖 Python、Node.js 或任何语言运行时**（setup 向导可以通过内置的
-插件下载驱动——纯 Rust、跨平台——可选安装一批现代 CLI 工具，那是便利，
-不是依赖）。
+**不依赖 Python、Node.js 或任何语言运行时**，也没有内置下载器：插件源
+只经 git clone 到位，可选的字体和 CLI 工具只是给你的包管理器的建议，
+绝不在后台偷偷下载。
 
 **没有路径转换层——这是设计，不是优化。** MSYS 系 shell 活在一个
 Unix 外观的世界里，必须靠启发式规则翻译成 Windows 路径；而永远猜对的
@@ -47,7 +47,7 @@ Windows 程序不可能因为 shell 遇到路径问题——因为根本不存�
 
 **亮点**
 
-- **真·Bash** — `if`、`for`、`case`、`$(...)`、管道、heredoc、函数、数组，全都在。引擎是 [rubash](https://github.com/unixwin/rubash)，GNU Bash 官方测试套件 **86/86 全绿**。
+- **真·Bash** — `if`、`for`、`case`、`$(...)`、管道、heredoc、函数、数组，全都在。引擎是 [rubash](https://github.com/unixwin/rubash)，以 GNU Bash 官方上游测试套件作门禁——实测记录见[对比](#对比)。
 - **Windows 路径，原生进原生出** — 任何方言进，Windows 原生出。没有 `/mnt/c`，没有 MSYS 式路径转换抽风。
 - **Unix 命令随包附赠** — `ls`、`cat`、`grep`、`find`、`sed`、`printf`…… 来自 winuxcmd 的真二进制，就在你的 PATH 上。什么都不用装。
 - **真 Windows 程序，直接调** — `git.exe`、`node.exe`、`python.exe`、`cargo.exe`。你的 PATH 就是你的 PATH。
@@ -83,47 +83,65 @@ Windows 程序不可能因为 shell 遇到路径问题——因为根本不存�
 去 [Releases](https://github.com/unixwin/niubash/releases) 下载
 `niubash-v*-win-*-setup.exe`，双击，完事——不需要管理员
 权限，它会配好你的 PATH 和 Windows Terminal 配置。嫌重？拿 `.zip` 便携版
-（首次启动自动激活 Unix 命令）。源码构建：
+（首次启动自动激活 Unix 命令）。
+
+Linux（x86_64、aarch64；glibc 2.35+）和 macOS（aarch64、x86_64）用户，
+去 [Releases](https://github.com/unixwin/niubash/releases) 页面拿便携
+tarball——`niubash-v*-linux-x86_64.tar.gz`、`niubash-v*-linux-aarch64.tar.gz`、
+`niubash-v*-macos-aarch64.tar.gz` 或 `niubash-v*-macos-x86_64.tar.gz`——
+解包后直接跑 `./niu`（使用系统原生命令，不捆绑任何东西）：
+
+```sh
+tar -xzf niubash-v*-linux-x86_64.tar.gz && niubash-v*-linux-x86_64/niu
+```
+
+每个发布产物在上传前都在其构建 OS 上过了烟测（[发布流水线](docs/release.md)）。
+
+源码构建：
 
 ```sh
 git clone https://github.com/unixwin/niubash.git && cd niubash
 cargo build --release && target\release\niu.exe
 ```
 
-要求：**Windows 10/11 x64 或 ARM64**，源码构建需 Rust 1.70+。
+要求：**Windows 10/11 x64 或 ARM64**、**Linux x86_64/aarch64（glibc
+2.35+）** 或 **macOS aarch64/x86_64**；源码构建需 Rust 1.70+。
 
 ## 配置
 
-配置只有一份：`~/.niubashrc`，纯 Bash 语法。主题、prompt、插件、环境变量、
-alias、函数都放这里：
+配置只有一份：`~/.niubashrc`，纯 Bash 语法。export、alias、函数都放
+这里；主题和插件来自外部生态（`niu plugin`）：
 
 ```bash
-NIU_THEME=p10-classic
-NIU_THEME_PLUGIN=theme-p10-classic
-NIU_PLUGINS=(prompt-core git common-aliases)
-export NIU_THEME NIU_THEME_PLUGIN
-
-# 官方插件发行版 oh-my-niu
-[ -f "$NIUBASH/oh-my-niu.niu" ] && . "$NIUBASH/oh-my-niu.niu"
+# 可选的"地板层"旋钮——只影响内置默认 prompt 和补全菜单；
+# 一旦启用外部主题，外部主题认领 PS1 并胜出。
+# NIU_PROMPT_CWD_STYLE='home'    # home | full | basename
+# NIU_COMPLETION_STYLE='column'  # ide | column | list | inline
 
 alias ll='ls -la'
 alias gst='git status'
 hello() { echo "hello from niu"; }
+
+# 主题/插件，由 rc 末尾的标记块管理：
+#   niu plugin add oh-my-bash && niu plugin trust oh-my-bash
+#   niu plugin enable oh-my-bash && niu plugin enable agnoster
 ```
 
 - **多 shell 共享历史** — `NIU_HISTORY_MODE` 三档可选：`shared`（默认）、`session`、`private`。
+- **一次性 init 文件** — `NIU_ENV=<file>`（或 bash 兼容的 `BASH_ENV`）在 `niu -c`、脚本、管道 stdin 之前只 source 这一个文件。默认不设，保证一次性执行足够快。
 - **保持最新** — `niu --self-update`（shell 内也可用 `self-update`）。
 
 ## 特性
 
-- **真·Bash 语义** — [rubash](https://github.com/unixwin/rubash) 引擎，GNU Bash 上游测试套件 **86/86 全绿**。
+- **真·Bash 语义** — [rubash](https://github.com/unixwin/rubash) 引擎以 GNU Bash 官方上游测试套件作门禁；带日期的实测记录见[对比](#对比)。
 - **原生路径契约** — 任何方言进，Windows 原生出。MSYS 式的路径转换抽风，这里不存在。
 - **Unix 命令真二进制** — winuxcmd 通过 PATH 命令链接注入，`ls`/`grep` 是真 Windows 进程，不是嵌在 shell 里的模拟。
 - **一个愿意天天看的 prompt** — 27 款主题（agnoster、spaceship、tokyonight、p10 家族……）、会"长牙"的 git 状态提示（staged / modified / untracked / ↑↓ / stash / 冲突）、语法高亮、自动建议、vi/emacs 双模式、Ctrl+R 历史搜索。
-- **带权限模型的插件系统** — 40+ 官方 pack（`git`、`docker`、`kubectl`、`npm`、`zoxide`、`direnv`、`fzf`、`thefuck`……），manifest 统一声明宿主权限，受审阅的 source pack 只能加载 bundle 内声明过的脚本。
+- **bash 插件生态，托管式** — oh-my-bash、bash-it、bash-completion 通过它们自己的原生 loader 运行（无垫片），由声明式 spec（`~/.niubash/plugins.toml`）+ `niu plugin sync` 对账、commit 锁定的 lockfile 驱动。任意 git URL 或本地路径也可以；每个源都要过显式信任门——`niu plugin enable` 会在你的 rc 里为每个源写入一个带守卫的标记块。
+- **零下载设计** — shell 本体除了 git clone 之外不下载任何东西：内置下载器已移除，可选字体和 CLI 工具只是给你的包管理器的建议，绝不在后台偷偷下载。
 - **补全系统** — shell 定义 + bash 补全脚本自动导入 + `cmd -h` 描述抓取 + 三级缓存。
 - **三种执行模式** — 交互 REPL；一次性命令执行（安静确定性，不加载 rc 和插件）；一次性 REPL 命令，加载完整启动状态后退出。
-- **自更新** — shell、命令层（`wpm update winuxcmd`）、插件包三条更新线各自独立。
+- **自更新** — shell（`niu --self-update`）、命令层（`wpm update winuxcmd`）、插件源（`niu plugin update`）三条更新线各自独立。
 
 ## 为什么不用 WSL
 
@@ -197,7 +215,7 @@ ParserError: TerminatorExpectedAtEndOfString   ["a b","","c\"d","e\\f","---"]
 | | niubash | brush |
 |---|---|---|
 | 路线 | Rust 重写 bash，Windows 原生 | Rust 重写 bash，跨平台 |
-| 兼容性验证 | 直接跑 **GNU Bash 官方上游测试套件**——门禁 86/86 全绿，全量 **83/83** 套件零差（输出逐字节一致） | 根本不跑 GNU 套件；验证靠自建 1700+ 用例语料、以 bash 为 oracle，约 125 个已知失败（[其官方参考](https://github.com/reubeno/brush/blob/main/docs/reference/compatibility.md)） |
+| 兼容性验证 | 直接跑 **GNU Bash 官方上游测试套件**——门禁 86/86 全绿，全量 **83/83** 套件零差（输出逐字节一致，2026-09-21 实测，见下文） | 根本不跑 GNU 套件；验证靠自建 1700+ 用例语料、以 bash 为 oracle，约 125 个已知失败（[其官方参考](https://github.com/reubeno/brush/blob/main/docs/reference/compatibility.md)） |
 
 **同一张考卷、同一个考官——实测，不是口称。** 我们把 GNU Bash 的 83
 个上游测试套件用同一套桥接 harness（[`run-83.sh`](https://github.com/unixwin/rubash/blob/master/tests/gnu-compat/run-83.sh)、

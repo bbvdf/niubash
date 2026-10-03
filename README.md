@@ -12,7 +12,7 @@
 
 [![niubash CI](https://github.com/unixwin/niubash/actions/workflows/ci.yml/badge.svg)](https://github.com/unixwin/niubash/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/unixwin/niubash)](https://github.com/unixwin/niubash/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64%20%7C%20ARM64-blue)](https://github.com/unixwin/niubash)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)](https://github.com/unixwin/niubash)
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange)](https://github.com/unixwin/niubash)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/unixwin/niubash)](https://github.com/unixwin/niubash/stargazers)
@@ -33,10 +33,10 @@ It is **not MSYS2, not Cygwin, not Git Bash, and not WSL** — there is no
 POSIX emulation layer, no `cygwin1.dll` / `msys-2.0.dll`, and no
 path-translation machinery anywhere in the stack. Every process niubash
 starts is an ordinary Win32 process, and niubash itself has **no runtime
-dependency on Python, Node.js, or any other language toolchain** (the setup
-wizard can optionally install modern CLI tools through the built-in plugin
-download driver — pure Rust, cross-platform — which is a convenience, never
-a dependency).
+dependency on Python, Node.js, or any other language toolchain** — nor any
+embedded downloader: plugin sources arrive by git clone only, and optional
+fonts and CLI tools are recommendations for your package manager, never
+background fetches.
 
 **There is no path-conversion layer — by design.** MSYS-family shells live
 in a Unix-looking world and must heuristically translate to Windows, and
@@ -52,7 +52,7 @@ there is no translation step left to get wrong.
 
 **Highlights**
 
-- **Real Bash** — `if`, `for`, `case`, `$(...)`, pipes, heredocs, functions, arrays. The [rubash](https://github.com/unixwin/rubash) engine passes **86/86** of GNU Bash's own test suite.
+- **Real Bash** — `if`, `for`, `case`, `$(...)`, pipes, heredocs, functions, arrays. The [rubash](https://github.com/unixwin/rubash) engine is gated on GNU Bash's own upstream test suite — the measured record is in [How it compares](#how-it-compares).
 - **Native Windows paths** — any dialect in, Windows-native out. No `/mnt/c`, no MSYS-style path roulette.
 - **Unix commands included** — `ls`, `cat`, `grep`, `find`, `sed`, `printf`, … are real winuxcmd binaries on your PATH. Nothing to install.
 - **Real Windows programs, direct** — `git.exe`, `node.exe`, `python.exe`, `cargo.exe`. Your PATH is your PATH.
@@ -92,9 +92,18 @@ portable? Take the `.zip` — the first launch self-activates the Unix
 commands.
 
 On Linux (x86_64, aarch64; glibc 2.35+) and macOS (aarch64, x86_64), grab
-the `niubash-v*-<os>-<arch>.tar.gz` portable tarball, untar, and run
-`./niu` — native system tools are used, nothing is bundled. Each release
-artifact is smoke-verified on its build OS before upload
+the portable tarball from the
+[Releases](https://github.com/unixwin/niubash/releases) page —
+`niubash-v*-linux-x86_64.tar.gz`, `niubash-v*-linux-aarch64.tar.gz`,
+`niubash-v*-macos-aarch64.tar.gz`, or `niubash-v*-macos-x86_64.tar.gz` —
+then untar and run `./niu` (native system tools are used, nothing is
+bundled):
+
+```sh
+tar -xzf niubash-v*-linux-x86_64.tar.gz && niubash-v*-linux-x86_64/niu
+```
+
+Each release artifact is smoke-verified on its build OS before upload
 ([release pipeline](docs/release.md)).
 
 From source:
@@ -135,11 +144,12 @@ hello() { echo "hello from niu"; }
 
 ## Features
 
-- **Real Bash semantics** — the [rubash](https://github.com/unixwin/rubash) engine passes **86/86** on GNU Bash's upstream test suite.
+- **Real Bash semantics** — the [rubash](https://github.com/unixwin/rubash) engine is gated on GNU Bash's own upstream test suite; the dated, measured record lives in [How it compares](#how-it-compares).
 - **Native path contract** — any dialect in, Windows-native out. MSYS-style path conversion roulette does not exist here.
 - **Unix commands as real binaries** — winuxcmd injects PATH command links; `ls`/`grep` are real Windows processes, not emulation inside the shell.
 - **A prompt floor plus any theme you like** — a fast built-in default prompt that yields the moment something claims `PS1`: enable oh-my-bash and its themes (agnoster, robbyrussell, ...) render through the bash-compatible channel, or drop in starship. Syntax highlighting, autosuggestions, vi/emacs modes, Ctrl+R history search.
-- **Plugins with a permission model** — external plugin-manager sources (oh-my-bash, bash-it, bash-completion in the curated catalog, or any git URL / local path) behind an explicit trust gate; `niu plugin enable` writes one guarded, marker-delimited loader block per source into your rc.
+- **The bash plugin ecosystem, managed** — oh-my-bash, bash-it, and bash-completion run through their own native loaders (no shims), driven by a declarative spec (`~/.niubash/plugins.toml`) with `niu plugin sync` reconciliation and a commit-pinned lockfile. Any git URL or local path works too, and every source sits behind an explicit trust gate — `niu plugin enable` writes one guarded, marker-delimited loader block per source into your rc.
+- **Zero-download by design** — the shell itself fetches nothing except git clones: the embedded downloader is gone, and optional fonts and CLI tools are recommendations for your package manager, never background fetches.
 - **Completions** — shell definitions + automatic bash completion import + `cmd -h` description sniffing + three-level caching.
 - **Three execution modes** — interactive REPL; one-shot command execution (quiet and deterministic, loads no rc and no plugins); a one-shot REPL command that loads full startup state then exits.
 - **Self-update** — the shell (`niu --self-update`), the command layer (`wpm update winuxcmd`), and plugin sources (`niu plugin update`) each update on their own plane.
@@ -236,7 +246,7 @@ category. The head-to-head:
 | | niubash | brush |
 |---|---|---|
 | Approach | bash re-implemented in Rust, Windows-native | bash re-implemented in Rust, cross-platform |
-| Compatibility gate | GNU Bash's **own upstream test suite** — 86/86 gate green, **83/83** full suites byte-identical (zero-diff) | GNU's suite is not run at all; validation is a self-built 1700+ case corpus with bash as oracle, ~125 known failures ([their reference](https://github.com/reubeno/brush/blob/main/docs/reference/compatibility.md)) |
+| Compatibility gate | GNU Bash's **own upstream test suite** — 86/86 gate green, **83/83** full suites byte-identical (zero-diff; measured 2026-09-21, see below) | GNU's suite is not run at all; validation is a self-built 1700+ case corpus with bash as oracle, ~125 known failures ([their reference](https://github.com/reubeno/brush/blob/main/docs/reference/compatibility.md)) |
 
 **Same exam, same proctor — measured, not claimed.** We ran GNU Bash's 83
 upstream test suites through the identical bridge harness
