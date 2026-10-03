@@ -2,28 +2,65 @@
 
 All notable changes to Niubash are documented in this file.
 
-## [Unreleased]
+## [1.3.0] - 2026-10-03
 
-### Fixes
+### Plugin system - the bash ecosystem, managed
 
-- **Download driver refused verified Windows archives** (wt49/smokesweep,
-  found by the 1.3.0 smoke suite): recipes declare extension-less bins
-  (mason shape, `bins = ["fzf"]`) but Windows archives ship `fzf.exe`, so
-  `niu plugin recipe add fzf` failed with "declares bin 'fzf' but it is
-  not in the archive" after a successful sha256-pinned download. Bin
-  verification now resolves `<bin>.exe` on Windows (exact name preferred),
-  the tool registry records the resolved on-disk name, and a failed
-  install no longer leaves `.staging/<id>.unpacked` residue behind.
-  Audit ledger: `docs/download-surface-audit.md`.
+- Declarative spec `~/.niubash/plugins.toml` (single source of truth) +
+  `niu plugin sync` reconciliation, startup bootstrap, and a
+  commit-pinned lockfile - the lazy.nvim spec/lock conventions.
+- Any-plugin generality: `niu plugin add <owner/repo | url | path>`;
+  source adapters for oh-my-bash, bash-it, bash-completion and bpkg;
+  framework assets enable only through their native loaders (loader
+  fidelity - no shims, no bypass paths).
+- Recipe index (500+ curated rows across managers/themes/plugins/
+  completions/prompts), collections/distros (`niu plugin distro
+  import`), menu TUI (`niu plugin ui`), read-only `niu plugin discover`.
+- Mirror pipeline: transport-layer git `insteadOf` rewriting
+  (`niu plugin mirror set <url>`); lockfiles keep canonical URLs.
+- Trust model: tree-checksum verification, explicit `niu plugin trust`,
+  and a trust question in the setup wizard.
 
-### Tests
+### Download retraction (BREAKING)
 
-- **1.3.0 smoke suite** (wt49/smokesweep): `scripts/smoke-test-1.3.0.sh`
-  runs the release checklist end-to-end (install chain, download channel,
-  defaults-as-floor, setup preset, basics) against a sandboxed HOME with
-  timeout guards, network legs skippable; `tests/smoke_1_3_0.rs` is the
-  CI mirror with per-invocation deadlines and opt-in network legs
-  (`NIU_SMOKE_NETWORK=1`).
+- niu no longer downloads anything except git clones: ureq, flate2,
+  tar and zip are gone, the download module is deleted, and the binary
+  shrinks ~16%. The smoke suite asserts a zero-network surface.
+- Fonts become detection + recommendation (winget nerd-fonts packages,
+  scoop, brew, nerdfonts.com).
+- Executable tools become package-manager recommendations only: `wpm`
+  first on Windows, native managers (apt/dnf/yum/brew) elsewhere.
+  The `niu plugin tool` verbs are retired.
+
+### Setup wizard - one-run out-of-box
+
+- Plugin collection page (recommended = oh-my-bash + its default theme
+  + completions; full adds the second framework and bash-preexec with
+  fzf/starship as suggested installs).
+- Post-install theme pick: after a collection applies, the wizard asks
+  the trust question and then offers the freshly installed themes - a
+  complete look in ONE run, no second `niu setup`.
+- defaults-as-floor: enabled external frameworks own the prompt; the
+  built-in default is the floor, never an override.
+
+### Engine (rubash 1.3.0) and bundled components
+
+- TMPDIR child boundary fixed: invented defaults stay shell-only and a
+  genuinely exported TMPDIR crosses in Windows-native form - Bun-
+  compiled TUIs (opencode etc.) launch again.
+- Associative kvpair compound assignments, `:` in redirect filenames,
+  command-substitution case-depth regions, physical-line diagnostics
+  across continuations, and spawn diagnostics preserved verbatim.
+- WinuxCmd 1.1.5 bundled: xargs stops its own option parsing at the
+  utility name; mv/mktemp/cp/ls accept POSIX drive-form operands; yes
+  dies with 141 on a broken pipe like GNU coreutils.
+
+### Fixes / tests
+
+- Unix cross-check compile break in the setup wizard (a baseless
+  cfg gate); a one-character zh translation key mismatch.
+- Release smoke suite now 17 legs, fully offline, including the
+  one-run wizard journey under ConPTY.
 
 ## [1.2.5] - 2026-10-02
 
