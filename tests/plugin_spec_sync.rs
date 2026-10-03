@@ -400,3 +400,148 @@ fn undeclared_sources_are_suggested_then_pruned() {
 
     let _ = fs::remove_dir_all(sandbox.home.parent().unwrap());
 }
+
+/// The 1.3.0 imperative-mode dead end (F1/F3): with no spec, the quiet
+/// startup form printed "installed but not declared" on EVERY terminal —
+/// contradicting imperative mode's "nothing to reconcile". Startup must be
+/// silent, and the interactive form must be actionable: it names the exact
+/// migration verb (`niu plugin sync --adopt`) and the hand-write starter.
+#[test]
+fn no_spec_startup_is_silent_and_sync_suggests_adopt() {
+    let sandbox = Sandbox::new("spec-nag");
+    let origin = fixture("oh-my-bash");
+    let add = run_niu_with_env(
+        &["plugin", "source", "add", &origin.to_string_lossy()],
+        &sandbox.envs,
+    );
+    assert_success(&add, "imperative install");
+    assert!(
+        !sandbox.spec_path().exists(),
+        "imperative installs create no spec"
+    );
+
+    // Startup: silent (nothing to reconcile in imperative mode).
+    let boot = run_niu_with_env(&["plugin", "sync", "--bootstrap"], &sandbox.envs);
+    assert_success(&boot, "bootstrap sync");
+    assert!(
+        stdout_text(&boot).trim().is_empty(),
+        "startup stdout must be empty: {}",
+        stdout_text(&boot)
+    );
+    assert!(
+        stderr_text(&boot).trim().is_empty(),
+        "startup stderr must be empty: {}",
+        stderr_text(&boot)
+    );
+
+    // Interactive: imperative-mode notice, the installed source, the
+    // migration one-liner, and the hand-write starter block.
+    let sync = run_niu_with_env(&["plugin", "sync"], &sandbox.envs);
+    assert_success(&sync, "no-spec sync");
+    let out = stdout_text(&sync);
+    assert!(out.contains("imperative mode"), "{out}");
+    assert!(out.contains("oh-my-bash"), "{out}");
+    assert!(out.contains("niu plugin sync --adopt"), "{out}");
+    assert!(out.contains("[[sources]]"), "starter block shown: {out}");
+    assert!(
+        out.contains("niu plugin add <target>"),
+        "single-source advice still named: {out}"
+    );
+
+    let _ = fs::remove_dir_all(sandbox.home.parent().unwrap());
+}
+
+/// F2, the adoption contract: `niu plugin sync --adopt` declares installed
+/// sources by snapshotting the live selection (theme + enabled assets), and
+/// the adopted spec ROUND-TRIPS — a plain sync is a no-op (byte-stable rc
+/// and spec) and the startup form is silent again.
+#[test]
+fn adopt_snapshots_the_live_state_and_round_trips() {
+    let sandbox = Sandbox::new("spec-adopt");
+    let origin = fixture("oh-my-bash");
+
+    // The owner-shaped state: imperative install, explicit trust, live
+    // theme + plugin — then the spec (written by the enable sugar) is gone,
+    // as on every 1.3.0 wizard machine.
+    let add = run_niu_with_env(
+        &["plugin", "source", "add", &origin.to_string_lossy()],
+        &sandbox.envs,
+    );
+    assert_success(&add, "imperative install");
+    let trust = run_niu_with_env(&["plugin", "trust", "oh-my-bash"], &sandbox.envs);
+    assert_success(&trust, "trust");
+    let enable = run_niu_with_env(&["plugin", "enable", "oh-my-bash/git"], &sandbox.envs);
+    assert_success(&enable, "enable plugin");
+    let theme = run_niu_with_env(&["plugin", "enable", "agnoster"], &sandbox.envs);
+    assert_success(&theme, "enable theme");
+    let live_rc = sandbox.rc();
+    assert!(live_rc.contains("OSH_THEME='agnoster'"), "{live_rc}");
+    fs::remove_file(sandbox.spec_path()).unwrap();
+
+    // --adopt declares it with the live snapshot.
+    let adopt = run_niu_with_env(&["plugin", "sync", "--adopt"], &sandbox.envs);
+    assert_success(&adopt, "adopt sync");
+    let out = stdout_text(&adopt);
+    assert!(out.contains("declared oh-my-bash"), "{out}");
+    assert!(out.contains("adopted 1 source(s)"), "{out}");
+    let spec = sandbox.spec();
+    assert!(spec.contains("id = 'oh-my-bash'"), "{spec}");
+    assert!(spec.contains("theme = 'agnoster'"), "{spec}");
+    assert!(spec.contains("enable = ['git']"), "{spec}");
+    assert_eq!(sandbox.rc(), live_rc, "adopt must not move the rc");
+
+    // Round-trip: plain sync is a no-op — rc and spec byte-stable.
+    let spec_once = sandbox.spec();
+    let plain = run_niu_with_env(&["plugin", "sync"], &sandbox.envs);
+    assert_success(&plain, "plain sync after adopt");
+    assert!(
+        stdout_text(&plain).contains("in sync"),
+        "{}",
+        stdout_text(&plain)
+    );
+    assert_eq!(sandbox.rc(), live_rc, "rc byte-identical");
+    assert_eq!(sandbox.spec(), spec_once, "spec byte-identical");
+
+    // And the startup form is silent again — the nag is gone for good.
+    let boot = run_niu_with_env(&["plugin", "sync", "--bootstrap"], &sandbox.envs);
+    assert_success(&boot, "bootstrap after adopt");
+    assert!(
+        stdout_text(&boot).trim().is_empty() && stderr_text(&boot).trim().is_empty(),
+        "startup silent after adoption: {}{}",
+        stdout_text(&boot),
+        stderr_text(&boot)
+    );
+
+    let _ = fs::remove_dir_all(sandbox.home.parent().unwrap());
+}
+
+/// F4: `niu plugin add <target>` on an already-installed source DECLARES it
+/// (printed as such) instead of dead-ending on the imperative refusal
+/// ("source '...' is already registered; remove it first").
+#[test]
+fn plugin_add_on_an_installed_source_declares_it() {
+    let sandbox = Sandbox::new("spec-add-adopt");
+    let origin = fixture("oh-my-bash");
+    let add = run_niu_with_env(
+        &["plugin", "source", "add", &origin.to_string_lossy()],
+        &sandbox.envs,
+    );
+    assert_success(&add, "imperative install");
+    assert!(!sandbox.spec_path().exists());
+
+    let declare = run_niu_with_env(&["plugin", "add", "oh-my-bash"], &sandbox.envs);
+    assert_success(&declare, "add on an installed source must not fail");
+    let out = stdout_text(&declare);
+    assert!(out.contains("Declared"), "declared, not installed: {out}");
+    assert!(out.contains("already installed"), "{out}");
+    let spec = sandbox.spec();
+    assert!(spec.contains("target = 'oh-my-bash'"), "{spec}");
+    assert!(spec.contains("id = 'oh-my-bash'"), "{spec}");
+
+    // Exactly one tree, untouched: the add declared, it did not fetch.
+    let registry = fs::read_to_string(sandbox.sources_root.join("registry.toml")).unwrap();
+    assert_eq!(registry.matches("[[sources]]").count(), 1, "{registry}");
+    assert!(registry.contains("trusted = false"), "{registry}");
+
+    let _ = fs::remove_dir_all(sandbox.home.parent().unwrap());
+}

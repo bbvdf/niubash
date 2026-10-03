@@ -9,17 +9,22 @@
 //! 1. **declared, not installed** → fetch through the add pipeline
 //!    (fetch gate only; the trust gate is never automatic — the new source
 //!    lands untrusted and sync prints the exact `niu plugin trust <id>`);
+//!    an install identity that is already registered is adopted, not
+//!    refused;
 //! 2. **declared, installed, trusted** → materialize the managed rc block
 //!    / enabled tree *from the spec*, idempotently (`plugins::assets::
 //!    materialize_spec_selection`, hand-added entries preserved);
 //! 3. **installed, not declared** → suggest cleanup, never auto-delete
 //!    (`--prune` removes them explicitly);
 //! 4. **spec absent** → legacy imperative mode: nothing to reconcile; sync
-//!    reports and suggests a starter spec.
+//!    reports and suggests either `--adopt` (declare everything installed,
+//!    snapshotting the live selection so the spec round-trips) or a
+//!    hand-written starter spec.
 //!
 //! `niu plugin sync --bootstrap` is the same reconciliation in its quiet
 //! startup form (clean machine → zero output), wired into the rc by the
-//! setup wizard as a single bootstrap line.
+//! setup wizard as a single bootstrap line. Startup installs that fail are
+//! memoized and deferred on later startups — only explicit verbs retry.
 
 use super::assets;
 use super::sources::{
@@ -32,13 +37,21 @@ pub struct SyncOptions {
     /// Remove installed-but-undeclared sources (the explicit confirmation
     /// for the cleanup suggestion; never the default).
     pub prune: bool,
+    /// Declare installed-but-undeclared sources into the spec (the
+    /// imperative → declarative migration): each entry snapshots the live
+    /// selection (`enable`/`theme`) so the adopted spec round-trips.
+    pub adopt: bool,
+    /// The rc startup form (`niu plugin sync --bootstrap`): failed installs
+    /// are memoized and not retried on later startups (explicit verbs
+    /// retry), so one bad origin can never clone on every terminal.
+    pub startup: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SyncRow {
     pub id: String,
     /// installed | awaiting-trust | activated | unchanged | deactivated |
-    /// degraded | drift | failed | removed | unsupported
+    /// degraded | drift | failed | removed | unsupported | deferred | merged
     pub action: String,
     pub detail: String,
 }
@@ -50,6 +63,9 @@ pub struct SyncReport {
     pub rows: Vec<SyncRow>,
     /// Installed sources the spec does not declare (cleanup suggestions).
     pub undeclared: Vec<String>,
+    /// Sources this run declared into the spec: `--adopt` snapshots and
+    /// `add`-time adoptions of already-installed sources.
+    pub adopted: Vec<String>,
     /// True when nothing needed doing (the bootstrap fast path).
     pub clean: bool,
 }
@@ -142,8 +158,17 @@ pub fn declared_entry(
 /// Run the reconciliation. Never prompts (the CLI layer prints; `--prune`
 /// is the explicit confirm). See the module docs for the algorithm.
 pub fn sync_spec(options: SyncOptions) -> anyhow::Result<SyncReport> {
-    if let Some(spec_file) = spec::load_spec()? {
-        sync_with_spec(spec_file, options)
+    // `--adopt` first declares every installed-but-undeclared source (a
+    // defensive merge — never clobbers existing entries), then the normal
+    // reconciliation runs over the completed spec, so one `sync --adopt`
+    // ends in the exact state a plain sync would keep.
+    let adopted = if options.adopt {
+        adopt_installed_sources()?
+    } else {
+        Vec::new()
+    };
+    if let Some(spec) = spec::load_spec()? {
+        sync_with_spec(spec, options, adopted)
     } else {
         Ok(SyncReport {
             spec_present: false,
@@ -152,18 +177,66 @@ pub fn sync_spec(options: SyncOptions) -> anyhow::Result<SyncReport> {
                 .into_iter()
                 .map(|record| record.id)
                 .collect(),
+            adopted,
             clean: false,
         })
     }
 }
 
-fn sync_with_spec(mut spec: PluginSpec, options: SyncOptions) -> anyhow::Result<SyncReport> {
+/// The imperative → declarative migration (§14.6.3): declare every
+/// installed-but-undeclared source into the spec, snapshotting the live
+/// selection into `enable` and the active theme into `theme` so the
+/// adopted spec round-trips — a plain sync after this changes nothing
+/// (byte-stable rc blocks, unchanged registry `spec_enabled`/`spec_theme`).
+/// Existing entries are never touched. Returns the ids declared.
+pub fn adopt_installed_sources() -> anyhow::Result<Vec<String>> {
+    let mut spec = spec::load_spec()?.unwrap_or_default();
+    let mut adopted = Vec::new();
+    for record in read_source_registry() {
+        // Declared already (explicit id, catalog id, or the recorded
+        // origin)? Defensive merge: keep the user's entry as written.
+        if declared_entry(&spec, &record.url, Some(&record.id), &record.url).is_some() {
+            continue;
+        }
+        let (enable, theme) = assets::live_selection(&record);
+        // Kind pin mirrors `niu plugin add`: only per-install managers
+        // whose reinstall must not fall back to wild-file detection (bpkg
+        // trees) carry one; catalog/manager ids and wild file sources
+        // resolve their adapter from the pinned id or detection.
+        let kind = sources::adapter_for(&record.adapter)
+            .filter(|adapter| adapter.per_install_id() && adapter.id() != "file")
+            .map(|_| record.adapter.clone());
+        spec.sources.push(SpecSource {
+            target: record.url.clone(),
+            id: Some(record.id.clone()),
+            kind,
+            ref_name: None,
+            theme,
+            enable,
+        });
+        adopted.push(record.id.clone());
+    }
+    if !adopted.is_empty() {
+        spec::save_spec(&spec)?;
+    }
+    Ok(adopted)
+}
+
+fn sync_with_spec(
+    mut spec: PluginSpec,
+    options: SyncOptions,
+    adopted: Vec<String>,
+) -> anyhow::Result<SyncReport> {
     let mut registry = read_source_registry();
     let mut rows: Vec<SyncRow> = Vec::new();
     let mut spec_changed = false;
+    let mut adopted = adopted;
     let mut declared_ids: Vec<String> = Vec::new();
+    // Entries that resolved to a source an earlier entry already claimed
+    // (the same tree declared under two spellings); dropped after the pass.
+    let mut merged: Vec<usize> = Vec::new();
 
-    for entry in spec.sources.iter_mut() {
+    for (entry_index, entry) in spec.sources.iter_mut().enumerate() {
         let (catalog_hint, origin) = match resolve_spec_origin(&entry.target) {
             Ok(resolved) => resolved,
             Err(err) => {
@@ -184,8 +257,28 @@ fn sync_with_spec(mut spec: PluginSpec, options: SyncOptions) -> anyhow::Result<
         let record = match existing {
             Some(record) => record.clone(),
             None => {
+                // Startup guard (1.3.1): a declared-but-missing source whose
+                // last startup install attempt failed is not retried here —
+                // one memoized line, no fetch churn. Explicit verbs (a plain
+                // `niu plugin sync`, `niu plugin add`) retry and clear the
+                // memo on the way in.
+                if options.startup && bootstrap_failure_recorded(&origin, &entry.ref_name) {
+                    rows.push(SyncRow {
+                        id: entry.id.clone().unwrap_or_else(|| entry.target.clone()),
+                        action: "deferred".to_string(),
+                        detail: "install not retried at startup (last attempt failed); \
+                                 `niu plugin sync` retries"
+                            .to_string(),
+                    });
+                    continue;
+                }
                 // Declared but not installed: fetch (fetch gate only —
-                // trust is never automatic).
+                // trust is never automatic). An install identity that is
+                // already registered is ADOPTED, not refused — the spec
+                // declares what exists.
+                if !options.startup {
+                    clear_bootstrap_failure(&origin, &entry.ref_name);
+                }
                 let request = SourceInstallRequest {
                     adapter: adapter_hint.clone(),
                     origin: origin.clone(),
@@ -195,26 +288,43 @@ fn sync_with_spec(mut spec: PluginSpec, options: SyncOptions) -> anyhow::Result<
                     id: entry.id.clone(),
                     entry: None,
                 };
-                match sources::add_source(request) {
-                    Ok(record) => {
+                match sources::install_or_adopt(request) {
+                    Ok((record, already_installed)) => {
                         // Persist the derived id into the spec so later
                         // syncs match directly instead of re-deriving.
                         if entry.id.is_none() {
                             entry.id = Some(record.id.clone());
                             spec_changed = true;
                         }
-                        rows.push(SyncRow {
-                            id: record.id.clone(),
-                            action: "awaiting-trust".to_string(),
-                            detail: format!(
-                                "installed {} (untrusted) — review, then `niu plugin trust {}`",
-                                record.version, record.id
-                            ),
-                        });
+                        if already_installed {
+                            adopted.push(record.id.clone());
+                        }
+                        if !record.trusted {
+                            rows.push(SyncRow {
+                                id: record.id.clone(),
+                                action: "awaiting-trust".to_string(),
+                                detail: if already_installed {
+                                    format!(
+                                        "already installed (untrusted) — review, then \
+                                         `niu plugin trust {}`",
+                                        record.id
+                                    )
+                                } else {
+                                    format!(
+                                        "installed {} (untrusted) — review, then \
+                                         `niu plugin trust {}`",
+                                        record.version, record.id
+                                    )
+                                },
+                            });
+                        }
                         registry = read_source_registry();
                         record
                     }
                     Err(err) => {
+                        if options.startup {
+                            record_bootstrap_failure(&origin, &entry.ref_name, &err.to_string());
+                        }
                         rows.push(SyncRow {
                             id: entry.id.clone().unwrap_or_else(|| entry.target.clone()),
                             action: "failed".to_string(),
@@ -225,6 +335,21 @@ fn sync_with_spec(mut spec: PluginSpec, options: SyncOptions) -> anyhow::Result<
                 }
             }
         };
+        // One source, two declarations (the same tree added under two
+        // spellings, e.g. the catalog id and a path): keep the FIRST
+        // declaration, drop the rest — diverging `enable` lists on one
+        // source would otherwise fight and flip the rc on every sync.
+        if declared_ids.contains(&record.id) {
+            rows.push(SyncRow {
+                id: record.id.clone(),
+                action: "merged".to_string(),
+                detail: "duplicate declaration dropped (this source is already \
+                         declared above)"
+                    .to_string(),
+            });
+            merged.push(entry_index);
+            continue;
+        }
         declared_ids.push(record.id.clone());
 
         if !record.trusted {
@@ -278,7 +403,10 @@ fn sync_with_spec(mut spec: PluginSpec, options: SyncOptions) -> anyhow::Result<
             }),
         }
     }
-    if spec_changed {
+    if spec_changed || !merged.is_empty() {
+        for index in merged.into_iter().rev() {
+            spec.sources.remove(index);
+        }
         spec::save_spec(&spec)?;
     }
 
@@ -337,6 +465,7 @@ fn sync_with_spec(mut spec: PluginSpec, options: SyncOptions) -> anyhow::Result<
         spec_present: true,
         rows,
         undeclared,
+        adopted,
         clean: false,
     };
     report.clean = report.compute_clean();
@@ -365,6 +494,121 @@ fn remove_activation_block(record: &SourceRecord) -> anyhow::Result<()> {
 /// meaning of bare `niu plugin sync`).
 pub fn update_all_to_ref_tip() -> Vec<sources::SourceSyncOutcome> {
     sources::sync_sources()
+}
+
+// ── Startup install-failure memo (1.3.1) ─────────────────────────────────────
+//
+// The rc's bootstrap line runs on every terminal. When a declared source
+// cannot install (network offline, a moved origin, a fingerprint the
+// adapter rejects), retrying the full fetch each startup is unbounded
+// churn — the 1.3.0 dead end cloned bash-it on every new terminal. The
+// memo records (target, ref) → error at startup; later startups defer the
+// retry with one line; the explicit verbs (`niu plugin sync` / `add`)
+// clear the memo and attempt again.
+
+const BOOTSTRAP_FAILURE_SCHEMA: &str = "niubash:plugin-bootstrap-failures@1";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct BootstrapFailure {
+    /// Resolved install origin of the spec entry.
+    target: String,
+    /// The entry's `ref`, when it declared one.
+    #[serde(rename = "ref", default, skip_serializing_if = "Option::is_none")]
+    ref_name: Option<String>,
+    pub error: String,
+    #[serde(default)]
+    pub at: String,
+}
+
+fn bootstrap_failure_path() -> std::path::PathBuf {
+    sources::sources_root().join("bootstrap-failures.toml")
+}
+
+fn read_bootstrap_failures() -> Vec<BootstrapFailure> {
+    let Ok(text) = std::fs::read_to_string(bootstrap_failure_path()) else {
+        return Vec::new();
+    };
+    #[derive(serde::Deserialize)]
+    struct Ledger {
+        #[serde(default)]
+        failure: Vec<BootstrapFailure>,
+    }
+    toml::from_str::<Ledger>(&text)
+        .map(|ledger| ledger.failure)
+        .unwrap_or_default()
+}
+
+fn write_bootstrap_failures(failures: &[BootstrapFailure]) {
+    let path = bootstrap_failure_path();
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let mut body = format!("# Startup install-failure memo (niu plugin sync --bootstrap).\n# Cleared by an explicit `niu plugin sync` / `niu plugin add` retry.\nschema = \"{BOOTSTRAP_FAILURE_SCHEMA}\"\n");
+    for failure in failures {
+        let quote =
+            |value: &str| format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""));
+        body.push_str(&format!(
+            "\n[[failure]]\ntarget = {}\n",
+            quote(&failure.target)
+        ));
+        if let Some(ref_name) = &failure.ref_name {
+            body.push_str(&format!("ref = {}\n", quote(ref_name)));
+        }
+        body.push_str(&format!(
+            "error = {}\nat = {}\n",
+            quote(&failure.error),
+            quote(&failure.at)
+        ));
+    }
+    let _ = std::fs::write(path, body);
+}
+
+fn failure_key(target: &str, ref_name: &Option<String>) -> (String, Option<String>) {
+    (target.trim().to_string(), ref_name.clone())
+}
+
+/// True when the last startup attempt for this (target, ref) failed.
+fn bootstrap_failure_recorded(target: &str, ref_name: &Option<String>) -> bool {
+    let key = failure_key(target, ref_name);
+    read_bootstrap_failures()
+        .iter()
+        .any(|failure| failure_key(&failure.target, &failure.ref_name) == key)
+}
+
+/// Memo a startup install failure (upsert by target+ref).
+fn record_bootstrap_failure(target: &str, ref_name: &Option<String>, error: &str) {
+    let key = failure_key(target, ref_name);
+    let mut failures = read_bootstrap_failures();
+    match failures
+        .iter_mut()
+        .find(|failure| failure_key(&failure.target, &failure.ref_name) == key)
+    {
+        Some(slot) => {
+            slot.error = error.to_string();
+            slot.at = sources::now_timestamp();
+        }
+        None => failures.push(BootstrapFailure {
+            target: target.trim().to_string(),
+            ref_name: ref_name.clone(),
+            error: error.to_string(),
+            at: sources::now_timestamp(),
+        }),
+    }
+    write_bootstrap_failures(&failures);
+}
+
+/// Clear the memo for one (target, ref): the explicit retry is happening.
+fn clear_bootstrap_failure(target: &str, ref_name: &Option<String>) {
+    let key = failure_key(target, ref_name);
+    let mut failures = read_bootstrap_failures();
+    let before = failures.len();
+    failures.retain(|failure| failure_key(&failure.target, &failure.ref_name) != key);
+    if failures.len() != before {
+        write_bootstrap_failures(&failures);
+    }
 }
 
 #[cfg(test)]
@@ -584,7 +828,11 @@ mod tests {
         );
 
         // --prune is the explicit confirm.
-        let report = sync_spec(SyncOptions { prune: true }).unwrap();
+        let report = sync_spec(SyncOptions {
+            prune: true,
+            ..SyncOptions::default()
+        })
+        .unwrap();
         assert!(report.undeclared.is_empty(), "{:?}", report);
         assert!(
             report
@@ -695,6 +943,281 @@ mod tests {
         let report = sync_spec(SyncOptions::default()).unwrap();
         assert!(!report.spec_present);
         assert!(report.rows.is_empty());
+        let _ = fs::remove_dir_all(&box_.temp);
+    }
+
+    /// The 1.3.1 adoption contract (F2): `--adopt` declares installed
+    /// sources by snapshotting the LIVE selection (the wizard's theme block
+    /// plus whatever is enabled) — the adopted spec round-trips, meaning a
+    /// plain sync afterwards is a byte-stable no-op.
+    #[test]
+    fn adopt_snapshots_live_selection_and_round_trips() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let holder = unique_temp_dir("adopt-holder");
+        let origin = holder.join("oh-my-fixture");
+        fs::create_dir_all(&origin).unwrap();
+        write_omb_fixture(&origin);
+        let box_ = sandbox("adopt");
+
+        // The wizard-shaped imperative state: installed + trusted + a live
+        // managed block (theme pick + one enabled plugin), NO spec.
+        sources::add_source(SourceInstallRequest {
+            origin: origin.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
+        .unwrap();
+        sources::trust_source("oh-my-bash").unwrap();
+        let block = assets::build_theme_block("oh-my-bash", "agnoster").expect("theme block");
+        let with_plugin = block.replacen(
+            "OSH_THEME='agnoster'\n",
+            "OSH_THEME='agnoster'\nplugins=('git')\n",
+            1,
+        );
+        fs::write(assets::rc_file(), &with_plugin).unwrap();
+
+        // --adopt declares it with the snapshot.
+        let report = sync_spec(SyncOptions {
+            adopt: true,
+            ..SyncOptions::default()
+        })
+        .unwrap();
+        assert_eq!(report.adopted, ["oh-my-bash"], "{:?}", report);
+        assert!(report.spec_present, "{:?}", report);
+        assert!(report.undeclared.is_empty(), "{:?}", report);
+        let declared = spec_sources();
+        assert_eq!(declared.len(), 1, "{declared:?}");
+        assert_eq!(
+            declared[0].target,
+            origin.to_string_lossy(),
+            "the recorded origin is the target"
+        );
+        assert_eq!(declared[0].id.as_deref(), Some("oh-my-bash"));
+        assert_eq!(declared[0].theme.as_deref(), Some("agnoster"));
+        assert_eq!(declared[0].enable, ["git"], "{declared:?}");
+        // The adopt run itself materializes without disturbing the block.
+        assert_eq!(rc_text(), with_plugin, "the live block is byte-stable");
+
+        // Round-trip: a plain sync is a no-op — clean report, byte-identical
+        // rc, spec, and registry (spec_enabled/spec_theme included).
+        let spec_text = fs::read_to_string(spec::spec_path()).unwrap();
+        let registry_text =
+            fs::read_to_string(sources::sources_root().join("registry.toml")).unwrap();
+        let report = sync_spec(SyncOptions::default()).unwrap();
+        assert!(report.clean, "{:?}", report);
+        assert_eq!(rc_text(), with_plugin, "rc byte-identical after plain sync");
+        assert_eq!(
+            fs::read_to_string(spec::spec_path()).unwrap(),
+            spec_text,
+            "spec byte-identical after plain sync"
+        );
+        assert_eq!(
+            fs::read_to_string(sources::sources_root().join("registry.toml")).unwrap(),
+            registry_text,
+            "registry byte-identical after plain sync"
+        );
+
+        let _ = fs::remove_dir_all(&holder);
+        let _ = fs::remove_dir_all(&box_.temp);
+    }
+
+    /// Untrusted imperative installs (the 1.3.0 wizard's bash-completion
+    /// state) adopt too: the declaration lands, the trust gate stays
+    /// visible, and plain syncs churn nothing.
+    #[test]
+    fn adopt_declares_untrusted_sources_without_activating() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let holder = unique_temp_dir("adopt-untrusted");
+        let origin = holder.join("wildy");
+        fs::create_dir_all(&origin).unwrap();
+        write_wild_fixture(&origin);
+        let box_ = sandbox("adopt-untrusted");
+
+        sources::add_source(SourceInstallRequest {
+            origin: origin.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
+        .unwrap();
+        let report = sync_spec(SyncOptions {
+            adopt: true,
+            ..SyncOptions::default()
+        })
+        .unwrap();
+        assert_eq!(report.adopted, ["wildy"], "{:?}", report);
+        let declared = spec_sources();
+        assert_eq!(declared[0].id.as_deref(), Some("wildy"));
+        assert!(declared[0].enable.is_empty(), "nothing live to snapshot");
+        assert!(declared[0].theme.is_none());
+        assert!(rc_text().is_empty(), "untrusted sources activate nothing");
+
+        // Plain sync: the awaiting-trust row stays honest (iron law 2), but
+        // the rc and the registry do not move.
+        let registry_text =
+            fs::read_to_string(sources::sources_root().join("registry.toml")).unwrap();
+        let report = sync_spec(SyncOptions::default()).unwrap();
+        assert!(
+            report
+                .rows
+                .iter()
+                .any(|row| row.id == "wildy" && row.action == "awaiting-trust"),
+            "{:?}",
+            report.rows
+        );
+        assert!(rc_text().is_empty());
+        assert_eq!(
+            fs::read_to_string(sources::sources_root().join("registry.toml")).unwrap(),
+            registry_text,
+            "registry byte-stable across plain syncs"
+        );
+
+        let _ = fs::remove_dir_all(&holder);
+        let _ = fs::remove_dir_all(&box_.temp);
+    }
+
+    /// The startup memo (F5): a declared-but-missing source whose startup
+    /// install fails is attempted ONCE; later startups defer the retry with
+    /// one line and no fetch churn; the explicit verb retries and clears.
+    #[test]
+    fn startup_bootstrap_defers_failed_installs_until_explicit_sync() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let holder = unique_temp_dir("defer-holder");
+        let origin = holder.join("not-bash-it");
+        fs::create_dir_all(&origin).unwrap();
+        // An OMB-shaped tree under a bash-it kind pin: the fingerprint check
+        // refuses it (the F6 failure shape, offline).
+        fs::write(origin.join("oh-my-bash.sh"), "#!/usr/bin/env bash\n").unwrap();
+        let box_ = sandbox("defer");
+        let ledger = box_.temp.join("sources/bootstrap-failures.toml");
+
+        spec::save_spec(&PluginSpec {
+            schema: None,
+            sources: vec![SpecSource {
+                target: origin.to_string_lossy().into_owned(),
+                id: Some("bash-it".to_string()),
+                kind: Some("bash-it".to_string()),
+                ref_name: None,
+                theme: None,
+                enable: vec![],
+            }],
+        })
+        .unwrap();
+
+        // Startup 1: attempted once, fails, memoized.
+        let report = sync_spec(SyncOptions {
+            startup: true,
+            ..SyncOptions::default()
+        })
+        .unwrap();
+        assert!(
+            report.rows.iter().any(|row| row.action == "failed"),
+            "{:?}",
+            report.rows
+        );
+        let text = fs::read_to_string(&ledger).unwrap();
+        assert!(text.contains("[[failure]]"), "{text}");
+        assert!(text.contains("bash-it"), "{text}");
+
+        // Startup 2: deferred — no second attempt (no failed row, no
+        // staging leftovers under the sources root).
+        let report = sync_spec(SyncOptions {
+            startup: true,
+            ..SyncOptions::default()
+        })
+        .unwrap();
+        assert!(
+            !report.rows.iter().any(|row| row.action == "failed"),
+            "no retry at startup: {:?}",
+            report.rows
+        );
+        assert_eq!(report.rows[0].action, "deferred", "{:?}", report.rows);
+        let leftovers: Vec<String> = fs::read_dir(box_.temp.join("sources"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            leftovers
+                .iter()
+                .all(|name| name == "bootstrap-failures.toml" || name == "registry.toml"),
+            "no staging churn: {leftovers:?}"
+        );
+
+        // The explicit verb retries (the failure repeats) and has cleared
+        // the memo on the way in — failures are only recorded at startup.
+        let report = sync_spec(SyncOptions::default()).unwrap();
+        assert!(
+            report.rows.iter().any(|row| row.action == "failed"),
+            "explicit sync must retry: {:?}",
+            report.rows
+        );
+        let text = fs::read_to_string(&ledger).unwrap();
+        assert!(!text.contains("[[failure]]"), "memo cleared: {text}");
+
+        let _ = fs::remove_dir_all(&holder);
+        let _ = fs::remove_dir_all(&box_.temp);
+    }
+
+    /// One source declared under two spellings (the catalog id and a path,
+    /// the exact `niu plugin add` double the 1.3.0 advice invited): sync
+    /// keeps the first declaration and merges the rest — diverging enable
+    /// lists would otherwise flip the rc on every sync.
+    #[test]
+    fn duplicate_declarations_of_one_source_merge() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let holder = unique_temp_dir("merge-holder");
+        let origin = holder.join("oh-my-fixture");
+        fs::create_dir_all(&origin).unwrap();
+        write_omb_fixture(&origin);
+        let box_ = sandbox("merge");
+
+        sources::add_source(SourceInstallRequest {
+            origin: origin.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
+        .unwrap();
+        sources::trust_source("oh-my-bash").unwrap();
+        let alt = origin.to_string_lossy().replace('\\', "/");
+        spec::save_spec(&PluginSpec {
+            schema: None,
+            sources: vec![
+                SpecSource {
+                    target: origin.to_string_lossy().into_owned(),
+                    id: Some("oh-my-bash".to_string()),
+                    kind: None,
+                    ref_name: None,
+                    theme: None,
+                    enable: vec!["git".to_string()],
+                },
+                SpecSource {
+                    target: alt,
+                    id: None,
+                    kind: None,
+                    ref_name: None,
+                    theme: None,
+                    enable: vec!["npm".to_string()],
+                },
+            ],
+        })
+        .unwrap();
+
+        let report = sync_spec(SyncOptions::default()).unwrap();
+        assert!(
+            report
+                .rows
+                .iter()
+                .any(|row| row.action == "merged" && row.id == "oh-my-bash"),
+            "{:?}",
+            report.rows
+        );
+        let declared = spec_sources();
+        assert_eq!(declared.len(), 1, "duplicate dropped: {declared:?}");
+        assert_eq!(declared[0].enable, ["git"], "the first declaration wins");
+
+        // The healed spec is stable: the next sync is a clean no-op.
+        let report = sync_spec(SyncOptions::default()).unwrap();
+        assert!(report.clean, "{:?}", report);
+        assert_eq!(spec_sources().len(), 1);
+
+        let _ = fs::remove_dir_all(&holder);
         let _ = fs::remove_dir_all(&box_.temp);
     }
 }

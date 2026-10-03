@@ -806,6 +806,20 @@ fn d2_wizard_one_run_theme_journey() {
     assert!(journal.contains("theme = 'agnoster'"), "{journal}");
     assert!(journal.contains("collection = 'recommended'"), "{journal}");
 
+    // 1.3.1: the journey ends SPEC-MANAGED. The post-pick adoption
+    // declared the collection's sources with the live snapshot — canonical
+    // origins (the mirror is transport-only) and the picked theme.
+    let spec = fs::read_to_string(home.join(".niubash").join("plugins.toml")).unwrap();
+    assert!(
+        spec.contains("https://github.com/ohmybash/oh-my-bash.git"),
+        "oh-my-bash declared by its canonical origin: {spec}"
+    );
+    assert!(
+        spec.contains("https://github.com/scop/bash-completion.git"),
+        "bash-completion declared: {spec}"
+    );
+    assert!(spec.contains("theme = 'agnoster'"), "{spec}");
+
     // And a fresh shell sees the theme.
     let home_str = s.home().to_string_lossy().into_owned();
     let sources_str = sources.to_string_lossy().into_owned();
@@ -826,6 +840,16 @@ fn d2_wizard_one_run_theme_journey() {
         normalized(&probe),
         "agnoster",
         "the one-run journey must leave OSH_THEME=agnoster active"
+    );
+
+    // The adopted spec round-trips: a plain sync leaves the rc untouched.
+    let rc_before = fs::read_to_string(s.home().join(".niubashrc")).unwrap();
+    let settle = run_niu(&["plugin", "sync"], &probe_env);
+    assert_success(&settle, "plain sync after the wizard journey");
+    assert_eq!(
+        fs::read_to_string(s.home().join(".niubashrc")).unwrap(),
+        rc_before,
+        "sync after adoption must not move the rc"
     );
 
     let _ = fs::remove_dir_all(&root);

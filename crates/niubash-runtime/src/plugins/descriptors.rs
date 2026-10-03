@@ -196,8 +196,15 @@ pub const MANAGER_DESCRIPTORS: &[ManagerDescriptor] = &[
         },
         fallback_note: "fallback stays active when absent",
     },
-    // bash-it — layout verified against the corpus checkout at
-    // D:/repo/rubash/target-ecosys/repos/bash-it.
+    // bash-it — layout verified against a fresh checkout of upstream main
+    // (2026-10-02, target/upstream-audit/bash-it). Fingerprint lesson from
+    // the 1.3.0 dead end: upstream moved the vendored composure library out
+    // of `lib/composure.bash` (present in 2.x releases, gone from main,
+    // which carries `lib/utilities.bash` instead), so a fingerprint naming
+    // BOTH markers as required rejected the real tree and the startup
+    // bootstrap retried the 1.36MB clone every terminal. The root loader
+    // stays mandatory; the lib marker accepts either generation (plus the
+    // singular `completion/` dir below — not OMB's plural `completions/`).
     ManagerDescriptor {
         id: "bash-it",
         display_name: "bash-it",
@@ -207,8 +214,8 @@ pub const MANAGER_DESCRIPTORS: &[ManagerDescriptor] = &[
         install_note: None,
         per_install_id: false,
         fingerprint: LayoutFingerprint::Files {
-            all: &["bash_it.sh", "lib/composure.bash"],
-            any: &[],
+            all: &["bash_it.sh"],
+            any: &["lib/composure.bash", "lib/utilities.bash"],
         },
         assets: &[
             AssetPattern::Flat {
@@ -872,5 +879,75 @@ mod tests {
         assert!(bpkg.install_note.unwrap().contains("bpkg install"));
         assert!(bpkg.per_install_id);
         assert!(MANAGER_DESCRIPTORS[..3].iter().all(|d| !d.per_install_id));
+    }
+
+    /// Fingerprint honesty against the REAL upstream layouts (1.3.1 F6):
+    /// bash-it's vendored composure library moved from
+    /// `lib/composure.bash` (2.x releases) out of the tree — upstream main
+    /// carries `lib/utilities.bash` instead, and 1.3.0's fingerprint
+    /// required BOTH old markers, so a plain `niu plugin sync` of the real
+    /// repo failed "does not look like 'bash-it'" and the startup
+    /// bootstrap retried the full clone on every terminal. The fixture
+    /// trees below mirror the marker files of the actual checkouts
+    /// (verified against fresh clones, 2026-10-02); both generations must
+    /// detect, and an OMB tree must still NOT match bash-it.
+    #[test]
+    fn bash_it_fingerprint_accepts_both_real_upstream_generations() {
+        let adapter = adapter_for("bash-it").unwrap();
+
+        // Current upstream main: bash_it.sh + lib/utilities.bash + the
+        // singular completion/ dir (not OMB's plural completions/).
+        let temp = std::env::temp_dir().join(format!(
+            "niu-desc-bashit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let modern = temp.join("modern");
+        fs::create_dir_all(modern.join("lib")).unwrap();
+        fs::create_dir_all(modern.join("completion/available")).unwrap();
+        fs::create_dir_all(modern.join("aliases/available")).unwrap();
+        fs::create_dir_all(modern.join("themes/bakke")).unwrap();
+        fs::write(modern.join("bash_it.sh"), "# loader\n").unwrap();
+        fs::write(modern.join("lib/utilities.bash"), "# utilities\n").unwrap();
+        fs::write(
+            modern.join("completion/available/docker.completion.bash"),
+            "# docker\n",
+        )
+        .unwrap();
+        fs::write(modern.join("aliases/available/apt.aliases.bash"), "# apt\n").unwrap();
+        fs::write(
+            modern.join("themes/bakke/bakke.theme.bash"),
+            "PS1='bakke> '\n",
+        )
+        .unwrap();
+        assert!(adapter.detect(&modern), "real main layout must detect");
+        let assets = adapter.list_assets(&modern);
+        let names: Vec<&str> = assets.iter().map(|a| a.name.as_str()).collect();
+        assert!(names.contains(&"docker"), "completion asset: {names:?}");
+        assert!(names.contains(&"apt"), "alias asset: {names:?}");
+        assert!(names.contains(&"bakke"), "theme asset: {names:?}");
+
+        // 2.x releases: composure.bash instead of utilities.bash.
+        let legacy = temp.join("legacy");
+        fs::create_dir_all(legacy.join("lib")).unwrap();
+        fs::write(legacy.join("bash_it.sh"), "# loader\n").unwrap();
+        fs::write(legacy.join("lib/composure.bash"), "# composure\n").unwrap();
+        assert!(adapter.detect(&legacy), "2.x layout must still detect");
+
+        // The root loader alone (no lib marker of either generation) does
+        // not match — and neither does a full oh-my-bash tree.
+        let bare = temp.join("bare");
+        fs::create_dir_all(&bare).unwrap();
+        fs::write(bare.join("bash_it.sh"), "# loader\n").unwrap();
+        assert!(!adapter.detect(&bare), "loader alone is not a fingerprint");
+        let omb = temp.join("omb");
+        fs::create_dir_all(&omb).unwrap();
+        fs::write(omb.join("oh-my-bash.sh"), "# omb\n").unwrap();
+        assert!(!adapter.detect(&omb), "an OMB tree is not bash-it");
+
+        let _ = fs::remove_dir_all(&temp);
     }
 }
