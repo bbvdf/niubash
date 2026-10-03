@@ -72,3 +72,36 @@ fn version_banner_reports_the_locked_rubash_commit() {
          (Cargo.lock), not a sibling ../rubash checkout's HEAD:\n{stdout}"
     );
 }
+
+/// The release pipeline's smoke gate (`.github/workflows/release.yml`,
+/// build-linux / build-macos "Smoke-test built binary" step) greps the
+/// `--version` banner for two exact substrings:
+///
+/// - `Niubash <version> ` — the head line must keep the version followed by
+///   a space before the tagline.
+/// - `rubash   git <rev>` — the engine line must keep the three spaces and
+///   the `git ` prefix (printed only when build.rs resolved a real commit).
+///
+/// This test pins those substrings so a banner rewording fails `cargo test`
+/// here instead of failing a release build's smoke gate.
+#[test]
+fn version_banner_lines_match_release_smoke_greps() {
+    let output = Command::new(PathBuf::from(env!("CARGO_BIN_EXE_niu")))
+        .arg("--version")
+        .output()
+        .expect("spawn niu --version");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let head = stdout.lines().next().unwrap_or_default();
+    assert!(
+        head.starts_with(&format!("Niubash {} ", env!("CARGO_PKG_VERSION"))),
+        "release smoke greps for 'Niubash <version> ' — banner head was {head:?}"
+    );
+
+    if let Some(rev) = banner_rubash_rev(&stdout) {
+        assert!(
+            stdout.contains(&format!("rubash   git {rev}")),
+            "release smoke greps for 'rubash   git <rev>' (three spaces) — banner was:\n{stdout}"
+        );
+    }
+}
