@@ -103,6 +103,16 @@ The first-run wizard's plugin-collection question is a LazyVim-style
 progressive-disclosure hook: it only appears when the ecosystem is empty, and
 Skip is the default.
 
+When the picked collection installs a theme-bearing source (`recommended`/
+`full`), the same wizard run immediately offers the theme pick — one run,
+out of the box. The gallery lists trusted sources only, so the flow first
+asks a single trust question (the wizard's phrasing of
+`niu plugin trust`, same checksum tier); answering it lists the fresh
+source's themes, and the pick lands in the rc through the same guarded
+block a later `niu plugin enable <theme>` writes, journaled with its own
+undo line. Declining (or Esc) changes nothing — the run prints the exact
+`niu plugin trust <id>` command plus the re-run/enable follow-up instead.
+
 ## Tools: package-manager recommendations
 
 ```console

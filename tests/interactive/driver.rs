@@ -270,7 +270,16 @@ fn unique_temp_dir(prefix: &str) -> PathBuf {
 }
 
 /// Build the niu command with a from-scratch environment for determinism.
-fn niu_command(home: &Path, start: &Path, extra_env: &[(String, String)]) -> CommandBuilder {
+/// `args` runs a CLI subcommand (empty = the interactive shell); `path_dirs`
+/// replaces the default System32-only PATH (extra tools a driven subcommand
+/// needs, e.g. git for the wizard's collection install).
+fn niu_command(
+    home: &Path,
+    start: &Path,
+    extra_env: &[(String, String)],
+    args: &[String],
+    path_dirs: &[PathBuf],
+) -> CommandBuilder {
     let system_root = std::env::var_os("SystemRoot")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
@@ -280,10 +289,12 @@ fn niu_command(home: &Path, start: &Path, extra_env: &[(String, String)]) -> Com
     command.cwd(start);
     command.env_clear();
     command.env("SystemRoot", system_root.clone());
-    command.env(
-        "PATH",
-        std::env::join_paths([&system32, &system_root]).unwrap(),
-    );
+    let path = if path_dirs.is_empty() {
+        std::env::join_paths([&system32, &system_root]).unwrap()
+    } else {
+        std::env::join_paths(path_dirs).unwrap()
+    };
+    command.env("PATH", path);
     command.env("COMSPEC", system32.join("cmd.exe"));
     command.env("HOME", home);
     command.env("USERPROFILE", home);
@@ -298,6 +309,7 @@ fn niu_command(home: &Path, start: &Path, extra_env: &[(String, String)]) -> Com
     for (key, value) in extra_env {
         command.env(key, value);
     }
+    command.args(args);
     command
 }
 
@@ -310,12 +322,31 @@ fn try_spawn(
     size: (u16, u16),
     timeout: Duration,
 ) -> Option<NiuSession> {
+    try_spawn_inner(prefix, Some(rc), &[], extra_env, &[], size, timeout)
+}
+
+/// The spawn core: `rc = None` leaves the home without an rc file (fresh-
+/// home flows such as the setup wizard journey), `args` runs a CLI
+/// subcommand instead of the interactive shell, and `path_dirs` replaces
+/// the default System32-only PATH.
+#[allow(clippy::too_many_arguments)]
+fn try_spawn_inner(
+    prefix: &str,
+    rc: Option<&str>,
+    args: &[String],
+    extra_env: &[(String, String)],
+    path_dirs: &[PathBuf],
+    size: (u16, u16),
+    timeout: Duration,
+) -> Option<NiuSession> {
     let root = unique_temp_dir(prefix);
     let home = root.join("home");
     let start = root.join("start");
     std::fs::create_dir_all(home.join("tmp")).ok()?;
     std::fs::create_dir_all(&start).ok()?;
-    std::fs::write(home.join(".niubashrc"), rc).ok()?;
+    if let Some(rc) = rc {
+        std::fs::write(home.join(".niubashrc"), rc).ok()?;
+    }
 
     let pty_system = portable_pty::native_pty_system();
     let pair = pty_system
@@ -329,7 +360,7 @@ fn try_spawn(
     let master = pair.master;
     let slave = pair.slave;
 
-    let command = niu_command(&home, &start, extra_env);
+    let command = niu_command(&home, &start, extra_env, args, path_dirs);
     let child = slave.spawn_command(command).ok()?;
     // The parent holds only the master side; dropping the slave closes the
     // fd/handle that would otherwise keep the pty alive after the child exits.
@@ -438,6 +469,30 @@ impl NiuSession {
                  after a successful probe"
             )
         })
+    }
+
+    /// Spawn `niu <args>` (a CLI subcommand such as `setup`) under a pseudo
+    /// terminal with NO rc file — fresh-home flows — and `path_dirs` as the
+    /// full PATH (the wizard journey needs git for the collection install).
+    /// Call [`require_pty_or_skip`] first, like `spawn_custom`. Used by the
+    /// smoke target's journey leg (dead code in this target).
+    #[allow(dead_code)]
+    pub fn spawn_cli(
+        prefix: &str,
+        args: &[String],
+        extra_env: &[(String, String)],
+        path_dirs: &[PathBuf],
+        size: (u16, u16),
+        timeout: Duration,
+    ) -> NiuSession {
+        try_spawn_inner(prefix, None, args, extra_env, path_dirs, size, timeout).unwrap_or_else(
+            || {
+                panic!(
+                    "niu {args:?} could not be spawned under a pseudo terminal \
+                     after a successful probe"
+                )
+            },
+        )
     }
 
     /// Wait for the startup banner and the first prompt.
