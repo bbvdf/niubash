@@ -53,6 +53,7 @@ Usage: python scripts/journey/golden-journey.py <niu.exe> [--artifacts DIR]
 import argparse
 import json
 import os
+import random
 import re
 import shutil
 import sys
@@ -108,11 +109,36 @@ DOWN = "\x1b[B"
 #   retry  — when the signal never came, resend ONCE. This retries
 #            DELIVERY only: the expected-output waits (wait_for) never
 #            retry, so a real product failure still fails the gate.
+#   anchor — send_line RETURNS only after the command completed: a new
+#            prompt-ish row below the typed line (see the ANCHOR_*
+#            constants and await_output_anchor below). Sequencing, not
+#            delivery: it closes the J6 gluing window where send N+1
+#            landed while send N was still executing.
 QUIESCE_POLL_SECONDS = 0.15
 QUIESCE_TIMEOUT_SECONDS = 15.0
 ECHO_TIMEOUT_SECONDS = 10.0
 ENTER_ACK_SECONDS = 3.0
 WAKE_GAP_SECONDS = 0.15
+# ── Output-anchored sequencing (release run 37153503706, J6) ─────────────────
+# `echo J6_ALIVE` and the NEXT line executed as ONE glued command
+# (`❯ echo J6_ALIVEniu plugin trust bash-completion`): the second send
+# landed while the first was still being processed, the wake Ctrl-U was
+# the clock-repaint's eaten byte, and the text appended to the unsubmitted
+# input line. The wt67 settle cannot close that window — the typed input
+# line ITSELF starts with the prompt glyph, so PROMPTISH_LAST_ROW matches
+# it during execution and `wait_quiescent` reports "prompt" before the
+# prompt has returned. So between two consecutive REPL sends, send_line
+# returns only when the command it typed has COMPLETED: a NEW prompt-ish
+# last row that is neither the typed input line nor any row carrying the
+# command text (anchor condition in await_output_anchor). Bounded like
+# everything here; the known-long journey commands carry their own bound
+# (trust 90s, source 60s) and an expiry is ledgered, never silent.
+ANCHOR_POLL_SECONDS = 0.1
+ANCHOR_TIMEOUT_SECONDS = 30.0
+# Stress harness (hidden --stress-delay-ms): a randomized pause before
+# every send's settle check, simulating runner slowness — the shape that
+# broke two release runs. 0 disables (normal mode).
+STRESS_DELAY_MS = 0
 # Readline kill-line: the REPL editor's first input byte after the themed
 # prompt has been idle is EATEN (observed 2026-10-03, run drv-run1: `echo`
 # renders as `❯ cho`, `niu` as `❯ iu`, `source` as `❯ ource` — the prompt's
@@ -163,6 +189,14 @@ KNOWN_FAILS = [
 
 def now_utc() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def stress_pause():
+    """The hidden --stress-delay-ms harness: a randomized pause before a
+    send's settle check, stretching exactly the timing window a slow
+    runner stretches. No-op in normal mode (STRESS_DELAY_MS == 0)."""
+    if STRESS_DELAY_MS > 0:
+        time.sleep(random.uniform(0, STRESS_DELAY_MS) / 1000.0)
 
 
 def render_history_line(line, columns: int) -> str:
@@ -290,7 +324,15 @@ class Session:
         with a clock/spinner never goes fully quiet), or 'timeout' when
         the bound expired. Bounded and best-effort: the caller sends
         regardless, and the send's own echo/change confirmation is what
-        decides whether delivery needs a retry."""
+        decides whether delivery needs a retry.
+
+        KNOWN HOLE this method cannot close on its own: the typed input
+        line itself starts with the prompt glyph, so 'prompt' can fire
+        while a command is still executing (release run 37153503706 —
+        the J6 gluing). send_line closes it with await_output_anchor
+        after its Enter; first-sends (no predecessor command) have no
+        gluing to prevent."""
+        stress_pause()
         deadline = time.time() + timeout
         prev_screen = None
         prev_pulse = None
@@ -351,6 +393,47 @@ class Session:
             time.sleep(0.1)
         return False
 
+    def await_output_anchor(self, line, input_row,
+                            timeout=ANCHOR_TIMEOUT_SECONDS) -> bool:
+        """Output-anchored sequencing: wait for the POST-EXECUTION prompt
+        of a command send_line just submitted — a NEW prompt-ish last
+        non-empty row that is neither the typed input line (`input_row`)
+        nor any row carrying the command text (`line`). The input line
+        itself starts with the prompt glyph, so PROMPTISH_LAST_ROW
+        matches it DURING execution — that is exactly the J6 gluing
+        (release run 37153503706: `echo J6_ALIVEniu plugin trust
+        bash-completion` ran as ONE command because the next send landed
+        before this command's prompt returned). What a human waits for —
+        echo scrolled up, output printed, fresh prompt at the bottom —
+        is what this waits for. The command-text guard also survives the
+        theme clock's repaints (the repainted input line still carries
+        the text, so it keeps being excluded until execution replaces
+        it). Bounded: on expiry the caller proceeds anyway (the step's
+        own expected-output wait rules) but the expiry is ledgered as an
+        'anchor-wait' delivery event, never silent. Every anchor
+        outcome is ledgered (with its elapsed time) — one line per REPL
+        send is the sequencing trace a future CI flake needs."""
+        started = time.time()
+        deadline = started + timeout
+        while time.time() < deadline:
+            row = self.last_nonempty_row()
+            if (row and row != input_row and line not in row
+                    and PROMPTISH_LAST_ROW.match(row)):
+                elapsed = time.time() - started
+                self._delivery_event(
+                    "anchor-wait", line, 1,
+                    f"post-execution prompt for {line!r} anchored after "
+                    f"{elapsed:.1f}s — safe to send the next line",
+                    "anchored")
+                return True
+            time.sleep(ANCHOR_POLL_SECONDS)
+        self._delivery_event(
+            "anchor-wait", line, 1,
+            f"no post-execution prompt within {timeout}s of {line!r} — "
+            "proceeding; the step's own expected-output wait will rule",
+            "anchor-timeout")
+        return False
+
     def answer(self, keys):
         """Settle out the menu draw, then press; digit and Enter split.
 
@@ -384,8 +467,9 @@ class Session:
                     "the step's own wait will rule",
                     "undelivered")
 
-    def send_line(self, line):
-        """Type a whole command at the REPL prompt, then Enter.
+    def send_line(self, line, anchor_timeout=ANCHOR_TIMEOUT_SECONDS):
+        """Type a whole command at the REPL prompt, then Enter — and do
+        not return until the command has COMPLETED.
 
         Delivery-verified (release run 37149660449, J6: keystrokes typed
         while startup notices were still landing never reached the
@@ -397,7 +481,14 @@ class Session:
         kill-line also wipes a late-landing first attempt, so a resend
         can no longer concatenate two half-lines. The Enter gets its own
         short confirm (its scroll is immediate). Delivery retries only —
-        the expected-output wait that follows never retries."""
+        the expected-output wait that follows never retries.
+
+        Output-anchored (release run 37153503706, J6): after the Enter,
+        await_output_anchor holds this send until a NEW prompt-ish row
+        sits below the typed line — so the NEXT send in this session can
+        never land while this command is still executing (the gluing).
+        `anchor_timeout` carries the known-long commands' own bounds
+        (trust 90s, source 60s); the default covers everything else."""
         settle = self.wait_quiescent()
         for attempt in (1, 2):
             before = self.text()
@@ -421,6 +512,9 @@ class Session:
                     "undelivered")
         time.sleep(ENTER_GAP_SECONDS)
         before = self.text()
+        # The input line is the bottom-most content while editing; this
+        # snapshot is what the anchor must see REPLACED by a new prompt.
+        input_row = self.last_nonempty_row()
         self.proc.write(ENTER)
         if not self._await_change(before, timeout=ENTER_ACK_SECONDS):
             self._delivery_event(
@@ -428,6 +522,7 @@ class Session:
                 f"screen did not advance within {ENTER_ACK_SECONDS}s of "
                 "Enter — resending Enter once", "resend")
             self.proc.write(ENTER)
+        self.await_output_anchor(line, input_row, timeout=anchor_timeout)
 
     def close(self):
         try:
@@ -496,8 +591,9 @@ class Verdict:
                 lines.append(f"    ·    {note}")
         if self.delivery_events:
             lines.append("")
-            lines.append("INPUT DELIVERY EVENTS (ConPTY keystroke retries —")
-            lines.append("delivery only; expected-output waits never retry):")
+            lines.append("INPUT DELIVERY EVENTS (ConPTY keystroke retries +")
+            lines.append("anchor waits — delivery/sequencing only; "
+                         "expected-output waits never retry):")
             for event in self.delivery_events:
                 lines.append(
                     f"    [{event['action']}] {event['session']} "
@@ -942,7 +1038,9 @@ def journey(exe: Path, root: Path, verdict: Verdict) -> str:
     try:
         step.check("live session prompt renders",
                    prompt_alive(s3, "J3_ALIVE"))
-        s3.send_line("source ~/.niubashrc")
+        # source loads the theme loaders; its own completion wait below
+        # is 60s, so the anchor bound matches it.
+        s3.send_line("source ~/.niubashrc", anchor_timeout=60)
         # The marker only prints after the source finished (theme loaders
         # included); it is the completion signal, not decoration.
         s3.send_line("echo J3_SRC_DONE")
@@ -1099,7 +1197,10 @@ def journey(exe: Path, root: Path, verdict: Verdict) -> str:
     try:
         step.check("live session prompt renders",
                    prompt_alive(s6, "J6_ALIVE"))
-        s6.send_line("niu plugin trust bash-completion")
+        # The trust step's own expected-output wait is 90s; the anchor
+        # bound matches it so a slow trust run expires the anchor, not
+        # the sequencing (run 37153503706's 90s timeout was the glue).
+        s6.send_line("niu plugin trust bash-completion", anchor_timeout=90)
         try:
             s6.wait_for("is now trusted", timeout=90)
             step.check("`niu plugin trust bash-completion` reported trusted",
@@ -1107,7 +1208,7 @@ def journey(exe: Path, root: Path, verdict: Verdict) -> str:
         except TimeoutError as err:
             step.check("`niu plugin trust bash-completion` reported trusted",
                        False, str(err))
-        s6.send_line("source ~/.niubashrc")
+        s6.send_line("source ~/.niubashrc", anchor_timeout=60)
         s6.send_line("echo J6_SRC_DONE")
         try:
             s6.wait_for("J6_SRC_DONE", timeout=60)
@@ -1167,8 +1268,16 @@ def main() -> int:
     parser.add_argument("--keep-sandbox", type=Path, default=None,
                         help="create the sandbox under this directory "
                              "(kept on failure for diagnosis)")
+    # Hidden stress harness (owner-approved validation shape, not a user
+    # knob): a randomized 0..N ms pause before every send's settle check,
+    # simulating runner slowness — the shape that broke release runs
+    # 37149660449 and 37153503706. Validated 3x with N=800.
+    parser.add_argument("--stress-delay-ms", type=int, default=0,
+                        help=argparse.SUPPRESS)
     args = parser.parse_args()
 
+    global STRESS_DELAY_MS
+    STRESS_DELAY_MS = max(0, args.stress_delay_ms)
     exe = args.niu.resolve()
     if not exe.is_file():
         print(f"SKIP: niu binary not found: {exe}")
@@ -1195,7 +1304,8 @@ def main() -> int:
 
     (artifacts / "run.json").write_text(
         json.dumps({"niu": str(exe), "sandbox": str(sandbox),
-                    "started_utc": now_utc(), "pid": os.getpid()},
+                    "started_utc": now_utc(), "pid": os.getpid(),
+                    "stress_delay_ms": STRESS_DELAY_MS},
                    indent=2) + "\n",
         encoding="utf-8", newline="\n")
 
