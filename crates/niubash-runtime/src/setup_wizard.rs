@@ -551,7 +551,6 @@ impl WizardIo {
         }
     }
 
-    #[cfg(windows)]
     fn choice(
         &mut self,
         label: &str,
