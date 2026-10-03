@@ -91,6 +91,12 @@ admin rights. It wires up your PATH and a Windows Terminal profile. Prefer
 portable? Take the `.zip` — the first launch self-activates the Unix
 commands.
 
+On Linux (x86_64, aarch64; glibc 2.35+) and macOS (aarch64, x86_64), grab
+the `niubash-v*-<os>-<arch>.tar.gz` portable tarball, untar, and run
+`./niu` — native system tools are used, nothing is bundled. Each release
+artifact is smoke-verified on its build OS before upload
+([release pipeline](docs/release.md)).
+
 From source:
 
 ```sh
@@ -98,7 +104,9 @@ git clone https://github.com/unixwin/niubash.git && cd niubash
 cargo build --release && target\release\niu.exe
 ```
 
-Requirements: **Windows 10/11 x64 or ARM64**, Rust 1.70+ to build from source.
+Requirements: **Windows 10/11 x64 or ARM64**, **Linux x86_64/aarch64
+(glibc 2.35+)**, or **macOS aarch64/x86_64**; Rust 1.70+ to build from
+source.
 
 ## Configuration
 

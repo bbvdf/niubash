@@ -222,9 +222,349 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # Unix release legs. The engine's Linux port (rubash#225-#240) is closed
+  # and the CI cross-check line is green, so the release pipeline ships what
+  # CI compiles — but never unverified: each leg smoke-runs the exact binary
+  # it uploads, on that OS, before any artifact leaves the job. A smoke
+  # failure fails the job, so nothing untested can reach the release.
+  #
+  # No WinuxCmd bundling on Unix, and none of the Windows package-manager
+  # surface either (standing platform red line): Unix has native coreutils,
+  # and the compile-time cfg already keeps the Windows-only layer out of
+  # non-Windows binaries.
+  build-linux:
+    name: build-linux (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    outputs:
+      # Both matrix legs clone the same rubash master, so this resolves to
+      # the same value in both; the pin step fails the build if the checkout
+      # is not a committed revision.
+      rubash_revision: ${{ steps.rubash.outputs.revision }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # gnu, not musl (first Unix release, recorded in docs/release.md):
+          # the CI cross-check line and the engine's unix port are validated
+          # against glibc, and musl has never been compiled in this repo —
+          # a musl leg would ship an untested libc surface. The glibc floor
+          # is the build image's (2.35 on ubuntu-22.04): Ubuntu 22.04+,
+          # Debian 12+. Move both legs forward together when the image
+          # retires.
+          - arch: x86_64
+            rust_target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          # Native arm64 runner (free for public repos), not cross/qemu:
+          # it compiles natively AND runs the smoke gate natively — the
+          # whole point of the honest gate.
+          - arch: aarch64
+            rust_target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Checkout rubash path dependency
+        run: git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/unixwin/rubash.git ../rubash
+
+      - name: Resolve release inputs
+        id: release
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${{ github.ref_name }}"
+          fi
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release tag '$tag'" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release tag
+        run: |
+          git fetch --tags --force
+          git checkout "${{ steps.release.outputs.tag }}"
+
+      - name: Validate Cargo version matches release tag
+        run: |
+          line="$(grep -m1 -E '^version[[:space:]]*=' Cargo.toml)"
+          cargo_version="$(printf '%s' "$line" | sed -E 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/')"
+          if [ "$cargo_version" != "${{ steps.release.outputs.version }}" ]; then
+            echo "Cargo.toml version '$cargo_version' does not match release tag ${{ steps.release.outputs.tag }}" >&2
+            exit 1
+          fi
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1.11
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      # Same contract as build-windows: the revision the binary contains is
+      # resolved here and embedded by build.rs, so `niu --version` reports it.
+      - name: Pin rubash revision
+        id: rubash
+        run: |
+          if [ ! -d ../rubash ]; then
+            echo "rubash checkout missing at ../rubash" >&2
+            exit 1
+          fi
+          revision="$(git -C ../rubash rev-parse --short=12 HEAD)"
+          if [ -z "$revision" ]; then
+            echo "could not resolve rubash revision" >&2
+            exit 1
+          fi
+          dirty="$(git -C ../rubash status --porcelain)"
+          if [ -n "$dirty" ]; then
+            echo "rubash checkout is dirty; a release must pin a committed revision" >&2
+            printf '%s\n' "$dirty" >&2
+            exit 1
+          fi
+          echo "rubash revision: $revision"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+
+      # No RUSTFLAGS here: crt-static is a Windows-leg choice; Linux gnu
+      # binaries link the system glibc dynamically (the documented floor).
+      - name: Build niubash
+        run: cargo build --locked --release --target ${{ matrix.rust_target }}
+
+      # HONEST GATE — smoke the binary this job just built, on this OS,
+      # before anything is packaged or uploaded. A binary that cannot pass
+      # these four checks on its build OS never becomes an artifact.
+      - name: "Smoke-test built binary (gate: no smoke, no artifact)"
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.rust_target }}/release/niu"
+          test -x "$bin"
+
+          # 1) --version carries this release's version and the pinned engine
+          #    revision (exact substrings pinned by
+          #    tests/rubash_revision_banner.rs).
+          out="$("$bin" --version)"
+          printf '%s\n' "$out"
+          grep -qF "Niubash ${{ steps.release.outputs.version }} " <<<"$out"
+          grep -qF "rubash   git ${{ steps.rubash.outputs.revision }}" <<<"$out"
+
+          # 2) one-shot engine execution
+          out="$("$bin" -c 'echo ok')"
+          [ "$out" = "ok" ]
+
+          # 3) external commands + pipeline through native coreutils
+          out="$(printf 'a\nb\n' | "$bin" -c 'sort | head -1')"
+          [ "$out" = "a" ]
+
+          # 4) plugin stack offline check: empty spec, isolated HOME —
+          #    must exit 0 with zero output and touch no network.
+          mkdir -p "$RUNNER_TEMP/smoke-home"
+          : > "$RUNNER_TEMP/smoke-plugins.toml"
+          out="$(HOME="$RUNNER_TEMP/smoke-home" \
+            NIU_PLUGIN_SPEC="$RUNNER_TEMP/smoke-plugins.toml" \
+            "$bin" plugin sync --bootstrap 2>&1)"
+          if [ -n "$out" ]; then
+            echo "plugin sync --bootstrap was not quiet on empty spec:" >&2
+            printf '%s\n' "$out" >&2
+            exit 1
+          fi
+
+          # Record the libc floor this binary actually requires.
+          ldd --version | head -1
+
+      - name: Package portable tarball
+        run: |
+          set -euo pipefail
+          name="niubash-v${{ steps.release.outputs.version }}-linux-${{ matrix.arch }}"
+          stage="dist/$name"
+          mkdir -p "$stage"
+          cp "target/${{ matrix.rust_target }}/release/niu" "$stage/niu"
+          cp README.md LICENSE "$stage/"
+          tar -czf "dist/$name.tar.gz" -C dist "$name"
+          tar -tzf "dist/$name.tar.gz"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: niubash-v${{ steps.release.outputs.version }}-linux-${{ matrix.arch }}
+          path: dist/niubash-v${{ steps.release.outputs.version }}-linux-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  # macos-13 (the Intel runner) is retired, so both macOS targets build on
+  # the arm64 runner: aarch64 natively, x86_64 as a first-class Apple
+  # cross-compile (same SDK), with its smoke gate run under Rosetta 2.
+  build-macos:
+    name: build-macos (${{ matrix.arch }})
+    runs-on: macos-latest
+    outputs:
+      # Both matrix legs clone the same rubash master, so this resolves to
+      # the same value in both; the pin step fails the build if the checkout
+      # is not a committed revision.
+      rubash_revision: ${{ steps.rubash.outputs.revision }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            rust_target: aarch64-apple-darwin
+          - arch: x86_64
+            rust_target: x86_64-apple-darwin
+            rosetta: true
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Checkout rubash path dependency
+        run: git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/unixwin/rubash.git ../rubash
+
+      - name: Resolve release inputs
+        id: release
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${{ github.ref_name }}"
+          fi
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release tag '$tag'" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release tag
+        run: |
+          git fetch --tags --force
+          git checkout "${{ steps.release.outputs.tag }}"
+
+      - name: Validate Cargo version matches release tag
+        run: |
+          line="$(grep -m1 -E '^version[[:space:]]*=' Cargo.toml)"
+          cargo_version="$(printf '%s' "$line" | sed -E 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/')"
+          if [ "$cargo_version" != "${{ steps.release.outputs.version }}" ]; then
+            echo "Cargo.toml version '$cargo_version' does not match release tag ${{ steps.release.outputs.tag }}" >&2
+            exit 1
+          fi
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1.11
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.rust_target }}
+
+      # Same contract as build-windows: the revision the binary contains is
+      # resolved here and embedded by build.rs, so `niu --version` reports it.
+      - name: Pin rubash revision
+        id: rubash
+        run: |
+          if [ ! -d ../rubash ]; then
+            echo "rubash checkout missing at ../rubash" >&2
+            exit 1
+          fi
+          revision="$(git -C ../rubash rev-parse --short=12 HEAD)"
+          if [ -z "$revision" ]; then
+            echo "could not resolve rubash revision" >&2
+            exit 1
+          fi
+          dirty="$(git -C ../rubash status --porcelain)"
+          if [ -n "$dirty" ]; then
+            echo "rubash checkout is dirty; a release must pin a committed revision" >&2
+            printf '%s\n' "$dirty" >&2
+            exit 1
+          fi
+          echo "rubash revision: $revision"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+
+      - name: Build niubash
+        run: cargo build --locked --release --target ${{ matrix.rust_target }}
+
+      # Rosetta 2 lets the arm64 runner execute the cross-compiled x86_64
+      # binary, so the smoke gate runs on real hardware either way.
+      - name: Ensure Rosetta 2 (x86_64 leg)
+        if: matrix.rosetta
+        run: |
+          if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+            softwareupdate --install-rosetta --agree-to-license
+          fi
+          arch -x86_64 /usr/bin/true
+
+      # HONEST GATE — same four checks as build-linux, on this OS. The
+      # x86_64 leg runs them through `arch -x86_64` (Rosetta). The prefix
+      # is an unquoted string (not an array): macOS steps may run under
+      # bash 3.2, where expanding an empty array under `set -u` errors.
+      - name: "Smoke-test built binary (gate: no smoke, no artifact)"
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.rust_target }}/release/niu"
+          test -x "$bin"
+          if [ "${{ matrix.rosetta }}" = "true" ]; then
+            prefix="arch -x86_64"
+          else
+            prefix=""
+          fi
+
+          # 1) --version carries this release's version and the pinned engine
+          #    revision (exact substrings pinned by
+          #    tests/rubash_revision_banner.rs).
+          out="$($prefix "$bin" --version)"
+          printf '%s\n' "$out"
+          grep -qF "Niubash ${{ steps.release.outputs.version }} " <<<"$out"
+          grep -qF "rubash   git ${{ steps.rubash.outputs.revision }}" <<<"$out"
+
+          # 2) one-shot engine execution
+          out="$($prefix "$bin" -c 'echo ok')"
+          [ "$out" = "ok" ]
+
+          # 3) external commands + pipeline through native coreutils
+          out="$(printf 'a\nb\n' | $prefix "$bin" -c 'sort | head -1')"
+          [ "$out" = "a" ]
+
+          # 4) plugin stack offline check: empty spec, isolated HOME —
+          #    must exit 0 with zero output and touch no network.
+          mkdir -p "$RUNNER_TEMP/smoke-home"
+          : > "$RUNNER_TEMP/smoke-plugins.toml"
+          out="$(HOME="$RUNNER_TEMP/smoke-home" \
+            NIU_PLUGIN_SPEC="$RUNNER_TEMP/smoke-plugins.toml" \
+            $prefix "$bin" plugin sync --bootstrap 2>&1)"
+          if [ -n "$out" ]; then
+            echo "plugin sync --bootstrap was not quiet on empty spec:" >&2
+            printf '%s\n' "$out" >&2
+            exit 1
+          fi
+
+          # Record what this binary was smoke-verified on.
+          sw_vers
+          uname -m
+
+      - name: Package portable tarball
+        run: |
+          set -euo pipefail
+          name="niubash-v${{ steps.release.outputs.version }}-macos-${{ matrix.arch }}"
+          stage="dist/$name"
+          mkdir -p "$stage"
+          cp "target/${{ matrix.rust_target }}/release/niu" "$stage/niu"
+          cp README.md LICENSE "$stage/"
+          tar -czf "dist/$name.tar.gz" -C dist "$name"
+          tar -tzf "dist/$name.tar.gz"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: niubash-v${{ steps.release.outputs.version }}-macos-${{ matrix.arch }}
+          path: dist/niubash-v${{ steps.release.outputs.version }}-macos-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
   release:
     runs-on: ubuntu-latest
-    needs: build-windows
+    needs: [build-windows, build-linux, build-macos]
     steps:
       - uses: actions/checkout@v4.2.2
 
@@ -246,21 +586,46 @@ jobs:
         with:
           path: artifacts
 
+      # All three build jobs clone rubash master at dispatch time, so they
+      # must have compiled the same revision. If they did not (a master
+      # commit landed between two jobs' clones), the release would mix
+      # engines across platforms — refuse instead.
+      - name: Check engine revision agreement across build jobs
+        run: |
+          set -eu
+          revs="${{ needs.build-windows.outputs.rubash_revision }}
+          ${{ needs.build-linux.outputs.rubash_revision }}
+          ${{ needs.build-macos.outputs.rubash_revision }}"
+          unique="$(printf '%s\n' $revs | sed '/^$/d' | sort -u | wc -l | tr -d ' ')"
+          if [ "$unique" -ne 1 ]; then
+            echo "build jobs compiled different rubash revisions:" >&2
+            printf '%s\n' $revs >&2
+            exit 1
+          fi
+          echo "all platform builds compiled rubash git $(printf '%s\n' $revs | sed '/^$/d' | sort -u)"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release.outputs.tag }}
           name: Niubash ${{ steps.release.outputs.tag }}
           body: |
-            Niubash ${{ steps.release.outputs.tag }} Windows packages.
+            Niubash ${{ steps.release.outputs.tag }} packages for Windows, Linux, and macOS.
 
-            Engine: rubash git ${{ needs.build-windows.outputs.rubash_revision }}
+            Engine: rubash git ${{ needs.build-windows.outputs.rubash_revision }} — every platform build in this release compiled that same revision.
             Verify locally with `niu --version`, which prints the same revision.
 
-            Packages are built remotely for x64 and ARM64. Portable zip packages remain available, and installer packages add user PATH and Windows Terminal profile integration.
+            Windows (x64, ARM64): Inno Setup installers (`*-setup.exe`) add user PATH and Windows Terminal profile integration; portable zips bundle `niu` with WinuxCmd and bash/sh shims.
+
+            Linux (x86_64, aarch64; glibc): portable tarballs with the `niu` binary, README, and LICENSE — Unix builds bundle nothing, native system tools are used. Untar anywhere and run `./niu`.
+
+            macOS (aarch64, x86_64): portable tarballs with the `niu` binary, README, and LICENSE. Untar anywhere and run `./niu`.
+
+            Every artifact was smoke-verified on the build OS of the job that produced it, before upload: `niu -c 'echo ok'`, `printf 'a\nb\n' | niu -c 'sort | head -1'`, an offline `NIU_PLUGIN_SPEC=<empty> niu plugin sync --bootstrap` (exit 0, no output, no network), and a `niu --version` check against this tag and the engine revision.
           files: |
             artifacts/**/*.zip
             artifacts/**/*.exe
+            artifacts/**/*.tar.gz
           fail_on_unmatched_files: true
           overwrite_files: true
           generate_release_notes: true

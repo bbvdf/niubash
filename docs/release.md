@@ -1,0 +1,123 @@
+# Release pipeline
+
+How `.github/workflows/release.yml` turns a `vX.Y.Z` tag into release
+artifacts. This is the contract every future change to the pipeline must
+preserve: **no platform ships binaries that were not run on that platform
+first.**
+
+## Trigger and pinning (all platforms)
+
+- Trigger: push of a `v*` tag, or `workflow_dispatch` with an explicit tag.
+- The tag must match `^v\d+\.\d+\.\d+$`, must exist as a git tag, and the
+  `version` in `Cargo.toml` at that tag must equal the tag's version. Any
+  mismatch fails the build.
+- Every build job clones rubash `master` as a sibling (`../rubash`, the
+  `[patch]` path override), pins its revision into job outputs, and fails if
+  that checkout is dirty. `build.rs` embeds the same revision into the
+  binary, so `niu --version` names the engine the binary actually contains.
+- The `release` job refuses to publish if the three platform jobs did not
+  compile the same rubash revision (a master commit landing between two
+  jobs' clones would otherwise ship mixed engines).
+
+## Artifact matrix
+
+| Job | Runner | Rust target | Artifacts | Contents |
+| --- | --- | --- | --- | --- |
+| `build-windows` (x64) | `windows-2025` | `x86_64-pc-windows-msvc` (crt-static) | `niubash-v{ver}-win-x64.zip`, `-setup.exe`, `niubash-win-x64.*` aliases | `niu.exe`, WinuxCmd, bash/sh shims, icons |
+| `build-windows` (arm64) | `windows-2025` | `aarch64-pc-windows-msvc` (crt-static) | same, `-arm64` | same |
+| `build-linux` (x86_64) | `ubuntu-22.04` | `x86_64-unknown-linux-gnu` | `niubash-v{ver}-linux-x86_64.tar.gz` | `niu`, `README.md`, `LICENSE` |
+| `build-linux` (aarch64) | `ubuntu-22.04-arm` | `aarch64-unknown-linux-gnu` | `niubash-v{ver}-linux-aarch64.tar.gz` | same |
+| `build-macos` (aarch64) | `macos-latest` (arm64) | `aarch64-apple-darwin` | `niubash-v{ver}-macos-aarch64.tar.gz` | same |
+| `build-macos` (x86_64) | `macos-latest` (arm64) | `x86_64-apple-darwin` (cross) | `niubash-v{ver}-macos-x86_64.tar.gz` | same |
+
+Each tarball unpacks to a single `niubash-v{ver}-{os}-{arch}/` directory;
+`./niu` runs from anywhere. The `release` job attaches every artifact
+(`*.zip`, `*.exe`, `*.tar.gz`) with `fail_on_unmatched_files: true`.
+
+## Unix decisions (recorded)
+
+- **gnu, not musl** — the first Unix release ships `*-linux-gnu`. The CI
+  cross-check line (`.github/workflows/ci.yml` `cross-check`) and the
+  engine's Linux port (rubash#225–#240) are validated against glibc; musl
+  has never been compiled in this repo, so a musl leg would ship an
+  untested libc surface (DNS, threading, locale behavior all differ). Add
+  musl legs only after they carry the same smoke gate green.
+- **glibc floor: 2.35** (the ubuntu-22.04 build image). Covers Ubuntu 22.04+,
+  Debian 12+. When the ubuntu-22.04 image retires, move BOTH Linux legs
+  forward together and update this floor — never leave the two legs on
+  different images.
+- **Native arm64 runner, not cross/qemu** — `ubuntu-22.04-arm` is free for
+  public repos and runs the smoke gate on the real target CPU. `cross`/qemu
+  builds cannot execute the binary natively without extra emulation, which
+  weakens the honest gate.
+- **macOS shape** — `macos-13` (the last Intel runner) is retired, so both
+  macOS targets build on the arm64 runner: `aarch64-apple-darwin` natively,
+  `x86_64-apple-darwin` as a first-class Apple cross-compile (same SDK).
+  The x86_64 smoke gate runs under Rosetta 2 (`arch -x86_64`), installed on
+  demand by the job. The effective macOS deployment floor is whatever the
+  runner's SDK + rustc defaults produce; treat the smoke-verified host
+  (printed by `sw_vers` in the job log) as the tested configuration.
+- **No bundling on Unix** — Unix tarballs carry only `niu` + `README.md` +
+  `LICENSE`. Native system tools (coreutils etc.) are used as-is. WinuxCmd
+  and the wpm package-manager surface are Windows-only by compile-time cfg;
+  that red line must not be weakened (no `wpm` strings on non-Windows
+  paths).
+
+## The smoke gate (contract)
+
+Each build job runs, **on the OS it built on, against the exact binary it
+uploads, before anything is uploaded**:
+
+1. `niu --version` — must print `Niubash <tag-version> ` and
+   `rubash   git <pinned-revision>`. The substrings are pinned by
+   `tests/rubash_revision_banner.rs::version_banner_lines_match_release_smoke_greps`.
+2. `niu -c 'echo ok'` — must print exactly `ok` (engine execution).
+3. `printf 'a\nb\n' | niu -c 'sort | head -1'` — must print exactly `a`
+   (external commands + pipelines through the platform's native coreutils).
+4. Offline plugin-stack check — with an isolated `HOME` and an empty
+   `NIU_PLUGIN_SPEC`, `niu plugin sync --bootstrap` must exit 0 with zero
+   output and touch no network.
+
+Any failure fails the job, so no artifact can leave it. The macOS x86_64 leg
+runs all four through Rosetta 2. The release body tells users every artifact
+was "smoke-verified on each build OS" — that sentence is only true while
+this gate stays in the workflow between build and upload.
+
+What the gate does **not** cover: the interactive journey (prompt, readline,
+TTY behavior). The ConPTY journey harness is Windows-specific; a Unix
+interactive journey harness (expectrl family) is future work and must not be
+faked — until it exists, interactive-mode claims on Unix stay out of the
+release notes.
+
+## Windows behavior (unchanged)
+
+`build-windows` keeps its shape: package-release.ps1 + Inno Setup
+installers, WinuxCmd bundling from a matched release, and `niubash-win-*`
+latest-compatible aliases. Unix jobs deliberately do not add such aliases.
+
+## Dispatching a dry run (captain)
+
+The workflow validates `tag` against `^v\d+\.\d+\.\d+$` and against the
+tagged commit's `Cargo.toml` version, so a dry run needs a real tag whose
+commit carries the matching version (e.g. bump `version` to `1.3.2` on a
+scratch commit). Suggested sequence:
+
+```sh
+# 1. scratch commit with Cargo.toml version = "1.3.2" on any branch
+git tag v1.3.2 <that-commit>
+git push origin <that-branch> v1.3.2
+
+# 2. run the workflow from the branch that carries the new jobs
+gh workflow run release.yml --repo unixwin/niubash \
+  --ref <branch-with-this-workflow> -f tag=v1.3.2
+gh run watch --repo unixwin/niubash "$(gh run list --repo unixwin/niubash --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+
+# 3. inspect the Niubash v1.3.2 release, download the tarballs onto real
+#    Linux/macOS machines, then clean up:
+gh release delete v1.3.2 --repo unixwin/niubash --yes --cleanup-tag
+```
+
+Only the first real dispatch run can prove the unix legs end-to-end
+(runner labels, cross-link, Rosetta, tar packaging) — local validation
+before merge covers YAML shape, job graph, cross `cargo check`, and the
+Windows build/test suite.
