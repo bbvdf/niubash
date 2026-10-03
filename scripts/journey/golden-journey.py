@@ -1195,8 +1195,20 @@ def journey(exe: Path, root: Path, verdict: Verdict) -> str:
                  raw_log=verdict.transcripts / "J6.raw.ansi", label="J6",
                  delivery_log=verdict.delivery_events)
     try:
-        step.check("live session prompt renders",
-                   prompt_alive(s6, "J6_ALIVE"))
+        # The aliveness probe and the trust verb travel as ONE anchored
+        # line: two back-to-back sends after session open were the release
+        # glue twice (37153503706 / 37157587488) — prompt_alive's
+        # wait_for + 0.3s sleep is not an output anchor, and on slow
+        # runners the next line appended to the unsubmitted input. One
+        # send cannot glue with itself.
+        s6.send_line("echo J6_ALIVE && niu plugin trust bash-completion",
+                     anchor_timeout=90)
+        try:
+            s6.wait_for("J6_ALIVE", timeout=STARTUP_TIMEOUT)
+            step.check("live session prompt renders", True)
+        except TimeoutError:
+            step.check("live session prompt renders", False,
+                       "echo J6_ALIVE did not come back")
         # The trust step's own expected-output wait is 90s; the anchor
         # bound matches it so a slow trust run expires the anchor, not
         # the sequencing (run 37153503706's 90s timeout was the glue).
