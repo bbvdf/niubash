@@ -928,6 +928,11 @@ def journey(exe: Path, root: Path, verdict: Verdict) -> str:
 
 
 def main() -> int:
+    # CI runners default to a charmap console; the journey transcript carries
+    # CJK/emoji wizard text (the owner's own wording). Force UTF-8 stdio.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(
         description="The Golden User Journey gate (owner directive 2026-10-04)")
     parser.add_argument("niu", type=Path, help="path to the built niu.exe")

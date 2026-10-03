@@ -566,6 +566,9 @@ jobs:
     name: golden user journey (release gate)
     runs-on: windows-2025
     timeout-minutes: 45
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4.2.2
         with:
