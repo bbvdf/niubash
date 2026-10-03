@@ -606,7 +606,12 @@ jobs:
           git fetch --tags --force
           git checkout "${{ steps.release.outputs.tag }}"
           New-Item -ItemType Directory -Force -Path scripts | Out-Null
-          Copy-Item -Recurse -Force (Join-Path $env:RUNNER_TEMP "journey") scripts/journey
+          # Remove-then-copy: Copy-Item -Recurse onto an EXISTING
+          # scripts/journey (the tag carries the gate too) NESTS the
+          # copy as scripts/journey/journey/ while the invoked file
+          # stays the tag's stale version (release runs 2-5).
+          if (Test-Path scripts/journey) { Remove-Item -Recurse -Force scripts/journey }
+          Copy-Item -Recurse -LiteralPath (Join-Path $env:RUNNER_TEMP "journey") scripts/journey
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1.11
