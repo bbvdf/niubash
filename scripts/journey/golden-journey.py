@@ -83,6 +83,54 @@ NAV_GAP_SECONDS = 0.12
 ENTER = "\r"
 DOWN = "\x1b[B"
 
+# ── Input-delivery hardening (release run 37149660449, journey J6) ──────────
+# On a slow runner the J6 keystrokes (`niu plugin trust bash-completion`,
+# typed right after the prompt came up) never reached the ConPTY: the
+# screen still showed the startup banner + awaiting-trust nags with NO
+# echo of the command, and the 90s wait timed out. Same family as wt61:
+# interactive screens drain console input queued while they draw — a slow
+# runner widens every such window. Delivery is therefore VERIFIED, not
+# assumed (bounded everywhere; the send always proceeds when a bound
+# expires, and every retry is recorded as a delivery event):
+#   settle — before every send, wait for a quiet screen (two polls with
+#            no new bytes and no viewport change) or a prompt-ish last
+#            non-empty row. Bounded by QUIESCE_TIMEOUT_SECONDS.
+#   wake   — REPL lines are preceded by a kill-line (Ctrl-U): the themed
+#            prompt's clock repaint eats the FIRST input byte after
+#            idle, so the kill-line goes first as the sacrifice (and
+#            clears stale input before a retry's retype).
+#   echo   — after a REPL line, wait for the typed text to appear NEW in
+#            the rendered viewport (the editor syntax-highlights input,
+#            so raw bytes never hold the text contiguously; and
+#            pre-existing screen text does not count); after a menu key,
+#            wait for ANY viewport change (menus in raw mode give no
+#            echo). Bounded by ECHO_TIMEOUT_SECONDS.
+#   retry  — when the signal never came, resend ONCE. This retries
+#            DELIVERY only: the expected-output waits (wait_for) never
+#            retry, so a real product failure still fails the gate.
+QUIESCE_POLL_SECONDS = 0.15
+QUIESCE_TIMEOUT_SECONDS = 15.0
+ECHO_TIMEOUT_SECONDS = 10.0
+ENTER_ACK_SECONDS = 3.0
+WAKE_GAP_SECONDS = 0.15
+# Readline kill-line: the REPL editor's first input byte after the themed
+# prompt has been idle is EATEN (observed 2026-10-03, run drv-run1: `echo`
+# renders as `❯ cho`, `niu` as `❯ iu`, `source` as `❯ ource` — the prompt's
+# per-second clock repaint consumes one queued key). Ctrl-U is the
+# sacrificial wake byte: eaten -> the line behind it lands intact; not
+# eaten -> it clears the (empty or stale) input line and the line still
+# lands intact. Verified against the release build: Ctrl-U + line executes
+# clean; double Ctrl-U + line (the retry shape) also executes clean.
+KILL_LINE = "\x15"
+# A REPL prompt is the classic "last non-empty row ends in a prompt
+# glyph" (powerline tails, the default user@host:cwd# $ #) or the
+# agnoster shape where the glyph leads the row (➜  dirname). An early
+# exit here is only a heuristic miss on a lookalike help line — the
+# echo/change confirmation behind it still decides whether the key was
+# delivered.
+PROMPTISH_LAST_ROW = re.compile(
+    r"(?:.*[$#%>❯➜▶►»❮]\s*$|\s*[❯➜▶►»➤⮞❮])")
+
 COLS, ROWS = 120, 36
 
 # Network clones are the real thing; give them real time.
@@ -149,7 +197,10 @@ class Session:
     view forever, so waits fall back to the raw stream and the artifacts
     keep the raw bytes alongside the rendered transcripts."""
 
-    def __init__(self, argv, cwd, env, cols=COLS, rows=ROWS, raw_log=None):
+    def __init__(self, argv, cwd, env, cols=COLS, rows=ROWS, raw_log=None,
+                 label="session", delivery_log=None):
+        self.label = label
+        self.delivery_log = delivery_log if delivery_log is not None else []
         self.proc = PtyProcess.spawn(argv, cwd=str(cwd), env=env,
                                      dimensions=(rows, cols))
         # HistoryScreen keeps scrolled-off lines so the artifacts hold FULL
@@ -220,22 +271,163 @@ class Session:
             f"timed out ({timeout}s) waiting for {needles}; screen:\n{self.text()}"
         )
 
+    def _raw_pulse(self) -> int:
+        """How many chunks the terminal has emitted so far — a cheap
+        'bytes are still arriving' signal for settle-before-send."""
+        with self._lock:
+            return len(self.raw_chunks)
+
+    def last_nonempty_row(self) -> str:
+        for row in reversed(self.screen.display):
+            if row.strip():
+                return row.rstrip()
+        return ""
+
+    def wait_quiescent(self, timeout=QUIESCE_TIMEOUT_SECONDS) -> str:
+        """Settle-before-send. Returns 'quiescent' once two polls saw no
+        viewport change and no new bytes, 'prompt' when the last
+        non-empty row already looks like a REPL prompt (a themed prompt
+        with a clock/spinner never goes fully quiet), or 'timeout' when
+        the bound expired. Bounded and best-effort: the caller sends
+        regardless, and the send's own echo/change confirmation is what
+        decides whether delivery needs a retry."""
+        deadline = time.time() + timeout
+        prev_screen = None
+        prev_pulse = None
+        while time.time() < deadline:
+            screen = self.text()
+            pulse = self._raw_pulse()
+            # prev_pulse must be nonzero: a session that has never emitted
+            # a byte is not settled, it is not started yet — typing into
+            # that window is exactly the startup-drain loss (37149660449).
+            if (prev_pulse and prev_screen is not None
+                    and screen == prev_screen and pulse == prev_pulse):
+                return "quiescent"
+            if PROMPTISH_LAST_ROW.match(self.last_nonempty_row()):
+                return "prompt"
+            prev_screen, prev_pulse = screen, pulse
+            time.sleep(QUIESCE_POLL_SECONDS)
+        return "timeout"
+
+    def _delivery_event(self, kind, keys, attempt, reason, action):
+        """Record a delivery retry (or a give-up) for the verdict, so a
+        future flake is diagnosable from the artifacts alone."""
+        self.delivery_log.append({
+            "utc": now_utc(),
+            "session": self.label,
+            "kind": kind,
+            "keys": keys,
+            "attempt": attempt,
+            "reason": reason,
+            "action": action,
+        })
+
+    def _await_echo(self, line, before, timeout=ECHO_TIMEOUT_SECONDS) -> bool:
+        """Wait for the typed text to appear in the RENDERED viewport.
+        The viewport is the only reliable surface: the editor
+        syntax-highlights the input line, so the raw bytes interleave SGR
+        codes INSIDE the word (`\\x1b[36mecho\\x1b[0m DUM...`) and a raw
+        substring test can never match; pyte's rendered row holds the
+        glyphs contiguously. `before` is the pre-send viewport — a match
+        that was already on screen is not an echo (the awaiting-trust
+        nag spells `niu plugin trust bash-completion`; drv-run1's
+        raw-stream false confirm hid the eaten first byte)."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            body = self.text()
+            if line in body and line not in before:
+                return True
+            time.sleep(0.1)
+        return False
+
+    def _await_change(self, before, timeout=ECHO_TIMEOUT_SECONDS) -> bool:
+        """Wait for ANY viewport change — the delivery signal for menu
+        keys, which read raw and never echo: a delivered answer always
+        advances the screen (next question, gallery, clones)."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.text() != before:
+                return True
+            time.sleep(0.1)
+        return False
+
     def answer(self, keys):
-        """Settle out the menu draw, then press; digit and Enter split."""
-        time.sleep(SETTLE_SECONDS)
-        if keys.endswith(ENTER) and len(keys) > 1:
-            self.proc.write(keys[:-1])
-            time.sleep(ENTER_GAP_SECONDS)
-            self.proc.write(ENTER)
-        else:
-            self.proc.write(keys)
+        """Settle out the menu draw, then press; digit and Enter split.
+
+        Delivery-verified like send_line, but menus give no echo, so the
+        signal is that the screen CHANGED after the press; one resend
+        when nothing moved. The gallery's DOWN walk deliberately does
+        NOT go through this per key — a repaint can lag a delivered
+        arrow, a resent arrow can overshoot the row the walk just
+        verified, and the walk already self-heals by polling the
+        highlight."""
+        for attempt in (1, 2):
+            settle = self.wait_quiescent()
+            before = self.text()
+            if keys.endswith(ENTER) and len(keys) > 1:
+                self.proc.write(keys[:-1])
+                time.sleep(ENTER_GAP_SECONDS)
+                self.proc.write(ENTER)
+            else:
+                self.proc.write(keys)
+            if self._await_change(before):
+                return
+            if attempt == 1:
+                self._delivery_event(
+                    "answer", keys, 2,
+                    f"screen unchanged {ECHO_TIMEOUT_SECONDS}s after the "
+                    f"press (settle={settle}) — resending once", "resend")
+            else:
+                self._delivery_event(
+                    "answer", keys, 2,
+                    "screen still unchanged after the resend — proceeding; "
+                    "the step's own wait will rule",
+                    "undelivered")
 
     def send_line(self, line):
-        """Type a whole command at the REPL prompt, then Enter."""
-        time.sleep(SETTLE_SECONDS)
-        self.proc.write(line)
+        """Type a whole command at the REPL prompt, then Enter.
+
+        Delivery-verified (release run 37149660449, J6: keystrokes typed
+        while startup notices were still landing never reached the
+        ConPTY — no echo, 90s timeout; and drv-run1: the themed prompt's
+        clock repaint eats the FIRST input byte after idle). Protocol,
+        per attempt: kill-line first (sacrificial wake byte + clear of
+        any stale input), then the text, then wait for the text to come
+        back as NEW bytes; a failed confirm resends ONCE — the retry's
+        kill-line also wipes a late-landing first attempt, so a resend
+        can no longer concatenate two half-lines. The Enter gets its own
+        short confirm (its scroll is immediate). Delivery retries only —
+        the expected-output wait that follows never retries."""
+        settle = self.wait_quiescent()
+        for attempt in (1, 2):
+            before = self.text()
+            self.proc.write(KILL_LINE)
+            time.sleep(WAKE_GAP_SECONDS)
+            self.proc.write(line)
+            if self._await_echo(line, before):
+                break
+            if attempt == 1:
+                self.wait_quiescent(timeout=5.0)  # do not retype mid-drain
+                self._delivery_event(
+                    "send_line", line, 2,
+                    f"no echo of the typed text within "
+                    f"{ECHO_TIMEOUT_SECONDS}s (settle={settle}) — "
+                    "resending once", "resend")
+            else:
+                self._delivery_event(
+                    "send_line", line, 2,
+                    "echo never appeared after the resend — proceeding; "
+                    "the step's own wait will rule",
+                    "undelivered")
         time.sleep(ENTER_GAP_SECONDS)
+        before = self.text()
         self.proc.write(ENTER)
+        if not self._await_change(before, timeout=ENTER_ACK_SECONDS):
+            self._delivery_event(
+                "send_line-enter", line, 2,
+                f"screen did not advance within {ENTER_ACK_SECONDS}s of "
+                "Enter — resending Enter once", "resend")
+            self.proc.write(ENTER)
 
     def close(self):
         try:
@@ -258,6 +450,10 @@ class Verdict:
         self.transcripts = artifacts / "transcripts"
         self.transcripts.mkdir(parents=True, exist_ok=True)
         self.steps = []
+        # Input-delivery retries from every Session, merged into the
+        # verdict so a future ConPTY flake is diagnosable from the
+        # artifacts alone (raw-stream format itself is unchanged).
+        self.delivery_events = []
 
     def step(self, step_id, title):
         return StepRecorder(self, step_id, title)
@@ -275,6 +471,13 @@ class Verdict:
             "finished_utc": now_utc(),
             "result": worst,
             "steps": self.steps,
+            # Input-delivery retry ledger: keys that had to be resent (or
+            # never confirmed) on the ConPTY bridge. Delivery retries are
+            # never a waiver — if the product failed, the step assertions
+            # above still rule — but they separate "the keystroke never
+            # landed" (a runner/window problem) from "the product said
+            # so" (a real red).
+            "delivery": self.delivery_events,
         }
         (self.artifacts / "verdict.json").write_text(
             json.dumps(summary, indent=2, ensure_ascii=False) + "\n",
@@ -291,6 +494,15 @@ class Verdict:
                 lines.append(f"    {flag}  {assertion['name']}{detail}")
             for note in step.get("notes", []):
                 lines.append(f"    ·    {note}")
+        if self.delivery_events:
+            lines.append("")
+            lines.append("INPUT DELIVERY EVENTS (ConPTY keystroke retries —")
+            lines.append("delivery only; expected-output waits never retry):")
+            for event in self.delivery_events:
+                lines.append(
+                    f"    [{event['action']}] {event['session']} "
+                    f"{event['kind']} attempt {event['attempt']} "
+                    f"{event['keys']!r} — {event['reason']}")
         (self.artifacts / "verdict.txt").write_text(
             "\n".join(lines) + "\n", encoding="utf-8", newline="\n")
         return worst
@@ -497,7 +709,9 @@ def journey(exe: Path, root: Path, verdict: Verdict) -> str:
     j1_ok = True
     try:
         session = Session([str(exe)], home, env,
-                           raw_log=verdict.transcripts / "J1J2.raw.ansi")
+                           raw_log=verdict.transcripts / "J1J2.raw.ansi",
+                           label="J1J2",
+                           delivery_log=verdict.delivery_events)
     except Exception as err:  # noqa: BLE001 - any spawn failure is a J1 fail
         step.check("niu spawned under ConPTY", False, f"{err}")
         j1_ok = False
@@ -623,6 +837,13 @@ def journey(exe: Path, root: Path, verdict: Verdict) -> str:
             return None
 
         picked = False
+        # Settle before the first arrow: the gallery's own draw drains
+        # queued keys (the wt61 lesson), and an arrow lost to that drain
+        # is indistinguishable from a clamped one. Inside the walk the
+        # existing dynamics stay: per-key resend is deliberately NOT
+        # applied there (see answer()'s docstring) — the walk self-heals
+        # by polling the highlight and re-verifying after the settle.
+        session.wait_quiescent()
         for _ in range(600):
             if highlight_row("powerline-multiline") is not None:
                 picked = True
@@ -647,7 +868,7 @@ def journey(exe: Path, root: Path, verdict: Verdict) -> str:
         verdict.capture("J2-theme-highlighted", session)
         if not picked:
             raise AssertionError("powerline-multiline never highlighted")
-        session.proc.write(ENTER)
+        session.answer(ENTER)  # delivery-verified confirm
 
         # The wizard prints its finish screen with the undo receipts, then
         # the about-tour takes over (clears the screen, waits for a key).
@@ -658,7 +879,7 @@ def journey(exe: Path, root: Path, verdict: Verdict) -> str:
             step.check("finish screen listed undo receipts", False, str(err))
         try:
             session.wait_for("press any key to continue", timeout=60)
-            session.proc.write(" ")
+            session.answer(" ")  # delivery-verified tour keypress
         except TimeoutError:
             pass  # tour skipped (non-tty guard); the REPL marker still runs
         step.check("REPL alive after the wizard (first run continues)",
@@ -716,7 +937,8 @@ def journey(exe: Path, root: Path, verdict: Verdict) -> str:
     step = verdict.step(
         "J3", "activation: source ~/.niubashrc, zero syntax errors")
     s3 = Session([str(exe)], home, env,
-                 raw_log=verdict.transcripts / "J3.raw.ansi")
+                 raw_log=verdict.transcripts / "J3.raw.ansi", label="J3",
+                 delivery_log=verdict.delivery_events)
     try:
         step.check("live session prompt renders",
                    prompt_alive(s3, "J3_ALIVE"))
@@ -744,7 +966,8 @@ def journey(exe: Path, root: Path, verdict: Verdict) -> str:
     live = None
     for i in (1, 2, 3):
         s = Session([str(exe)], home, env,
-                    raw_log=verdict.transcripts / f"J4-terminal-{i}.raw.ansi")
+                    raw_log=verdict.transcripts / f"J4-terminal-{i}.raw.ansi",
+                    label=f"J4-{i}", delivery_log=verdict.delivery_events)
         try:
             marker = f"J4_READY_{i}"
             if not prompt_alive(s, marker):
@@ -871,7 +1094,8 @@ def journey(exe: Path, root: Path, verdict: Verdict) -> str:
     step = verdict.step(
         "J6", "trust + activate bash-completion, zero syntax errors")
     s6 = Session([str(exe)], home, env,
-                 raw_log=verdict.transcripts / "J6.raw.ansi")
+                 raw_log=verdict.transcripts / "J6.raw.ansi", label="J6",
+                 delivery_log=verdict.delivery_events)
     try:
         step.check("live session prompt renders",
                    prompt_alive(s6, "J6_ALIVE"))
@@ -903,7 +1127,8 @@ def journey(exe: Path, root: Path, verdict: Verdict) -> str:
     # block runs when a fresh shell sources the rc. This is where the
     # owner's bash_completion:1376 surfaced.
     s6b = Session([str(exe)], home, env,
-                  raw_log=verdict.transcripts / "J6-fresh.raw.ansi")
+                  raw_log=verdict.transcripts / "J6-fresh.raw.ansi",
+                  label="J6-fresh", delivery_log=verdict.delivery_events)
     try:
         step.check("fresh terminal after trust: prompt renders",
                    prompt_alive(s6b, "J6B_ALIVE"))
