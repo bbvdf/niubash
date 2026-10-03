@@ -631,4 +631,79 @@ mod tests {
         let err = remove("minimal").unwrap_err().to_string();
         assert!(err.contains("built in"), "{err}");
     }
+
+    /// Journey run-13 observation (G3): a collection apply with a failed
+    /// entry must report it, and `installed_sources` must name only what
+    /// actually landed. Offline and deterministic: the manager comes from
+    /// the local fixture, and `omb-theme-90210` is a compiled-in recipe
+    /// whose asset the fixture tree does not carry, so its enable fails.
+    #[test]
+    fn apply_with_a_failing_entry_reports_it_and_installs_the_rest() {
+        let _guard = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp = std::env::temp_dir().join(format!(
+            "niu-distros-fail-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp).unwrap();
+        let home = temp.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        // Full sandbox: the healthy entry activates through assets::enable,
+        // which writes the spec and the rc — never the real profile.
+        let _home = EnvGuard::set("HOME", &home.to_string_lossy());
+        let _userprofile = EnvGuard::set("USERPROFILE", &home.to_string_lossy());
+        let _spec = EnvGuard::set(
+            "NIU_PLUGIN_SPEC",
+            &temp.join("plugins.toml").to_string_lossy(),
+        );
+        let _sources = EnvGuard::set(
+            "NIU_PLUGIN_SOURCES_ROOT",
+            &temp.join("sources").to_string_lossy(),
+        );
+        let _distros = EnvGuard::set(
+            "NIU_PLUGIN_DISTROS_ROOT",
+            &temp.join("distros").to_string_lossy(),
+        );
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/sources/oh-my-bash");
+        super::super::sources::add_source(super::super::sources::SourceInstallRequest {
+            adapter: None,
+            origin: fixture.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
+        .expect("fixture source add");
+        super::super::sources::trust_source("oh-my-bash").expect("fixture trust");
+
+        let source = temp.join("collection-src");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            source.join(COLLECTION_MANIFEST),
+            "schema = \"niubash:plugin-collection@1\"\nname = \"test-partial\"\n\n\
+             [[entry]]\nrecipe = \"omb-theme-agnoster\"\n\n\
+             [[entry]]\nrecipe = \"omb-theme-90210\"\n",
+        )
+        .unwrap();
+        import(source.to_string_lossy().as_ref()).expect("import test-partial");
+        let outcome = apply("test-partial").expect("apply collects failures, never throws");
+        // The failing entry is named, with the honest reason.
+        assert_eq!(outcome.failures.len(), 1, "{:?}", outcome.failures);
+        assert_eq!(outcome.failures[0].0, "omb-theme-90210");
+        // The healthy entry still installed (activated through the trusted
+        // fixture manager) — a bad entry never kills the rest.
+        assert_eq!(outcome.reports.len(), 1, "{:?}", outcome.reports);
+        assert_eq!(outcome.reports[0].recipe_id, "omb-theme-agnoster");
+        // No NEW source landed (the manager pre-existed) — the honest
+        // report of what this apply itself installed.
+        assert!(
+            outcome.installed_sources.is_empty(),
+            "{:?}",
+            outcome.installed_sources
+        );
+
+        // Cleanup: drop the source and the imported tree (both under temp).
+        let _ = super::super::sources::remove_source("oh-my-bash");
+    }
 }

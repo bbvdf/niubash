@@ -914,4 +914,144 @@ mod tests {
             "ble.sh is info-only (build from source)"
         );
     }
+
+    /// The audited upstream-root entry files for every curated generic
+    /// recipe (driver=git, kind=generic, entry=<file>) — observed 2026-10-02
+    /// against each origin's root listing (GitHub contents API, wt61/journeyfix
+    /// G1). The journey's `distro apply full` failed on bash-preexec because
+    /// the seed named the bare id while upstream ships `bash-preexec.sh`
+    /// (`sources.rs` entry validation: "entry file 'bash-preexec' not found").
+    /// Every new curated generic entry must be audited into this table; a
+    /// drifted `entry` fails here instead of inside a user's install.
+    const AUDITED_UPSTREAM_ROOT_ENTRIES: &[(&str, &str)] = &[
+        ("bash-preexec", "bash-preexec.sh"),
+        ("liquidprompt", "liquidprompt"),
+        ("bash-git-prompt", "gitprompt.sh"),
+        ("bpkg", "bpkg.sh"),
+    ];
+
+    #[test]
+    fn curated_generic_entries_match_audited_upstream_roots() {
+        for found in recipes() {
+            let Some(RecipeDriver::Git {
+                kind,
+                entry: Some(entry),
+                ..
+            }) = &found.driver
+            else {
+                continue;
+            };
+            if kind != "generic" {
+                continue;
+            }
+            let audited = AUDITED_UPSTREAM_ROOT_ENTRIES
+                .iter()
+                .find(|(id, _)| *id == found.id)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "curated generic recipe '{}' is not in the upstream-root audit table — \
+                         audit its origin root and pin the entry file here",
+                        found.id
+                    )
+                });
+            assert_eq!(
+                entry, &audited.1,
+                "recipe '{}' entry drifted from the audited upstream root \
+                 ({} ships '{}'): re-audit before changing the seed",
+                found.id, found.id, audited.1
+            );
+        }
+        // The table itself stays exactly as large as the curated set — an
+        // orphaned row is a stale audit, not coverage.
+        let curated: Vec<&str> = recipes()
+            .iter()
+            .filter_map(|found| match &found.driver {
+                Some(RecipeDriver::Git {
+                    kind,
+                    entry: Some(_),
+                    ..
+                }) if kind == "generic" => Some(found.id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            curated.len(),
+            AUDITED_UPSTREAM_ROOT_ENTRIES.len(),
+            "audit table size must track the curated generic set: {curated:?}"
+        );
+    }
+
+    /// The loader's dry run on a fixture skeleton: the recipe's declared entry
+    /// must exist in a tree shaped like the upstream root, using the exact
+    /// production validation path (`sources::add_source` with the recipe's
+    /// request shape — offline, local-directory origin). This is the check the
+    /// journey's `distro apply full` performs for real against GitHub.
+    #[test]
+    fn curated_entries_pass_the_loader_dry_run_on_a_skeleton() {
+        use super::super::sources;
+        let _guard = crate::test_support::PROCESS_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        struct EnvGuard {
+            name: &'static str,
+            previous: Option<std::ffi::OsString>,
+        }
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match &self.previous {
+                    Some(value) => std::env::set_var(self.name, value),
+                    None => std::env::remove_var(self.name),
+                }
+            }
+        }
+        let temp = std::env::temp_dir().join(format!(
+            "niu-recipes-dryrun-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp).unwrap();
+        let _root = EnvGuard {
+            name: "NIU_PLUGIN_SOURCES_ROOT",
+            previous: std::env::var_os("NIU_PLUGIN_SOURCES_ROOT"),
+        };
+        // Deliberately set AFTER the guard: the skeleton mirrors the audited
+        // upstream root (the pinned entry file is the only required member).
+        std::env::set_var(
+            "NIU_PLUGIN_SOURCES_ROOT",
+            temp.join("sources").to_string_lossy().as_ref(),
+        );
+        for (id, entry) in AUDITED_UPSTREAM_ROOT_ENTRIES {
+            let skeleton = temp.join(id);
+            std::fs::create_dir_all(&skeleton).unwrap();
+            std::fs::write(skeleton.join(entry), "# fixture skeleton\n").unwrap();
+            // The file adapter requires at least one *.sh/*.bash to detect
+            // the tree (liquidprompt's real root ships tests.sh alongside
+            // its extension-less entry).
+            std::fs::write(skeleton.join("tests.sh"), "# skeleton probe\n").unwrap();
+            let found = recipe(id).expect("curated generic recipe");
+            let RecipeDriver::Git {
+                kind,
+                entry: Some(declared),
+                origin: _,
+            } = found.driver.as_ref().unwrap()
+            else {
+                panic!("{id}: expected a generic git driver with an entry");
+            };
+            assert_eq!(kind, "generic");
+            let request = sources::SourceInstallRequest {
+                adapter: Some("file".to_string()),
+                origin: skeleton.to_string_lossy().into_owned(),
+                id: Some(id.to_string()),
+                entry: Some(declared.clone()),
+                ..Default::default()
+            };
+            let record = sources::add_source(request)
+                .unwrap_or_else(|err| panic!("{id}: loader dry run failed: {err:#}"));
+            let _ = sources::remove_source(&record.id);
+        }
+        let _ = std::fs::remove_dir_all(&temp);
+    }
 }

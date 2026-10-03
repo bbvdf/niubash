@@ -514,10 +514,7 @@ impl Prompt for SegmentPromptAdapter {
 mod tests {
     use super::*;
     use crate::test_support::PROCESS_STATE_LOCK;
-    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    static STATUS_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn segment_id_from_name_case_insensitive() {
@@ -617,7 +614,9 @@ mod tests {
 
     #[test]
     fn status_segment_shows_nothing_on_success() {
-        let _guard = STATUS_ENV_LOCK.lock().unwrap();
+        // Mutates the process env (NIU_LAST_EXIT_CODE): must serialize with
+        // every other env-touching test (Windows env races — wt61).
+        let _guard = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let cfg = default_cfg();
         std::env::remove_var("NIU_LAST_EXIT_CODE");
         let content = render_content(&SegmentId::Status, &cfg);
@@ -626,7 +625,7 @@ mod tests {
 
     #[test]
     fn status_segment_shows_non_zero_code() {
-        let _guard = STATUS_ENV_LOCK.lock().unwrap();
+        let _guard = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let cfg = default_cfg();
         std::env::set_var("NIU_LAST_EXIT_CODE", "1");
         let content = render_content(&SegmentId::Status, &cfg);

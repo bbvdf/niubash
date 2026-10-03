@@ -35,7 +35,10 @@ STANDALONE = [
     ("bash-preexec", "plugin",
      "precmd/preexec hook layer for bash (the zsh-preeq equivalent)",
      "MIT", "https://github.com/rcaloras/bash-preexec",
-     {"driver": "git", "kind": "generic", "entry": "bash-preexec"}),
+     # Upstream root ships `bash-preexec.sh` (audited 2026-10-02 via the
+     # GitHub contents API, wt61/journeyfix G1): the bare name was a seed
+     # drift that failed every `distro apply full` at entry validation.
+     {"driver": "git", "kind": "generic", "entry": "bash-preexec.sh"}),
     ("liquidprompt", "prompt",
      "adaptive prompt: git/virtualenv/weather-aware, bash 3.2+",
      "AGPL-3.0-only", "https://github.com/liquidprompt/liquidprompt",

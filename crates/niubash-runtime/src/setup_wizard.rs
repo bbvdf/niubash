@@ -50,7 +50,14 @@ struct SetupJournal {
 #[derive(Debug, Default)]
 struct CollectionJournal {
     name: String,
+    /// Source ids that actually landed (undo targets).
     sources: Vec<String>,
+    /// Entries that failed to install (recipe ids), plus a
+    /// `"apply failed: <error>"` row when the whole apply errored — the
+    /// journal tells the truth about partial and total failure alike
+    /// (journey run-13 observation: a failed apply was journaled as a
+    /// bare success line and the finish screen said nothing).
+    failed: Vec<String>,
 }
 
 fn setup_journal_path(home: &std::path::Path) -> PathBuf {
@@ -99,6 +106,12 @@ fn write_setup_journal(home: &std::path::Path, journal: &SetupJournal) {
                 .collect();
             body.push_str(&format!("collection_sources = [{}]\n", ids.join(", ")));
         }
+        // Honesty (journey run-13): a collection whose entries failed — or
+        // whose whole apply errored — must never read back as a success.
+        if !collection.failed.is_empty() {
+            let ids: Vec<String> = collection.failed.iter().map(|id| shell_quote(id)).collect();
+            body.push_str(&format!("collection_failed = [{}]\n", ids.join(", ")));
+        }
     }
     if let Err(err) = std::fs::write(&path, body) {
         println!(
@@ -135,6 +148,30 @@ fn setup_undo_lines(home: &std::path::Path, journal: &SetupJournal) -> Vec<Strin
         }
     }
     lines
+}
+
+/// One retry command per failed collection entry: the exact verb the apply
+/// itself named mid-run (`niu plugin distro apply <name>` — verified verb,
+/// wired in `run_plugin_distro_command`). Only the failed entries are
+/// called out; a healthy apply prints nothing here.
+fn setup_retry_lines(journal: &SetupJournal) -> Vec<String> {
+    let Some(collection) = &journal.collection else {
+        return Vec::new();
+    };
+    if collection.failed.is_empty() {
+        return Vec::new();
+    }
+    vec![format!(
+        "niu plugin distro apply {}     # collection '{}': {} entr{} failed",
+        collection.name,
+        collection.name,
+        collection.failed.len(),
+        if collection.failed.len() == 1 {
+            "y"
+        } else {
+            "ies"
+        }
+    )]
 }
 
 /// niu-git recipe id in the compiled-in plugin recipe index. The wizard
@@ -315,10 +352,38 @@ fn theme_gallery() -> ThemeGallery {
             adapter: entry.adapter_display,
         })
         .collect();
-    external.sort_by(|a, b| a.name.cmp(&b.name));
+    // Sort by (name, source priority, source id), then keep the FIRST entry
+    // per name. The priority tier is the fix for the journey's J5 gap
+    // (run-13, 2026-10-04): with several frameworks installed, both may ship
+    // a same-named theme (powerline-multiline exists in oh-my-bash AND
+    // bash-it) and the old plain-name sort kept whichever the registry
+    // happened to list first — silently routing the pick through the other
+    // framework's adapter. Resolution now follows the product's framework
+    // order: oh-my-bash is niu's primary external framework (the base of
+    // every built-in collection, the rc template's default theme channel),
+    // so a shared name activates through ITS native loader; every other
+    // source follows alphabetical tie-break so the gallery stays
+    // deterministic regardless of registry order.
+    external.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| gallery_source_rank(&a.source_id).cmp(&gallery_source_rank(&b.source_id)))
+            .then_with(|| a.source_id.cmp(&b.source_id))
+    });
     let mut seen = BTreeSet::new();
     external.retain(|entry| seen.insert(entry.name.to_ascii_lowercase()));
     ThemeGallery { entries: external }
+}
+
+/// Priority tier of a theme source for same-name gallery resolution
+/// (lower renders first and wins the dedupe): 0 = oh-my-bash (the primary
+/// external framework), 1 = everything else.
+fn gallery_source_rank(source_id: &str) -> u8 {
+    if source_id == "oh-my-bash" {
+        0
+    } else {
+        1
+    }
 }
 
 /// The theme question itself: option 0 is Skip — described by whatever
@@ -973,7 +1038,12 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
     // The collection apply installs through the recipe drivers; in 1.3.0
     // that left the spec unwritten, so every later startup nagged
     // "installed but not declared" with no working migration verb.
-    if collection_journal.is_some() {
+    // Skipped when the apply landed nothing (total failure): adopting an
+    // empty set would only materialize an empty spec file.
+    if collection_journal
+        .as_ref()
+        .is_some_and(|journal| !journal.sources.is_empty())
+    {
         adopt_installed_sources_into_spec(lang);
     }
 
@@ -996,6 +1066,7 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
     print_finish_screen(
         backup_path.as_deref(),
         &setup_undo_lines(&home, &journal),
+        &setup_retry_lines(&journal),
         lang,
     );
 
@@ -1031,9 +1102,16 @@ fn apply_plugin_collection(name: &str, lang: Lang) -> Option<CollectionJournal> 
                     format!("`niu plugin distro apply {name}`")
                 );
             }
+            // The journal records what ACTUALLY landed plus every failed
+            // entry — never a bare success line over a partial failure.
             Some(CollectionJournal {
                 name: outcome.name,
                 sources: outcome.installed_sources,
+                failed: outcome
+                    .failures
+                    .iter()
+                    .map(|(recipe, _)| recipe.clone())
+                    .collect(),
             })
         }
         Err(err) => {
@@ -1041,7 +1119,14 @@ fn apply_plugin_collection(name: &str, lang: Lang) -> Option<CollectionJournal> 
                 "  \u{26a0}\u{fe0f}  {} '{name}': {err:#}",
                 lang.tr("plugin collection")
             );
-            None
+            // A totally failed apply is journaled too (zero sources, the
+            // error recorded) — the run's history must not silently forget
+            // that a collection was picked and failed.
+            Some(CollectionJournal {
+                name: name.to_string(),
+                sources: Vec::new(),
+                failed: vec![format!("apply failed: {err:#}")],
+            })
         }
     }
 }
@@ -1265,13 +1350,13 @@ fn print_post_install_trust_hint(t: &Lang, ids: &[String]) {
 fn describe_theme_pick(pick: &ThemePick, t: Lang) -> String {
     match pick {
         ThemePick::Keep => t.tr("default").to_string(),
-        ThemePick::External { name, .. } => format!("{} · oh-my-bash", name),
+        ThemePick::External { name, source_id } => format!("{name} · {source_id}"),
     }
 }
 
-/// The theme that is active right now: the `NIU_THEME` the shell was started
-/// with, else the assignment in the existing rc (`OSH_THEME` +
-/// `NIU_THEME_SOURCE=omb` marks an external oh-my-bash pick). Used so
+/// The theme that is active right now: the assignment in the existing rc
+/// (`OSH_THEME` marks an oh-my-bash pick, `BASH_IT_THEME` a bash-it pick —
+/// the LAST theme-bearing block wins, mirroring rc load order). Used so
 /// "Skip — keep my current theme" is honest and side-effect free.
 fn current_theme_pick(home: &std::path::Path) -> ThemePick {
     let text = std::fs::read_to_string(home.join(PRIMARY_RC_FILE))
@@ -1281,27 +1366,24 @@ fn current_theme_pick(home: &std::path::Path) -> ThemePick {
         return ThemePick::Keep;
     };
     // The native NIU_THEME channel is retired (niubash#145); only the
-    // external oh-my-bash OSH_THEME lines identify an active theme.
-    let mut osh: Option<String> = None;
+    // external theme variables identify an active pick — each through its
+    // own framework's managed block.
+    let mut active: Option<(String, String)> = None;
     for raw in text.lines() {
         let line = raw.trim().strip_prefix("export ").unwrap_or(raw).trim();
-        if let Some(rest) = line
-            .strip_prefix("OSH_THEME")
-            .and_then(|r| r.strip_prefix('='))
-        {
-            let value = rest.trim().trim_matches('\'').trim_matches('"');
-            if !value.is_empty() {
-                osh = Some(value.to_string());
+        for (var, source_id) in [("OSH_THEME", "oh-my-bash"), ("BASH_IT_THEME", "bash-it")] {
+            if let Some(rest) = line.strip_prefix(var).and_then(|r| r.strip_prefix('=')) {
+                let value = rest.trim().trim_matches('\'').trim_matches('"');
+                if !value.is_empty() {
+                    active = Some((value.to_string(), source_id.to_string()));
+                }
             }
         }
     }
-    if let Some(name) = osh {
-        return ThemePick::External {
-            name,
-            source_id: "oh-my-bash".to_string(),
-        };
+    match active {
+        Some((name, source_id)) => ThemePick::External { name, source_id },
+        None => ThemePick::Keep,
     }
-    ThemePick::Keep
 }
 
 /// Build the rc configuration from the wizard answers. Skip paths mirror the
@@ -1514,7 +1596,15 @@ fn recommend_niu_git(home: &std::path::Path, lang: Lang) {
 
 /// The final "how to change things later" block — one compact screen, in the
 /// spirit of oh-my-zsh's post-install hints. Nothing here installs anything.
-fn print_finish_screen(backup_path: Option<&std::path::Path>, undo: &[String], lang: Lang) {
+/// `failed` carries the retry lines for collection entries that did not
+/// install, so a red apply cannot hide behind a green-looking finish
+/// (journey run-13 observation: 1 entry failed, the finish screen silent).
+fn print_finish_screen(
+    backup_path: Option<&std::path::Path>,
+    undo: &[String],
+    failed: &[String],
+    lang: Lang,
+) {
     let t = lang;
     println!();
     if let Some(path) = backup_path {
@@ -1522,6 +1612,16 @@ fn print_finish_screen(backup_path: Option<&std::path::Path>, undo: &[String], l
             "  \u{1f4e6}  {}",
             fill(t.tr("Previous rc backed up to {}"), &[&path.display()])
         );
+    }
+    if !failed.is_empty() {
+        println!();
+        println!(
+            "  \u{26a0}\u{fe0f}  {}",
+            t.tr("Collection entries failed — retry with:")
+        );
+        for line in failed {
+            println!("  \u{2502}    {line}");
+        }
     }
     if !undo.is_empty() {
         println!();
@@ -1764,8 +1864,12 @@ fn generate_rc(cfg: &WizardConfig) -> String {
         block
     };
     let theme_note = if external.is_some() {
+        // Name the pick's ACTUAL source (run-13 journaled "the oh-my-bash
+        // theme" above a bash-it BASH_IT_THEME block — the note must never
+        // contradict the loader it sits on).
         format!(
-            "# Prompt owned by the oh-my-bash theme '{}'; PS1 renders via the bash-compatible channel.\n",
+            "# Prompt owned by the {} theme '{}'; PS1 renders via the bash-compatible channel.\n",
+            cfg.theme_source_id.as_deref().unwrap_or("external"),
             cfg.theme
         )
     } else {
@@ -2004,6 +2108,7 @@ fn zh(en: &str) -> Option<&'static str> {
         // Setup journal / undo
         "could not write the setup journal" => "无法写入设置日志",
         "Undo this run:" => "撤销本次设置：",
+        "Collection entries failed — retry with:" => "合集条目安装失败 —— 重试：",
 
         // Confirm + final messages
         "  \u{2705}  Apply this configuration?" => "  \u{2705}  应用此配置？",
@@ -2176,6 +2281,7 @@ mod tests {
             "then re-run `niu setup` (or `niu plugin enable <theme>`)",
             "plugin spec written — {} source(s) declared; `niu plugin sync` keeps them in sync",
             "could not write the plugin spec",
+            "Collection entries failed — retry with:",
             "  \u{1f9e9}  niu-git — Windows-native git experience?",
             "Apply",
             "Cancel",
@@ -2242,6 +2348,218 @@ mod tests {
         );
 
         crate::plugins::sources::remove_source("oh-my-bash").unwrap();
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    /// The vendored bash-it fixture tree shipped with the repo tests.
+    fn bash_it_fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/sources/bash-it")
+    }
+
+    fn install_trusted_bash_it_fixture(root: &std::path::Path) {
+        let _ = root;
+        crate::plugins::sources::add_source(crate::plugins::sources::SourceInstallRequest {
+            adapter: None,
+            origin: bash_it_fixture_path().to_string_lossy().into_owned(),
+            ref_name: None,
+            commit: None,
+            expected_checksum: None,
+            id: None,
+            entry: None,
+        })
+        .expect("bash-it fixture source add must succeed");
+        crate::plugins::sources::trust_source("bash-it").expect("bash-it fixture trust");
+    }
+
+    /// J5 gap (journey run-13, 2026-10-04), both halves in one fixture pass
+    /// (a single install of both frameworks keeps the env-sensitive window
+    /// of the suite's Windows env race as short as possible):
+    ///
+    /// 1. Gallery routing: both fixtures ship a theme named `demox`, and the
+    ///    old plain-name sort kept whichever source the registry listed
+    ///    first — the preview read "demox - bash-it theme", the rc got a
+    ///    BASH_IT_THEME block while the wizard model said oh-my-bash, and
+    ///    PS1 stayed the default. The collision must resolve exactly once,
+    ///    deterministically, to the primary framework (oh-my-bash).
+    /// 2. Loader fidelity (§14.4): whichever source a picked theme came
+    ///    from, the rc activates it through THAT framework's own mechanism
+    ///    (no shims, no PS1-writing): OSH_THEME + the guarded oh-my-bash.sh
+    ///    loader for oh-my-bash picks, BASH_IT_THEME + the guarded
+    ///    bash_it.sh loader for bash-it picks, note naming the real source.
+    #[test]
+    fn theme_pick_routes_and_applies_through_the_owning_framework() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp = unique_temp_dir("wizard-routing");
+        let root = temp.join("sources");
+        let home = temp.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let _sources = EnvGuard::set("NIU_PLUGIN_SOURCES_ROOT", &root.to_string_lossy());
+        let _home = EnvGuard::set("HOME", &host_to_shell_style_path(&home));
+        let _userprofile = EnvGuard::unset("USERPROFILE");
+        // Register bash-it FIRST on purpose: the old bug kept whichever
+        // source happened to list first, so the hostile order is the proof.
+        install_trusted_bash_it_fixture(&root);
+        install_trusted_omb_fixture(&root);
+
+        // (1) The gallery resolves the shared name once, to oh-my-bash.
+        let gallery = theme_gallery();
+        let shared: Vec<&ThemeGalleryEntry> = gallery
+            .entries
+            .iter()
+            .filter(|entry| entry.name == "demox")
+            .collect();
+        assert_eq!(shared.len(), 1, "collision must resolve once: {gallery:?}");
+        assert_eq!(
+            shared[0].source_id, "oh-my-bash",
+            "shared names route to the primary framework: {gallery:?}"
+        );
+        // Both sources still contribute their unique names.
+        assert!(
+            gallery
+                .entries
+                .iter()
+                .any(|e| e.name == "agnoster" && e.source_id == "oh-my-bash"),
+            "{gallery:?}"
+        );
+
+        // (2) A pick from either source routes through that framework's own
+        // loader block.
+        let omb_pick = build_config(&ThemePick::External {
+            name: "demox".to_string(),
+            source_id: "oh-my-bash".to_string(),
+        });
+        let rc = generate_rc(&omb_pick);
+        assert!(rc.contains("OSH_THEME='demox'"), "{rc}");
+        assert!(rc.contains(". \"$OSH/oh-my-bash.sh\""), "{rc}");
+        assert!(!rc.contains("BASH_IT_THEME"), "{rc}");
+        assert!(
+            rc.contains("# Prompt owned by the oh-my-bash theme 'demox'"),
+            "the note must name the pick's actual source: {rc}"
+        );
+
+        let bash_it_pick = build_config(&ThemePick::External {
+            name: "demox".to_string(),
+            source_id: "bash-it".to_string(),
+        });
+        let rc = generate_rc(&bash_it_pick);
+        assert!(rc.contains("BASH_IT_THEME='demox'"), "{rc}");
+        assert!(rc.contains("bash_it.sh"), "{rc}");
+        assert!(!rc.contains("OSH_THEME"), "{rc}");
+        assert!(
+            rc.contains("# Prompt owned by the bash-it theme 'demox'"),
+            "the note must name the pick's actual source: {rc}"
+        );
+
+        let _ = crate::plugins::sources::remove_source("oh-my-bash");
+        let _ = crate::plugins::sources::remove_source("bash-it");
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    /// G3 (journey run-13 observation): a collection apply with failures —
+    /// or a totally failed apply — must journal what ACTUALLY installed and
+    /// feed the finish screen a retry line; a green-looking finish over a
+    /// red apply is dishonest. Offline: the collection imports from a local
+    /// directory and rides the fixture manager (one healthy asset-theme
+    /// entry, one compiled-in entry whose asset the fixture does not carry).
+    #[test]
+    fn failed_collection_apply_is_journaled_and_reported_honestly() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp = unique_temp_dir("wizard-g3-journal");
+        let home = temp.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        // Full sandbox: apply → assets::enable writes the spec and the rc.
+        let _home = EnvGuard::set("HOME", &host_to_shell_style_path(&home));
+        let _userprofile = EnvGuard::set("USERPROFILE", &home.to_string_lossy());
+        let _spec = EnvGuard::set(
+            "NIU_PLUGIN_SPEC",
+            &temp.join("plugins.toml").to_string_lossy(),
+        );
+        let _sources = EnvGuard::set(
+            "NIU_PLUGIN_SOURCES_ROOT",
+            &temp.join("sources").to_string_lossy(),
+        );
+        let _distros = EnvGuard::set(
+            "NIU_PLUGIN_DISTROS_ROOT",
+            &temp.join("distros").to_string_lossy(),
+        );
+        install_trusted_omb_fixture(&temp.join("sources"));
+
+        let source = temp.join("collection-src");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            source.join("niu-collection.toml"),
+            "schema = \"niubash:plugin-collection@1\"\nname = \"g3test\"\n\n\
+             [[entry]]\nrecipe = \"omb-theme-agnoster\"\n\n\
+             [[entry]]\nrecipe = \"omb-theme-90210\"\n",
+        )
+        .unwrap();
+        crate::plugins::distros::import(source.to_string_lossy().as_ref()).expect("import g3test");
+
+        // Partial failure: journal records the collection, no phantom
+        // sources, and the failed entry by name.
+        let journal = apply_plugin_collection("g3test", Lang::En)
+            .expect("a picked collection always journals");
+        assert_eq!(journal.name, "g3test");
+        assert!(journal.sources.is_empty(), "{:?}", journal.sources);
+        assert_eq!(journal.failed, ["omb-theme-90210"], "{:?}", journal.failed);
+        let full = SetupJournal {
+            collection: Some(journal),
+            ..SetupJournal::default()
+        };
+        write_setup_journal(&home, &full);
+        let text = std::fs::read_to_string(home.join(".niubash/setup-journal.toml"))
+            .expect("journal written");
+        assert!(text.contains("collection = 'g3test'"), "{text}");
+        assert!(
+            !text.contains("collection_sources"),
+            "no source landed; the journal must not invent any: {text}"
+        );
+        assert!(
+            text.contains("collection_failed = ['omb-theme-90210']"),
+            "{text}"
+        );
+        // The finish screen's retry block names the exact verb.
+        let retry = setup_retry_lines(&full);
+        assert_eq!(retry.len(), 1, "{retry:?}");
+        assert!(
+            retry[0].starts_with("niu plugin distro apply g3test"),
+            "{}",
+            retry[0]
+        );
+        // A healthy apply prints no retry line.
+        let healthy = SetupJournal {
+            collection: Some(CollectionJournal {
+                name: "g3test".to_string(),
+                sources: vec!["oh-my-bash".to_string()],
+                failed: Vec::new(),
+            }),
+            ..SetupJournal::default()
+        };
+        assert!(setup_retry_lines(&healthy).is_empty());
+
+        // Total failure (unknown collection): still journaled, still retried.
+        let failed_apply = apply_plugin_collection("no-such-collection", Lang::En)
+            .expect("even a failed apply journals itself");
+        assert_eq!(failed_apply.name, "no-such-collection");
+        assert!(failed_apply.sources.is_empty());
+        assert_eq!(failed_apply.failed.len(), 1, "{:?}", failed_apply.failed);
+        assert!(
+            failed_apply.failed[0].starts_with("apply failed:"),
+            "{}",
+            failed_apply.failed[0]
+        );
+        let retry = setup_retry_lines(&SetupJournal {
+            collection: Some(failed_apply),
+            ..SetupJournal::default()
+        });
+        assert!(
+            retry
+                .iter()
+                .any(|line| line.contains("niu plugin distro apply no-such-collection")),
+            "{retry:?}"
+        );
+
+        let _ = crate::plugins::sources::remove_source("oh-my-bash");
         let _ = std::fs::remove_dir_all(&temp);
     }
 
@@ -2367,6 +2685,7 @@ mod tests {
         let candidates = post_install_theme_candidates(Some(&CollectionJournal {
             name: "recommended".to_string(),
             sources: vec!["oh-my-bash".to_string()],
+            failed: Vec::new(),
         }));
         assert_eq!(candidates, vec!["oh-my-bash".to_string()], "{candidates:?}");
 
@@ -2403,6 +2722,7 @@ mod tests {
             collection: Some(CollectionJournal {
                 name: "recommended".to_string(),
                 sources: vec!["oh-my-bash".to_string()],
+                failed: Vec::new(),
             }),
         };
         let undo = setup_undo_lines(&home, &journal);
@@ -2442,6 +2762,7 @@ mod tests {
         let candidates = post_install_theme_candidates(Some(&CollectionJournal {
             name: "recommended".to_string(),
             sources: vec!["oh-my-bash".to_string()],
+            failed: Vec::new(),
         }));
 
         // Skip (0): the default answer — the wizard convention that every
@@ -2567,6 +2888,7 @@ mod tests {
         let candidates = post_install_theme_candidates(Some(&CollectionJournal {
             name: "minimal".to_string(),
             sources: vec!["bash-completion".to_string()],
+            failed: Vec::new(),
         }));
         assert!(candidates.is_empty(), "{candidates:?}");
 
@@ -2586,6 +2908,7 @@ mod tests {
             collection: Some(CollectionJournal {
                 name: "recommended".to_string(),
                 sources: vec!["oh-my-bash".to_string()],
+                failed: Vec::new(),
             }),
         };
         write_setup_journal(&temp, &journal);
