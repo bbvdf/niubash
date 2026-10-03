@@ -999,7 +999,12 @@ pub fn materialize_spec_selection(
                         array_items: Vec::new(),
                         files: Vec::new(),
                     };
-                    let active = !final_names.is_empty() || theme.is_some();
+                    // Loader fidelity (defaults-as-floor §14.5/§14.6): a
+                    // DECLARED loader-manager source is active — OMB with no
+                    // OSH_THEME renders its own default theme, bash-it with an
+                    // empty enabled/ set still sources its framework. Disable
+                    // removes the declaration (and with it the block).
+                    let active = true;
                     let (block_action, detail) = apply_block(record, &model, &state, active)?;
                     let action = if tree_changed
                         || block_action == "activated"
@@ -1067,9 +1072,10 @@ pub fn materialize_spec_selection(
                         }
                     }
                     state.theme = theme.clone();
-                    let active = state.array_items.iter().any(|(_, items)| !items.is_empty())
-                        || theme.is_some();
-                    apply_block(record, &model, &state, active)?
+                    // Same loader-fidelity invariant as the EnabledDir arm:
+                    // declaration activates; empty arrays + no theme let the
+                    // manager apply its own defaults (OMB default theme).
+                    apply_block(record, &model, &state, true)?
                 }
             };
             SpecMaterialization {
