@@ -887,3 +887,98 @@ lib 链，裸 source 报 `command not found`。按裁定**不造垫片**，落�
 `niu plugin enable oh-my-bash/bashmarks`（或整源 enable）经 loader 加载；裸
 source 一个框架插件文件得到的报错，与在 GNU bash 里做同样事情的报错一字不差
 ——那是正确行为，不是缺口。
+### 14.5 裁定（2026-10-03 owner）：默认值是地板，不是身份（defaults-as-floor）
+
+产品自己的 prompt/主题/补全默认值降到**最低优先级**：任何已启用的第三方框架
+（oh-my-bash/bash-it/starship）都能轻松覆盖，且产品绝不反向打架。本节是可执行的
+政策定义，实现于 niubash `crates/niubash-runtime/src/shell.rs`（槽位认领模型）、
+`tests/defaults_floor.rs`（二进制级冲突实证）与 `tests/interactive.rs` Matrix 3b
+（ConPTY 级渲染实证）。
+
+**判定序（prompt 槽）**：
+
+```
+1. PS1 认领令牌：executor 环境里非空 PS1 —— 谁最后设置谁赢
+   （用户 rc 显式赋值 = 已启用外部框架的主题 = 运行时命令，同一令牌，
+   GNU parse.y:6150 prompt_again() 每次渲染现读 PS1，同语义）
+2. 产品裸默认（地板）：reedline 原生模板 prompt——只在"无人认领"时渲染
+```
+
+- **认领=PS1，不是 PROMPT_COMMAND**。PROMPT_COMMAND 是 pre-prompt 钩子（引擎每
+  prompt 执行，与渲染无关）；仅注册钩子的框架（OMB `history` 插件的 `history -a`、
+  标题器）不得借占位 `\$ ` 顶掉地板。要拥有 prompt 的钩子自己写 PS1——starship
+  的 `starship_precmd`（src/init/starship.bash:80）正是这样做的，而宿主的
+  `run_precmd_hooks` 先跑钩子后同步后端，所以 starship 在**第一个** prompt 即完成
+  认领。
+- **释放=恢复地板**。PS1 被 unset/置空（`niu plugin disable`、主题关闭、裸
+  `unset PS1`）后，下一 prompt 恢复产品地板（`floor_prompt` 字段持有配置派生的
+  原生后端）。GNU 在此场景渲染空 prompt（parse.y:6150 把缺 PS1 映射为 ""）；
+  niubash 的契约更强——地板就是地板（owner 裁定），且地板从不写 PS1，故不可能
+  与活跃认领打架（无双重渲染：认领时 `self.prompt` 整体换为 bash 兼容通道）。
+- **框架识别走正确路径**：registry/trust 态 + rc 托管块（`# >>> niu source <id>`
+  标记对）是框架启停的唯一事实源；`is_foreign_git_bash_ps1`（#117）这类内容检测
+  **只保留给"继承 env"这一个场景**，且只在 enter_interactive 于任何 rc 之前跑一
+  次——主动安装的框架在 rc 里设置的 PS1（含恰好含 Git Bash 会话标记的文本）永不
+  被丢弃（钉死测试 `framework_ps1_set_after_interactive_entry_is_never_discarded`）。
+  不得为框架识别扩展内容黑名单（2026-10-03 打地鼠禁令）。
+
+**rc 顺序契约**：
+
+1. niu 缺省块（`NIU_PROMPT_CWD_STYLE`/`NIU_COMPLETION_STYLE` 等地板 knob）在
+   **早期**；这些 knob 只作用于地板渲染，bash 兼容通道激活时不参与，天然不与外
+   部框架抢槽。
+2. 外部框架启用块（`# >>> niu source <id> … >>>` 标记对）在**后**（generate_rc
+   置于地板 knob 之后；`niu plugin enable` 对既有 rc 追加到末尾）。后加载者胜，
+   bash 语义本就如此。
+3. **互不覆写**：托管块只改标记对之间的行，块外用户内容永不动（既有纪律，二进
+   制级钉死于 `managed_block_lands_after_floor_config_and_user_lines`）。
+
+**实证矩阵（全部为测试）**：
+
+| 场景 | 证据 | 结果 |
+|---|---|---|
+| 真装 OMB（fixture 树，经 `niu plugin add --path`+trust+enable 全链）后 boot | `omb_theme_claims_the_prompt_slot_end_to_end` | 主题 PS1 存活进 shell，地板未覆盖 |
+| OMB 认领下的 reedline 实渲染（ConPTY） | `omb_theme_claim_renders_and_floor_returns_on_release` | 渲染主题脸非地板；`unset PS1` 后地板回归；再认领再赢 |
+| `niu plugin disable` 后 fresh boot | `disabling_the_source_releases_the_prompt_slot` | 主题 PS1 消失（piped `-i` 路径引擎自设 GNU 默认 PS1 `\s-\v\$ `，reedline 地板恢复由单测钉死） |
+| 无人认领时的地板渲染（ConPTY） | `floor_prompt_renders_when_ps1_unclaimed` | user@host 地板脸渲染 |
+| starship 认领形状（PROMPT_COMMAND 钩子写 PS1） | `starship_style_precmd_hook_claims_via_ps1_same_cycle` | 同一渲染周期完成认领 |
+| 仅钩子不认领（OMB history 形状） | `hook_only_prompt_command_keeps_the_floor` | 地板保持，钩子照跑 |
+| 真 OMB 仓库（82 主题全 lib 链）boot | `real_ohmybash_chain_keeps_claim_or_floor_invariant` | rc 0，认领或地板二选一成立（当前 #251 门控下=地板在岗，铁律 2） |
+| #117 继承 PS1 丢弃不误伤框架 | `framework_ps1_set_after_interactive_entry_is_never_discarded` | 交互进入后设置的 PS1（含 #117 标记文本）永不丢弃 |
+
+**字段清单纪律（2026-10-03 ground truth）**：shipped 产物中退役栈字段清零——
+`.niubashrc.example` 已重写为迁移后形态（地板 knob + HOME 归一 + 托管块示例 + 用
+户型），`example_rc_sells_no_retired_stack_fields` 断言
+`NIU_THEME`/`NIU_THEME_PLUGIN`/`NIU_PLUGINS`/`NIU_BANNER`/`NIU_PROMPT_SYMBOL`/
+`NIUBASH`/`oh-my-niu` 均不出现且文件引擎可解析（#157 闭合形式守护）。generate_rc
+字段三分类：退役残留=无；活的地板配置=`NIU_PROMPT_CWD_STYLE`/`NIU_COMPLETION_STYLE`
+（`prompt.rs:219`/`config.rs:174` 在读）；身份占位=无（地板从不写 PS1）。已知无害
+残留：interactive 测试驱动 fixture 里的 `NIU_DISABLE_DEFAULT_PLUGINS=1`（无读点，
+仅测试内部，未随产品分发）。
+
+**字段清单扩展面（2026-10-03 wt45/floor 续作清点）**：退役栈发卖不止 example
+rc 一处，用户面文档同罪，已一并清零——`README.md`（Configuration 块 + Features 三
+条卖点：27 themes / 40+ official packs / plugin bundles 更新面）、
+`docs/src/getting-started.md`（§6 rc 模板、§6b 主题插件章、§7 oh-my-niu bundle
+章整体改写为地板+外部生态形态；§What next 死链
+`oh-my-niu-bundle-plan.md`→`oh-my-niu-ecosystem.md`）、`docs/src/advanced-usage.md`
+（Startup And Config、Prompt And Themes、Plugin Workflow、Third-Party
+Bundles→Sources、Updating 五节；退役动词 `search`/`themes`/`info`/`review`/
+`doctor`/`use` 现在硬 bail，见 `src/main.rs` run_plugin_command 退役分支）。运行时
+env 出版通道分类：`NIU_PROMPT_SYMBOL` 由 `shell.rs:271` 从活配置
+`shell.prompt_symbol`（TOML 语义默认 `%`）单向写入 env——引擎无读点（cf68607 已删
+读端），仅供用户脚本引用地板符号，属**活地板的值出版**而非退役残留；rc 侧不设
+该 knob（地板读配置不读 env，见 example rc 注释）。
+
+**越界发现（本车道不动，报船长转归属 owner）**：`docs/src/hooks.md` 整篇描述的
+hook 契约已死——注册助手（`niubash_add_*_hook`）随 oh-my-niu 框架退役，而
+`config.rs load()` 只返回 `HookConfig::default()`（全空），`shell.rs` 各
+`run_*_hooks` runner 从用户空间不可达（无任何运行时注册路径）；hooks.md 需 hook
+子系统 owner 裁定（退役 runner 或重开注册内置命令），不宜由地板车道代笔。
+`docs/src/niubash-roadmap.md` 的 "oh-my-niu is the official bundled plugin
+distribution" 叙述同为历史态，属 roadmap 文档 owner 的改写面。另有一处**活的矛
+盾**：发布打包 `scripts/package-release.ps1` 仍强制随包 staging oh-my-niu bundle
+（`bundle.toml` 候选链，`-SkipOhMyNiubashBundle` 才跳过），`docs/src/installer.md`
+与 `docs/src/architecture.md` 对此的描述与打包现状一致——但产品侧插件动词已对
+bundle 体系硬 bail（niubash#145），"发布包仍在发退役栈" 需发布 lane owner 裁定
+（stop staging 或恢复消费路径），不属地板车道。

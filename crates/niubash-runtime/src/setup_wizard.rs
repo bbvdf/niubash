@@ -1758,6 +1758,8 @@ mod tests {
         let cfg = WizardConfig {
             theme: "robbyrussell".to_string(),
             theme_source_id: Some("oh-my-bash".to_string()),
+            cwd_style: "home".to_string(),
+            completion_style: "column".to_string(),
             ..WizardConfig::default()
         };
         let rc = generate_rc(&cfg);
@@ -1772,6 +1774,15 @@ mod tests {
             "{rc}"
         );
         assert!(rc.contains("fallback stays active when absent"), "{rc}");
+        // §14.5 rc order contract: floor config (NIU_* display knobs) lands
+        // early; the framework enable block loads after it, so a framework
+        // that claims PS1 always runs on top of — never below — the floor.
+        let floor_pos = rc.find("NIU_PROMPT_CWD_STYLE=").expect("floor knob");
+        let block_pos = rc.find(">>> niu source oh-my-bash").expect("managed block");
+        assert!(
+            floor_pos < block_pos,
+            "floor config must precede the framework block:\n{rc}"
+        );
         // The wizard-written block is the managed block: markers present so
         // `niu plugin enable/disable` can edit it surgically.
         assert!(

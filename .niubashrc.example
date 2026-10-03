@@ -1,16 +1,15 @@
 # Niubash interactive rc - example.
 # Copy this file to ~/.niubashrc to adopt it. That file is Niubash's primary
-# interactive entry point for aliases, plugins, and shell startup.
+# interactive entry point for aliases, environment, and shell startup.
+#
+# Defaults are a floor, not an identity (design §14.5): the built-in prompt
+# renders only while nothing claims PS1. Anything that sets PS1 — your own
+# line below, an enabled oh-my-bash theme, `eval "$(starship init bash)"` —
+# owns the prompt completely, and disabling it lets this floor render again.
 
-NIU_THEME=p10-classic
-NIU_THEME_PLUGIN=theme-p10-classic
-NIU_PROMPT_SYMBOL="❯"
-export NIU_THEME NIU_THEME_PLUGIN NIU_PROMPT_SYMBOL
-
-# NIU_BANNER=1  # greet with the block-letter niubash banner (from oh-my-niu)
-
-# Official bundled source plugins. Theme is selected separately above.
-NIU_PLUGINS=(prompt-core git common-aliases path-tools extract)
+# ── Floor knobs (built-in defaults only; never fight an external prompt) ──
+# NIU_PROMPT_CWD_STYLE='home'    # home | full | basename — cwd shape in the default prompt
+# NIU_COMPLETION_STYLE='column'  # ide | column | list | inline — completion menu style
 
 # Normalize HOME when it was not inherited from the environment.
 if [ -z "${HOME:-}" ] && [ -n "${USERPROFILE:-}" ]; then
@@ -27,21 +26,38 @@ if [ -z "${HOME:-}" ] && [ -n "${USERPROFILE:-}" ]; then
   esac
   export HOME
 fi
+unset __niubash_home_drive __niubash_home_rest
 
-# Locate the bundled oh-my-niu framework if NIUBASH is not set.
-if [ -z "${NIUBASH:-}" ]; then
-  for __niubash_bundle in "$HOME/.oh-my-niu" "$HOME/.niubash/oh-my-niu" "$HOME/.niubash/bundles/oh-my-niu"/*; do
-    if [ -f "$__niubash_bundle/oh-my-niu.winux" ]; then
-      NIUBASH="$__niubash_bundle"
-      export NIUBASH
-      break
-    fi
-  done
-fi
+# ── External frameworks (oh-my-bash / bash-it / starship) ──
+# Prefer the plugin manager over hand-writing loaders:
+#   niu plugin add oh-my-bash          # install from the curated catalog
+#   niu plugin trust oh-my-bash        # review, then pass the execution gate
+#   niu plugin enable oh-my-bash       # guarded loader block (below)
+#   niu plugin enable agnoster         # theme -> OSH_THEME inside the block
+#   niu plugin disable oh-my-bash      # remove the block; the floor returns
+#
+# `niu plugin enable/disable` maintains one managed block per source between
+# `# >>> niu source …` / `# <<< niu source …` markers appended at the end of
+# this file. Everything outside the markers is yours and is never rewritten.
+# The block shape (shown commented; let `niu plugin` write the real one):
+#
+# # >>> niu source oh-my-bash (managed by `niu plugin enable/disable`) >>>
+# OSH_THEME='agnoster'
+# plugins=('git')
+# # oh-my-bash source (external, primary; fallback stays active when absent)
+# if [ -r "${NIU_PLUGIN_SOURCES_ROOT:-$HOME/.niubash/sources}/oh-my-bash/oh-my-bash.sh" ]; then
+#   OSH="${NIU_PLUGIN_SOURCES_ROOT:-$HOME/.niubash/sources}/oh-my-bash"
+#   OSH="${OSH//\\//}"
+#   export OSH
+#   export NIU_THEME_SOURCE=omb
+#   . "$OSH/oh-my-bash.sh"
+# fi
+# # <<< niu source oh-my-bash <<<
+#
+# starship needs no managed block; its own init claims PS1 per prompt:
+#   eval "$(starship init bash)"
 
-[ -f "$NIUBASH/oh-my-niu.winux" ] && . "$NIUBASH/oh-my-niu.winux"
-
-# Personal aliases and environment.
+# ── Personal aliases and environment ──
 alias grep='grep --color=auto'
 alias ll='ls -la'
 alias la='ls -a'
@@ -49,5 +65,3 @@ alias e='exit'
 
 export EDITOR='vim'
 export PAGER='less'
-
-unset __niubash_bundle

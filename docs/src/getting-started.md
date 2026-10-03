@@ -107,29 +107,19 @@ git branch -<Tab>           # shows -d, -D, -m, -v, -a, -r
 
 ## 6. Set up your config
 
-Create `~/.niubashrc` for interactive shell code, plugin selection, and theme
-selection:
+Create `~/.niubashrc` for interactive shell code — environment, aliases,
+functions — plus optional defaults and theme enablement:
 
 ```bash
-NIU_THEME=minimal
-NIU_THEME_PLUGIN=theme-minimal
-NIU_PROMPT_SYMBOL="❯"
-export NIU_THEME NIU_THEME_PLUGIN NIU_PROMPT_SYMBOL
-
-NIU_PLUGINS=(prompt-core git)
+# Optional floor knobs: they only shape the built-in default prompt and
+# completion menu. An external theme claims PS1 and overrides the floor.
+# NIU_PROMPT_CWD_STYLE='home'    # home | full | basename
+# NIU_COMPLETION_STYLE='column'  # ide | column | list | inline
 
 if [ -z "${HOME:-}" ] && [ -n "${USERPROFILE:-}" ]; then
   HOME="$USERPROFILE"
   export HOME
 fi
-
-if [ -z "${NIUBASH:-}" ]; then
-  NIUBASH="$HOME/.oh-my-niu"
-  export NIUBASH
-fi
-
-[ -f "$NIUBASH/oh-my-niu.winux" ] && . "$NIUBASH/oh-my-niu.winux"
-niubash_prompt_use_template "{cwd} {git_prompt}{prompt_char} " "{time} " 2>/dev/null || true
 
 export EDITOR=vim
 alias ll='ls -la'
@@ -152,57 +142,50 @@ or stdin script execution, so agent and CI surfaces stay deterministic.
 completion overrides, test isolation, and advanced machine state are managed
 internally. Prefer `~/.niubashrc` for normal interactive customization.
 
-## 6b. Prompt and theme plugins
+## 6b. Prompts and themes
 
-Themes are official plugins. To use a Powerlevel-style theme, switch the theme
-plugin in `~/.niubashrc`:
+The built-in prompt is a floor, not an identity: it renders only while
+nothing claims `PS1`. Anything that sets `PS1` — your own line in
+`~/.niubashrc`, an enabled oh-my-bash theme, or `eval "$(starship init bash)"`
+— owns the prompt completely, and disabling it lets the built-in floor
+render again.
 
-```bash
-NIU_THEME=p10-lean
-NIU_THEME_PLUGIN=theme-p10-lean
-NIU_PLUGINS=(prompt-core git)
-```
-
-Useful bundled theme plugins include `theme-minimal`, `theme-classic`,
-`theme-pure`, `theme-robbyrussell`, `theme-p10-lean`, `theme-p10-classic`,
-`theme-p10-rainbow`, and `theme-p10-pure`. Theme assets support named
-colours, 256-colour indexes, and true-colour `#RRGGBB` foreground/background
-values plus bold, italic, underline, and dimmed flags.
-
-Prompt templates use the public prompt-core API:
+The floor itself has one knob, `NIU_PROMPT_CWD_STYLE` (`home` by default;
+also `full` or `basename`), set in `~/.niubashrc`:
 
 ```bash
-niubash_prompt_use_template "{cwd} {git}{prompt_char} " "{status}{time} "
+NIU_PROMPT_CWD_STYLE=full
 ```
 
-Available template tokens include `{cwd}`, `{cwd_base}`, `{user_host}`,
-`{git}`, `{git_prompt}`, `{status}`, `{time}`, `{command_execution_time}`,
-`{newline}`, and `{prompt_char}`. The Git prompt snapshot is refreshed during
-startup/precmd so late Git work warms the next prompt instead of redrawing the
-line the user is typing on.
+Themes live in the external ecosystem (see the next section) — enable one
+and its `PS1` takes over the prompt; disable it and the floor comes back.
 
-## 7. Official plugin bundle
+## 7. Plugins: the external ecosystem
 
-Niubash has a built-in plugin system. `oh-my-niu` is the
-official bundled plugin distribution. It ships first-party packs such as `git`, `docker`, `kubectl`,
-`npm`, `zoxide`, `direnv`, `dotenv`, `fzf`, prompt presets, and keybinding
-presets.
+Themes and plugins come from external plugin managers, installed and
+enabled through `niu plugin`. The curated catalog has `oh-my-bash`,
+`bash-it`, and `bash-completion`; any git URL, `owner/repo` shorthand, or
+local path works too. New sources are **untrusted by default** — nothing
+they ship runs until you review and trust them:
 
-The normal interactive shape is the `~/.niubashrc` plugin list shown above.
-`niu plugin enable/disable` and migration tooling update internal managed
-state. Official shell helper packs can
-ship reviewed bundle-local `init.winux` source scripts. If `~/.niubashrc`
-exists, it is the source-plugin entry point and loads the framework directly.
-Without `~/.niubashrc`, managed startup can still load enabled source packs
-before fallback `~/.winshrc`. Use `niu plugin list`,
-`niu plugin search`, `niu plugin themes`, and
-`niu plugin review` for current inventory, theme sources, and permission
-checks.
+```sh
+niu plugin add oh-my-bash     # install from the catalog (untrusted)
+niu plugin trust oh-my-bash   # review, then pass the execution gate
+niu plugin enable oh-my-bash  # writes a guarded loader block into ~/.niubashrc
+niu plugin enable agnoster    # a theme asset -> sets OSH_THEME in that block
+niu plugin disable oh-my-bash # removes the block; the built-in floor returns
+```
+
+`niu plugin enable/disable` maintains one managed block per source between
+`# >>> niu source <id>` / `# <<< niu source <id>` markers at the end of
+`~/.niubashrc`; everything outside the markers is yours and is never
+rewritten. Use `niu plugin list` and `niu plugin discover` for the current
+inventory and state.
 
 ## What next
 
 - [Plugin System Direction](../planning/plugin-system-direction.md) for the v3 plugin model
 - [Plugin System Roadmap](../planning/plugin-system-roadmap.md) for the execution sequence
-- [Oh My Niubash Bundle Plan](../planning/oh-my-niu-bundle-plan.md) for the official bundle
+- [Oh My Niubash Ecosystem](../planning/oh-my-niu-ecosystem.md) for the external plugin ecosystem design
 - [Roadmap](niubash-roadmap.md) to see what is planned
 - Source at [github.com/unixwin/niubash](https://github.com/unixwin/niubash)

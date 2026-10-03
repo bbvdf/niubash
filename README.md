@@ -101,21 +101,23 @@ Requirements: **Windows 10/11 x64 or ARM64**, Rust 1.70+ to build from source.
 
 ## Configuration
 
-One config file, plain Bash syntax: `~/.niubashrc`. Theme, prompt,
-plugins, exports, aliases, and functions all live there:
+One config file, plain Bash syntax: `~/.niubashrc`. Exports, aliases, and
+functions live there; themes and plugins come from the external ecosystem
+(`niu plugin`):
 
 ```bash
-NIU_THEME=p10-classic
-NIU_THEME_PLUGIN=theme-p10-classic
-NIU_PLUGINS=(prompt-core git common-aliases)
-export NIU_THEME NIU_THEME_PLUGIN
-
-# the official plugin distribution, oh-my-niu
-[ -f "$NIUBASH/oh-my-niu.niu" ] && . "$NIUBASH/oh-my-niu.niu"
+# Optional floor knobs — they only shape the built-in default prompt and
+# completion menu; an enabled external theme claims PS1 and wins.
+# NIU_PROMPT_CWD_STYLE='home'    # home | full | basename
+# NIU_COMPLETION_STYLE='column'  # ide | column | list | inline
 
 alias ll='ls -la'
 alias gst='git status'
 hello() { echo "hello from niu"; }
+
+# Themes/plugins, managed by marker-delimited blocks at the end of the rc:
+#   niu plugin add oh-my-bash && niu plugin trust oh-my-bash
+#   niu plugin enable oh-my-bash && niu plugin enable agnoster
 ```
 
 - **Shared history across shells** — `NIU_HISTORY_MODE` offers `shared` (default), `session`, and `private`.
@@ -127,11 +129,11 @@ hello() { echo "hello from niu"; }
 - **Real Bash semantics** — the [rubash](https://github.com/unixwin/rubash) engine passes **86/86** on GNU Bash's upstream test suite.
 - **Native path contract** — any dialect in, Windows-native out. MSYS-style path conversion roulette does not exist here.
 - **Unix commands as real binaries** — winuxcmd injects PATH command links; `ls`/`grep` are real Windows processes, not emulation inside the shell.
-- **A prompt you'll enjoy** — 27 themes (agnoster, spaceship, tokyonight, the p10 family, ...), a git status prompt that grows teeth (staged / modified / untracked / ahead / behind / stashes / conflicts), syntax highlighting, autosuggestions, vi/emacs modes, Ctrl+R history search.
-- **Plugins with a permission model** — 40+ official packs (`git`, `docker`, `kubectl`, `npm`, `zoxide`, `direnv`, `fzf`, `thefuck`, ...), host access declared in manifests, reviewed source packs load only bundle-local declared scripts.
+- **A prompt floor plus any theme you like** — a fast built-in default prompt that yields the moment something claims `PS1`: enable oh-my-bash and its themes (agnoster, robbyrussell, ...) render through the bash-compatible channel, or drop in starship. Syntax highlighting, autosuggestions, vi/emacs modes, Ctrl+R history search.
+- **Plugins with a permission model** — external plugin-manager sources (oh-my-bash, bash-it, bash-completion in the curated catalog, or any git URL / local path) behind an explicit trust gate; `niu plugin enable` writes one guarded, marker-delimited loader block per source into your rc.
 - **Completions** — shell definitions + automatic bash completion import + `cmd -h` description sniffing + three-level caching.
 - **Three execution modes** — interactive REPL; one-shot command execution (quiet and deterministic, loads no rc and no plugins); a one-shot REPL command that loads full startup state then exits.
-- **Self-update** — the shell (`niu --self-update`), the command layer (`wpm update winuxcmd`), and plugin bundles each update on their own plane.
+- **Self-update** — the shell (`niu --self-update`), the command layer (`wpm update winuxcmd`), and plugin sources (`niu plugin update`) each update on their own plane.
 
 ## Why not WSL
 

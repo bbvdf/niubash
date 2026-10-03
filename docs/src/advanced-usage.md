@@ -57,18 +57,21 @@ With neither variable set, `-c` stays zero-load and fast.
 Use `~/.niubashrc` as the normal human-authored entry point:
 
 ```bash
-NIU_THEME=p10-classic
-NIU_THEME_PLUGIN=theme-p10-classic
-NIU_PROMPT_SYMBOL=">"
-export NIU_THEME NIU_THEME_PLUGIN NIU_PROMPT_SYMBOL
-
-NIU_PLUGINS=(prompt-core git common-aliases path-tools extract)
-
-[ -f "$NIUBASH/oh-my-niu.winux" ] && . "$NIUBASH/oh-my-niu.winux"
+# Optional floor knobs — they only shape the built-in default prompt and
+# completion menu; an enabled external theme claims PS1 and wins.
+# NIU_PROMPT_CWD_STYLE='home'
+# NIU_COMPLETION_STYLE='column'
 
 alias ll='ls -la'
 export EDITOR=vim
+
+# starship (or any tool that sets PS1) owns the prompt while it is active:
+# eval "$(starship init bash)"
 ```
+
+Themes and plugins are enabled through `niu plugin`, which appends managed
+blocks at the end of the rc (see [Plugin Workflow](#plugin-workflow)); your
+lines outside those blocks are never rewritten.
 
 The legacy files still exist, but they should not be the primary user path:
 
@@ -99,24 +102,26 @@ bundle's generated completion assets and work in every style; `ide` and
 `list` show the descriptions inline.
 
 ## Prompt And Themes
-Prompt behavior is plugin-owned. The core shell provides host APIs and
-lifecycle hooks; official theme and prompt behavior lives in bundled plugins.
 
-Common rc shape:
+Defaults are a floor, not an identity. The built-in prompt (a reedline
+template: `user@host cwd symbol`) renders only while nothing claims `PS1`.
+Whoever sets `PS1` last owns the prompt completely — your own rc line, an
+enabled oh-my-bash theme, or starship:
 
 ```bash
-NIU_THEME=p10-lean
-NIU_THEME_PLUGIN=theme-p10-lean
-NIU_PLUGINS=(prompt-core git)
-export NIU_THEME NIU_THEME_PLUGIN
-
-[ -f "$NIUBASH/oh-my-niu.winux" ] && . "$NIUBASH/oh-my-niu.winux"
-niubash_prompt_use_template "{cwd} {git_prompt}{prompt_char} " "{status}{time} " 2>/dev/null || true
+PS1='\u@\h \w \$ '                # your own prompt: simplest possible claim
+eval "$(starship init bash)"      # starship claims PS1 on its first prompt
 ```
 
-Theme assets can use named colors, 256-color indexes, and true-color
-`#RRGGBB` foreground/background values. Prefer changing the theme plugin or
-theme asset instead of hardcoding prompt rendering in shell core.
+Disabling the claim (`niu plugin disable oh-my-bash`, or a plain
+`unset PS1`) lets the built-in floor render again. `PROMPT_COMMAND` alone
+is not a claim — it is a pre-prompt hook; hooks that want the prompt set
+`PS1` themselves.
+
+The floor itself is shaped by `NIU_PROMPT_CWD_STYLE` (`home`, `full`, or
+`basename`; see [Getting Started](getting-started.md)). External themes
+style themselves through the bash-compatible `PS1` channel — colors,
+powerline glyphs, and git segments come from the theme, not the shell.
 
 ## History Modes
 
@@ -206,56 +211,52 @@ git snapshot path rather than adding more inline Git calls to the theme.
 
 ## Plugin Workflow
 
-Use the CLI to inspect the active bundle instead of relying on stale docs:
+Use the CLI to inspect the ecosystem instead of relying on stale docs:
 
 ```sh
-niu plugin list
-niu plugin search git
-niu plugin themes
-niu plugin info git
-niu plugin review git
-niu plugin doctor
+niu plugin list          # sources, their assets, activation state
+niu plugin discover      # read-only overview, including not-yet-installed managers
 ```
 
-Normal interactive choices belong in `~/.niubashrc`:
-
-```bash
-NIU_PLUGINS=(prompt-core git docker kubectl zoxide)
-NIU_THEME_PLUGIN=theme-p10-rainbow
-```
-
-Use managed plugin CLI operations when you need a reviewable machine record,
-permissions, bundle update state, or rollback.
-
-## Third-Party Bundles
-
-Beyond the official oh-my-niu bundle, niubash can install any git repository
-that follows the bundle layout (a `bundle.toml` at the repo root). New
-external bundles are **untrusted by default**: none of their packs activate
-until you explicitly trust them.
+Enablement is per source or per asset (a theme), and it edits your rc, not
+an internal database:
 
 ```sh
-niu plugin add https://github.com/someone/niu-community.git
-# review the cloned bundle under ~/.niubash/external/niu-community
-niu plugin trust niu-community
-niu plugin use niu-community
-niu plugin rollback niu-community   # go back to the previous bundle
-niu plugin remove niu-community
+niu plugin enable oh-my-bash   # guarded loader block appended to ~/.niubashrc
+niu plugin enable agnoster     # a theme asset -> sets OSH_THEME in that block
+niu plugin disable oh-my-bash  # removes the block; the built-in floor returns
+```
+
+`niu plugin update|sync|restore|clean` are the lockfile-style maintenance
+verbs for installed sources.
+
+## Third-Party Sources
+
+Beyond the curated catalog (`oh-my-bash`, `bash-it`, `bash-completion`),
+niu can install any git repository or local path that follows a known
+plugin-manager layout. New sources are **untrusted by default**: nothing
+they ship runs until you explicitly trust them.
+
+```sh
+niu plugin add https://github.com/someone/oh-my-bash-fork.git
+# review the cloned source under ~/.niubash/sources/<id>
+niu plugin trust oh-my-bash-fork
+niu plugin enable oh-my-bash-fork
+niu plugin source remove oh-my-bash-fork   # delete tree + registry entry
 ```
 
 Notes:
 
-- Bundles are cloned to `~/.niubash/external/<name>` and registered in
-  `~/.niubash/external/registry.toml`; the registry records the URL, ref,
+- Sources are cloned to `~/.niubash/sources/<id>` and registered in
+  `~/.niubash/sources/registry.toml`; the registry records the origin, ref,
   path, and trust state.
-- `niu plugin use` points the plugin lock (`~/.niubash/plugin-lock.toml`) at
-  the external bundle and keeps the previous location for rollback.
-- An untrusted external bundle never becomes the active inventory: startup
-  skips it and falls through to the official bundle. Only `niu plugin trust
-  <name>` flips that.
-- A git ref can be pinned at add time with `niu plugin add <url>@<ref>`.
-- `NIU_EXTERNAL_BUNDLE_ROOT` overrides the external bundle root (portable
-  setups and tests).
+- `niu plugin update <id>` re-fetches the registered origin;
+  `niu plugin rollback <id>` returns to the previous version.
+- An untrusted source never activates: enable refuses until
+  `niu plugin trust <id>` passes the review gate.
+- A git ref can be pinned at add time with `niu plugin add <id> --ref <ref>`.
+- `NIU_PLUGIN_SOURCES_ROOT` overrides the sources root (portable setups and
+  tests).
 
 ## Command Discovery And WPM
 
@@ -331,13 +332,14 @@ niu --self-update
 
 winuxcmd.exe wpm update winuxcmd
 
-niu plugin update oh-my-niu --github-release latest
-niu plugin rollback oh-my-niu
+niu plugin update oh-my-bash
+niu plugin rollback oh-my-bash
 ```
 
 - `niu --self-update` updates the shell.
 - `wpm update winuxcmd` updates command packages and command links.
-- `plugin update oh-my-niu` updates the official plugin bundle.
+- `niu plugin update <source-id>` updates an installed plugin source;
+  `rollback` returns it to the previous version.
 
 ## Debug Checklist
 

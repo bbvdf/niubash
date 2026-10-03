@@ -89,6 +89,15 @@ pub struct Shell {
     pub executor: Executor,
     pub completion_state: Arc<Mutex<CompletionState>>,
     pub prompt: PromptBackend,
+    /// Product floor prompt (defaults-as-floor, design §14.5): the
+    /// config-derived native prompt that renders only while the prompt slot
+    /// is unclaimed. A claim is a non-empty PS1 in the executor environment
+    /// — set by the user's own rc, an enabled external framework
+    /// (oh-my-bash theme, `starship init bash`), or a runtime command.
+    /// `sync_bash_prompt_from_env` swaps in the bash-compatible channel on
+    /// claim and restores this floor on release; the floor itself never
+    /// writes PS1, so it can never fight an active claim.
+    floor_prompt: PromptBackend,
     pub home_dir: PathBuf,
     pub shell_root: Option<PathBuf>,
     pub history_path: PathBuf,
@@ -356,7 +365,8 @@ impl Shell {
         let mut shell = Self {
             executor,
             completion_state,
-            prompt,
+            prompt: prompt.clone(),
+            floor_prompt: prompt,
             home_dir,
             shell_root,
             history_path,
@@ -955,14 +965,22 @@ impl Shell {
         None
     }
 
-    fn bash_prompt_env_active(&self) -> bool {
+    /// Whether the prompt slot is currently claimed (defaults-as-floor,
+    /// design §14.5). The claim token is a non-empty `PS1` — the same token
+    /// GNU bash renders (`parse.y:6150 prompt_again` reads PS1 fresh every
+    /// render), so whoever sets PS1 last owns the prompt: the user's rc, an
+    /// enabled external framework, or a runtime command. `PROMPT_COMMAND`
+    /// is deliberately NOT a claim: it is a pre-prompt hook (the engine
+    /// executes it regardless of the prompt string), and hook-only users —
+    /// oh-my-bash's `history` plugin, title setters — must not displace the
+    /// product floor. A hook that intends to own the prompt sets PS1 itself
+    /// (starship's `starship_precmd` does exactly that), and because
+    /// `run_precmd_hooks` runs the hook before syncing, the claim is already
+    /// visible when the backend is chosen.
+    fn prompt_slot_claimed(&self) -> bool {
         self.executor
-            .get_env("PROMPT_COMMAND")
-            .is_some_and(|value| !value.trim().is_empty())
-            || self
-                .executor
-                .get_env("PS1")
-                .is_some_and(|value| !value.is_empty())
+            .get_env("PS1")
+            .is_some_and(|value| !value.is_empty())
     }
 
     fn run_bash_prompt_command(&mut self, last_exit_code: i32) {
@@ -985,14 +1003,24 @@ impl Shell {
     }
 
     fn sync_bash_prompt_from_env(&mut self) {
-        if !self.bash_prompt_env_active() {
-            return;
+        if self.prompt_slot_claimed() {
+            let ps1 = self.executor.get_env("PS1").unwrap_or("\\$ ").to_string();
+            let ps2 = self.executor.get_env("PS2").unwrap_or("> ").to_string();
+            let left = self.executor.expand_prompt_string_mut(&ps1);
+            let multiline = self.executor.expand_prompt_string_mut(&ps2);
+            self.prompt = PromptBackend::Bash(BashPrompt::new(left, multiline));
+        } else if !matches!(
+            self.prompt,
+            PromptBackend::Template(_) | PromptBackend::Segments(_)
+        ) {
+            // Claim released (PS1 unset/emptied — framework disabled, theme
+            // switched off, plain `unset PS1`): the product floor renders
+            // again. GNU renders an empty prompt in this case (parse.y:6150
+            // maps a missing PS1 to ""); niubash's contract is stronger —
+            // the native floor is the floor (§14.5), so releasing the slot
+            // restores it instead of freezing the last claimed face.
+            self.prompt = self.floor_prompt.clone();
         }
-        let ps1 = self.executor.get_env("PS1").unwrap_or("\\$ ").to_string();
-        let ps2 = self.executor.get_env("PS2").unwrap_or("> ").to_string();
-        let left = self.executor.expand_prompt_string_mut(&ps1);
-        let multiline = self.executor.expand_prompt_string_mut(&ps2);
-        self.prompt = PromptBackend::Bash(BashPrompt::new(left, multiline));
     }
 
     fn run_bash_ps0_preexec(&mut self) {
@@ -1505,6 +1533,11 @@ impl Shell {
             && (rubash::script_driver::script_uses_history(&script)
                 || rubash::script_driver::script_uses_aliases(
                     &script,
+                    // rubash#414: parse-time alias state established before
+                    // the reader starts (CLI -O expand_aliases / posix mode)
+                    // must route through the line-group driver; the executor's
+                    // own live flag is the truth source (same argument rubash
+                    // main.rs passes at its script site).
                     self.executor.alias_expansion_enabled(),
                 ))
         {
@@ -4491,6 +4524,125 @@ niu_git_comp() {
         assert!(matches!(plain.prompt, PromptBackend::Bash(_)));
     }
 
+    /// Defaults-as-floor (design §14.5): a PS1 written *after* interactive
+    /// entry — the provenance an enabled framework has when its guarded
+    /// loader block runs inside the startup rc — is never eligible for the
+    /// #117 foreign-inheritance discard, even when its text happens to
+    /// carry Git Bash session markers. The discard is provenance-gated
+    /// (inherited env only, once, before any rc); framework recognition
+    /// must never grow another content-detector.
+    #[test]
+    fn framework_ps1_set_after_interactive_entry_is_never_discarded() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _cwd_guard = CwdGuard::capture();
+        let mut shell = test_shell(HookConfig::default());
+        shell.enter_interactive();
+        // Simulate a framework theme block sourced from the rc. The value
+        // deliberately reuses #117's marker shapes to prove ordering, not
+        // content, is the guard.
+        shell
+            .executor
+            .set_env("PS1", r"\u@\h $MSYSTEM \w `__git_ps1` $ ");
+        shell.run_precmd_hooks();
+        assert_eq!(
+            shell.executor.get_env("PS1"),
+            Some(r"\u@\h $MSYSTEM \w `__git_ps1` $ "),
+            "a framework-set PS1 must keep full effect"
+        );
+        assert!(
+            matches!(shell.prompt, PromptBackend::Bash(_)),
+            "the claim renders through the bash-compatible channel"
+        );
+    }
+
+    /// Defaults-as-floor (§14.5): releasing the claim (unset/empty PS1 —
+    /// `niu plugin disable`, theme off, plain `unset PS1`) restores the
+    /// product floor instead of freezing the last claimed face.
+    #[test]
+    fn prompt_claim_release_restores_the_floor() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _cwd_guard = CwdGuard::capture();
+        let mut shell = test_shell(HookConfig::default());
+        shell.executor.set_env("PS1", "claimed-face> ");
+        shell.run_precmd_hooks();
+        match &shell.prompt {
+            PromptBackend::Bash(prompt) => {
+                assert_eq!(prompt.render_prompt_left(), "claimed-face> ");
+            }
+            _ => panic!("expected the claim to render"),
+        }
+
+        shell.executor.unset_env("PS1");
+        shell.run_precmd_hooks();
+        match &shell.prompt {
+            PromptBackend::Template(floor) => {
+                let left = reedline::Prompt::render_prompt_left(floor).into_owned();
+                assert!(!left.contains("claimed-face"), "{left}");
+            }
+            _ => panic!("expected the product floor after release"),
+        }
+
+        // Re-claim after release still wins (claim/release/claim cycle).
+        shell.executor.set_env("PS1", "reclaimed> ");
+        shell.run_precmd_hooks();
+        match &shell.prompt {
+            PromptBackend::Bash(prompt) => {
+                assert_eq!(prompt.render_prompt_left(), "reclaimed> ");
+            }
+            _ => panic!("expected re-claim to render"),
+        }
+    }
+
+    /// Defaults-as-floor (§14.5): PROMPT_COMMAND is a hook, not a claim.
+    /// Hook-only frameworks (oh-my-bash's `history` plugin registers
+    /// `history -a` without any theme) must not displace the product floor
+    /// with a placeholder PS1; the hook still runs every prompt.
+    #[test]
+    fn hook_only_prompt_command_keeps_the_floor() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _cwd_guard = CwdGuard::capture();
+        let mut shell = test_shell(HookConfig::default());
+        shell.executor.set_env("PROMPT_COMMAND", "NIU_HOOK_RAN=1");
+
+        shell.run_precmd_hooks();
+
+        assert!(
+            matches!(shell.prompt, PromptBackend::Template(_)),
+            "a hook without PS1 must not claim the prompt slot"
+        );
+        assert_eq!(
+            shell.executor.get_env("NIU_HOOK_RAN"),
+            Some("1"),
+            "the hook still ran before the prompt"
+        );
+    }
+
+    /// starship's claim shape (src/init/starship.bash): PROMPT_COMMAND names
+    /// a precmd function that assigns PS1 itself. Because the hook runs
+    /// before the backend sync, the PS1 claim is visible in the same render
+    /// cycle — the floor steps aside on the very first starship prompt.
+    #[test]
+    fn starship_style_precmd_hook_claims_via_ps1_same_cycle() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _cwd_guard = CwdGuard::capture();
+        let mut shell = test_shell(HookConfig::default());
+        shell
+            .execute_line("starship_precmd() { PS1='starship-face> '; }")
+            .unwrap();
+        shell
+            .execute_line("PROMPT_COMMAND=starship_precmd")
+            .unwrap();
+
+        shell.run_precmd_hooks();
+
+        match &shell.prompt {
+            PromptBackend::Bash(prompt) => {
+                assert_eq!(prompt.render_prompt_left(), "starship-face> ");
+            }
+            _ => panic!("expected starship's PS1 claim to render"),
+        }
+    }
+
     #[test]
     fn bash_ps0_runs_before_interactive_command() {
         let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
@@ -4513,6 +4665,7 @@ niu_git_comp() {
             executor,
             completion_state: Arc::new(Mutex::new(CompletionState::new(PathBuf::from(".")))),
             prompt: PromptBackend::Template(NiubashPrompt::new(None, None)),
+            floor_prompt: PromptBackend::Template(NiubashPrompt::new(None, None)),
             home_dir: PathBuf::from("."),
             shell_root: None,
             history_path: PathBuf::from(".niubash_history"),

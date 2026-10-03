@@ -443,6 +443,111 @@ fn ps1_parameter_expansion_rerenders_per_prompt() {
 }
 
 // ---------------------------------------------------------------------------
+// Matrix 3b: defaults-as-floor (oh-my-niu design §14.5) — the product's own
+// prompt is the lowest-priority floor; an enabled external framework claims
+// the slot through PS1, the floor yields without fighting, and releasing
+// the claim restores the floor.
+// ---------------------------------------------------------------------------
+
+/// Nobody claims PS1 → the product floor (default template, `user@host`)
+/// renders in the reedline REPL.
+#[test]
+fn floor_prompt_renders_when_ps1_unclaimed() {
+    if !require_pty_or_skip("floor_prompt_renders_when_ps1_unclaimed") {
+        return;
+    }
+    let rc = "export NIU_FLOOR_PROBE=1\n";
+    let mut s = NiuSession::spawn_custom(
+        "floor-unclaimed",
+        rc,
+        &[],
+        (120, 30),
+        driver::DEFAULT_TIMEOUT,
+    );
+    s.expect("Niubash");
+    // Floor shape: `{user}@{host} {cwd} %#` — the `@` join is the
+    // structural marker (ANSI-styled pieces make full-prompt matching
+    // brittle, same discipline as the other theme tests).
+    s.expect("@");
+    s.send_line("echo floor-alive");
+    s.expect("floor-alive");
+}
+
+/// An enabled oh-my-bash theme claims the prompt end-to-end through its
+/// guarded loader: reedline renders the theme face (not the floor), the
+/// claim survives prompt cycles, `unset PS1` releases the slot so the floor
+/// returns, and re-claiming wins again — floor never fights back.
+#[test]
+fn omb_theme_claim_renders_and_floor_returns_on_release() {
+    if !require_pty_or_skip("omb_theme_claim_renders_and_floor_returns_on_release") {
+        return;
+    }
+    // Fixture oh-my-bash tree (same shape `niu plugin add --path` installs)
+    // copied where the guarded loader's default lookup finds it.
+    let sources_root = std::env::temp_dir().join(format!(
+        "niu-floor-omb-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let omb = sources_root.join("oh-my-bash");
+    copy_tree(
+        &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/sources/oh-my-bash"),
+        &omb,
+    );
+    // The rc carries the managed-block shape `niu plugin enable` writes:
+    // theme line + guarded loader for the fixture tree.
+    let base = "${NIU_PLUGIN_SOURCES_ROOT:-$HOME/.niubash/sources}/oh-my-bash";
+    let rc = format!(
+        "OSH_THEME='agnoster'\nif [ -r \"{base}/oh-my-bash.sh\" ]; then\n  OSH=\"{base}\"\n  OSH=\"${{OSH//\\\\//}}\"\n  export OSH\n  . \"$OSH/oh-my-bash.sh\"\nfi\n"
+    );
+    let mut s = NiuSession::spawn_custom(
+        "omb-claim",
+        &rc,
+        &[(
+            "NIU_PLUGIN_SOURCES_ROOT".to_string(),
+            sources_root.to_string_lossy().into_owned(),
+        )],
+        (120, 30),
+        HEAVY_TIMEOUT,
+    );
+    s.expect("Niubash");
+    // The theme's PS1 face renders through the bash-compatible channel.
+    s.expect("agnoster-fixture-face");
+    s.send_line("echo claim-alive");
+    s.expect("claim-alive");
+    s.expect("agnoster-fixture-face");
+
+    // Release: `unset PS1` → next prompt is the product floor again.
+    s.send_line("unset PS1");
+    s.expect("@");
+
+    // Re-claim in the same session still wins.
+    s.send_line("PS1='reclaimed> '");
+    s.expect("reclaimed> ");
+
+    let _ = std::fs::remove_dir_all(&sources_root);
+}
+
+/// Minimal recursive copy for the fixture tree (test-local; the fixture is
+/// a handful of small files).
+fn copy_tree(src: &std::path::Path, dst: &std::path::Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let target = dst.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).unwrap();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Matrix 4: completion UX and history persistence
 // ---------------------------------------------------------------------------
 
