@@ -4911,7 +4911,9 @@ license = "MIT"
 url = "https://github.com/rcaloras/bash-preexec"
 driver = "git"
 kind = "generic"
-entry = "bash-preexec"
+# Upstream root ships `bash-preexec.sh` (wt61/journeyfix G1 audit 2026-10-02);
+# keep in sync with scripts/gen-plugin-recipes.py STANDALONE.
+entry = "bash-preexec.sh"
 origin = "https://github.com/rcaloras/bash-preexec.git"
 
 [[recipe]]
