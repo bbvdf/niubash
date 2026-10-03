@@ -2,6 +2,33 @@
 
 All notable changes to Niubash are documented in this file.
 
+## [1.3.1] - 2026-10-03
+
+### Fixed
+
+- **Interactive arithmetic corruption** (engine rubash 1.3.1): aliases no
+  longer expand inside compound array assignments. Under oh-my-bash, the
+  convenience alias `1='cd -'` leaked into the literal
+  `OMB_VERSINFO=(1 0 0 0 ...)` and corrupted it to
+  `(_omb_directories_cd - 0 ...)`, killing version arithmetic with
+  `-: arithmetic syntax error` in interactive sessions (any theme,
+  powerbash10k included). GNU parity: assignment words are never
+  alias-expanded (parse.y parse_compound_assignment keeps the whole
+  `( ... )` in one ASSIGNMENT_WORD token).
+- **Plugin sync state machine**: the startup "installed but not declared"
+  nag now prints only when a spec exists (imperative mode is silent);
+  `niu plugin sync --adopt` declares installed sources with a
+  round-trip-stable snapshot (enablement + theme); the setup wizard ends
+  spec-managed; `niu plugin add` adopts an already-installed source
+  instead of erroring "remove it first".
+- **No re-download loop**: the startup bootstrap memoizes failed installs
+  (per origin+ref ledger); retries happen only on an explicit
+  `niu plugin sync`. The bash-it fingerprint now matches the real
+  upstream layout (its `lib/composure.bash` was removed upstream).
+- `niu plugin source remove` also drops the spec declaration (no
+  resurrection), and duplicate spec declarations of one source merge
+  instead of flipping the rc block every sync.
+
 ## [1.3.0] - 2026-10-03
 
 ### Plugin system - the bash ecosystem, managed
