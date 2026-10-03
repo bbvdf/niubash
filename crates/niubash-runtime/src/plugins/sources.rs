@@ -508,6 +508,12 @@ pub struct SourceInstallRequest {
     /// Explicit source id (multi-install shapes — wild file sources and
     /// bpkg packages — derive one from the origin when absent).
     pub id: Option<String>,
+    /// Recipe-named entry file (git-driver "generic" recipes): verified to
+    /// exist in the fetched tree before promotion — an honest failure for a
+    /// stale recipe, caught at install time. Manager adapters ignore it
+    /// (their own layout detect already ran); file sources name it in the
+    /// recommended enable verb (`niu plugin enable <id>/<entry>`).
+    pub entry: Option<String>,
 }
 
 struct FetchedSource {
@@ -653,6 +659,20 @@ fn fetch_source_to_staging(request: &SourceInstallRequest) -> anyhow::Result<Fet
         };
         let id = derive_install_id(adapter, origin, request.id.as_deref())?;
         let version = adapter.installed_version(&staging);
+        // Recipe-named entry: the recipe declared which file this source is
+        // about — verify it exists before promoting (honest failure for a
+        // stale recipe; wt47's detect_entry contract, expressed once here
+        // instead of per-adapter).
+        if let Some(entry) = request
+            .entry
+            .as_deref()
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+        {
+            if !staging.join(entry).is_file() {
+                anyhow::bail!("entry file '{entry}' not found in the fetched tree of '{origin}'");
+            }
+        }
         let checksum_sha256 = tree_sha256(&staging)?;
         if let Some(expected) = request.expected_checksum.as_deref() {
             if !checksum_sha256.eq_ignore_ascii_case(expected.trim()) {
@@ -849,6 +869,7 @@ pub fn rollback_source(id: &str) -> anyhow::Result<SourceUpdateSummary> {
         ref_name: ref_fallback,
         expected_checksum: Some(previous.checksum_sha256.clone()),
         id: None,
+        entry: None,
     })?;
 
     remove_tree_if_present(&record.path)
@@ -1049,6 +1070,7 @@ pub fn restore_source(id: &str) -> anyhow::Result<SourceSyncOutcome> {
         },
         expected_checksum: Some(record.checksum_sha256.clone()),
         id: None,
+        entry: None,
     })?;
     remove_tree_if_present(&record.path)
         .with_context(|| format!("failed to remove tree {}", record.path.display()))?;
@@ -1354,6 +1376,7 @@ mod tests {
             commit: None,
             expected_checksum: None,
             id: None,
+            entry: None,
         }
     }
 
@@ -1590,6 +1613,7 @@ mod tests {
             commit: None,
             expected_checksum: None,
             id: None,
+            entry: None,
         };
         let v1 = add_source(request("v1")).expect("install from git ref v1");
         trust_source("oh-my-bash").unwrap();
@@ -1969,6 +1993,7 @@ mod tests {
             commit: None,
             expected_checksum: None,
             id: None,
+            entry: None,
         };
         let v1 = add_source(request("v1")).unwrap();
         assert!(v1.commit_sha.is_some(), "git installs pin the commit");
@@ -2050,6 +2075,7 @@ mod tests {
             commit: None,
             expected_checksum: None,
             id: None,
+            entry: None,
         };
         let v1 = add_source(request("v1")).unwrap();
         trust_source("oh-my-bash").unwrap();

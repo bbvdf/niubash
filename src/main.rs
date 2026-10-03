@@ -1342,6 +1342,20 @@ fn run_plugin_command(args: &[String]) -> anyhow::Result<()> {
         }
         "discover" => run_plugin_discover_command(&args[3..]),
         "source" | "sources" => run_plugin_source_command(&args[3..]),
+        // Recipe index (mason-registry pattern): data rows for the whole
+        // bash ecosystem, `add` routes through the git/download drivers.
+        "recipe" | "recipes" => run_plugin_recipe_command(&args[3..]),
+        // Collections (LazyVim extras pattern): data manifests of recipe
+        // ids, built-in or imported, applied without auto-trust.
+        "distro" | "distros" | "collection" | "collections" => {
+            run_plugin_distro_command(&args[3..])
+        }
+        // Download-driver tools (direct binaries): the install/remove
+        // channel of `driver = "download"` recipes.
+        "tool" | "tools" => run_plugin_tool_command(&args[3..]),
+        // Menu-level UI (lazy view IA): sections by state, verbs from the
+        // command table, actions through the same runtime calls.
+        "ui" => niubash_runtime::plugins::ui::run_ui(),
         // The external ecosystem is first-class (owner ruling 2026-10-02):
         // vim-plug/lazy.nvim-style verbs over the real manager assets.
         "add" => run_plugin_add_command(&args[3..]),
@@ -1687,6 +1701,7 @@ impl PluginSourceRequest {
             commit: None,
             expected_checksum: self.expected_checksum.clone(),
             id: self.id.clone(),
+            entry: None,
         }
     }
 }
@@ -1961,6 +1976,19 @@ fn run_plugin_source_verify_command(args: &[String]) -> anyhow::Result<()> {
 /// bpkg trees come in the same way (auto-detected layout, per-plugin id).
 fn run_plugin_add_command(args: &[String]) -> anyhow::Result<()> {
     let parsed = parse_plugin_source_args(args)?;
+    // Recipe routing (lazy-study merge): a bare word that is NOT a catalog
+    // id but names a recipe routes through the recipe's driver (generic
+    // file source with entry / direct binary download / manager-asset
+    // chain). Catalog ids — the one-per-machine managers — keep the
+    // spec-declaring flow below: the spec stays their source of truth.
+    if parsed.target.is_some() && parsed.url.is_none() && parsed.path.is_none() {
+        let target = parsed.target.clone().unwrap();
+        if niubash_runtime::plugins::catalog::catalog_entry(&target).is_none()
+            && niubash_runtime::plugins::recipes::recipe(&target).is_some()
+        {
+            return run_plugin_recipe_add(&target);
+        }
+    }
     let mut request = resolve_source_install_request(parsed.clone())?;
     // Catalog shorthand first: `niu plugin add oh-my-bash` knows the origin.
     if request.adapter.is_none() {
@@ -2126,6 +2154,385 @@ fn print_undeclared_hints(report: &niubash_runtime::plugins::sync::SyncReport) {
     }
 }
 
+fn run_plugin_recipe_command(args: &[String]) -> anyhow::Result<()> {
+    let Some(verb) = args.first() else {
+        print_plugin_recipe_usage();
+        return Ok(());
+    };
+    match verb.as_str() {
+        "-h" | "--help" | "help" => {
+            print_plugin_recipe_usage();
+            Ok(())
+        }
+        "list" => run_plugin_recipe_list_command(&args[1..]),
+        "show" => {
+            let Some(id) = args.get(1) else {
+                anyhow::bail!("plugin recipe show requires a recipe id")
+            };
+            run_plugin_recipe_show_command(id)
+        }
+        "add" => {
+            let Some(id) = args.get(1) else {
+                anyhow::bail!("plugin recipe add requires a recipe id")
+            };
+            run_plugin_recipe_add(id)
+        }
+        unknown => anyhow::bail!("unknown plugin recipe subcommand '{unknown}'"),
+    }
+}
+
+fn print_plugin_recipe_usage() {
+    println!("Usage:  niu plugin recipe <command>");
+    println!();
+    println!("  list [--category <c>] [--json]   Index rows (bash-ecosystem assets)");
+    println!("  show <id>                        One recipe: driver, license, state");
+    println!("  add <id>                         Install through the recipe's driver");
+    println!();
+    println!("Categories: manager theme plugin alias completion prompt");
+    println!("Drivers:    git (tree source) · download (direct binary) · info-only");
+}
+
+fn run_plugin_recipe_list_command(args: &[String]) -> anyhow::Result<()> {
+    let json = args.iter().any(|arg| arg == "--json");
+    let mut category: Option<String> = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--category" {
+            category = iter.next().cloned();
+        }
+    }
+    let rows: Vec<serde_json::Value> = niubash_runtime::plugins::recipes::recipes()
+        .iter()
+        .filter(|recipe| {
+            category
+                .as_deref()
+                .map_or(true, |wanted| recipe.category.as_str() == wanted)
+        })
+        .map(|recipe| {
+            serde_json::json!({
+                "id": recipe.id,
+                "category": recipe.category.as_str(),
+                "summary": recipe.summary,
+                "license": recipe.license,
+                "url": recipe.url,
+                "driver": match &recipe.driver {
+                    Some(niubash_runtime::plugins::recipes::RecipeDriver::Git { .. }) => "git",
+                    Some(niubash_runtime::plugins::recipes::RecipeDriver::Download { .. }) => "download",
+                    None => "",
+                },
+                "state": format!("{:?}", niubash_runtime::plugins::recipes::recipe_state(&recipe.id)),
+            })
+        })
+        .collect();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    println!(
+        "{}",
+        niubash_runtime::text_style::bold("Niubash plugin recipe index")
+    );
+    println!(
+        "{}",
+        niubash_runtime::text_style::dim("  data rows — install with `niu plugin add <id>`")
+    );
+    println!();
+    for row in &rows {
+        println!(
+            "  {:<28} {:<12} {}",
+            row["id"].as_str().unwrap_or_default(),
+            row["category"].as_str().unwrap_or_default(),
+            row["summary"].as_str().unwrap_or_default()
+        );
+    }
+    println!(
+        "{}",
+        niubash_runtime::text_style::dim(&format!("{} recipes", rows.len()))
+    );
+    Ok(())
+}
+
+fn run_plugin_recipe_show_command(id: &str) -> anyhow::Result<()> {
+    use niubash_runtime::plugins::recipes::{RecipeDriver, RecipeState};
+    let recipe = niubash_runtime::plugins::recipes::recipe(id).ok_or_else(|| {
+        anyhow::anyhow!("unknown recipe '{id}'; browse with `niu plugin recipe list`")
+    })?;
+    println!("{}", niubash_runtime::text_style::bold(&recipe.id));
+    println!("  category  {}", recipe.category.as_str());
+    println!("  summary   {}", recipe.summary);
+    println!("  license   {}", recipe.license);
+    println!("  url       {}", recipe.url);
+    match &recipe.driver {
+        Some(RecipeDriver::Git {
+            kind,
+            entry,
+            origin,
+        }) => {
+            println!("  driver    git ({kind})");
+            if let Some(origin) = origin {
+                println!("  origin    {origin}");
+            }
+            if let Some(entry) = entry {
+                println!("  entry     {entry}");
+            }
+        }
+        Some(RecipeDriver::Download { version, .. }) => {
+            println!("  driver    download ({version})");
+        }
+        None => println!("  driver    (info-only — no niu install driver)"),
+    }
+    if let Some(manager) = &recipe.manager {
+        println!("  manager   {manager} (asset rides on this source)");
+    }
+    println!(
+        "  state     {}",
+        match niubash_runtime::plugins::recipes::recipe_state(id) {
+            RecipeState::Available => "not installed".to_string(),
+            RecipeState::ToolInstalled => "installed (download)".to_string(),
+            RecipeState::ManagerAsset { manager_state } => format!("manager: {manager_state}"),
+            RecipeState::InfoOnly => "info-only".to_string(),
+        }
+    );
+    println!();
+    println!("  niu plugin add {id}");
+    Ok(())
+}
+
+/// Shared install path for `niu plugin add <recipe-id>` and
+/// `niu plugin recipe add <id>`: run the driver, then print what happened
+/// and the next verbs (health-style "name the repair", study §10.1).
+fn run_plugin_recipe_add(id: &str) -> anyhow::Result<()> {
+    let report = niubash_runtime::plugins::recipes::install(id)?;
+    println!(
+        "{}",
+        niubash_runtime::text_style::green(&format!("recipe '{}':", report.recipe_id))
+    );
+    println!("  {}", report.summary);
+    if !report.next.is_empty() {
+        println!("next:");
+        for step in &report.next {
+            println!("  {step}");
+        }
+    }
+    Ok(())
+}
+
+/// `niu plugin distro <verb>` — collections (LazyVim extras pattern):
+/// data manifests of recipe ids; built-in or imported; apply never
+/// auto-trusts (study §8/§10.2).
+fn run_plugin_distro_command(args: &[String]) -> anyhow::Result<()> {
+    let Some(verb) = args.first() else {
+        print_plugin_distro_usage();
+        return Ok(());
+    };
+    match verb.as_str() {
+        "-h" | "--help" | "help" => {
+            print_plugin_distro_usage();
+            Ok(())
+        }
+        "list" => {
+            use niubash_runtime::plugins::distros::{collections, CollectionOrigin};
+            let listings = collections();
+            println!(
+                "{}",
+                niubash_runtime::text_style::bold("Niubash plugin collections")
+            );
+            println!(
+                "{}",
+                niubash_runtime::text_style::dim(
+                    "  apply installs recipes; trust stays an explicit review step"
+                )
+            );
+            println!();
+            for listing in &listings {
+                let origin = match &listing.origin {
+                    CollectionOrigin::Builtin => "built-in".to_string(),
+                    CollectionOrigin::Imported { origin, .. } => {
+                        format!("imported: {origin}")
+                    }
+                };
+                println!(
+                    "  {:<14} {:<10} {}",
+                    listing.collection.name, origin, listing.collection.description
+                );
+                let entries: Vec<&str> = listing
+                    .collection
+                    .entry
+                    .iter()
+                    .map(|entry| entry.recipe.as_str())
+                    .collect();
+                println!(
+                    "  {}",
+                    niubash_runtime::text_style::dim(&entries.join(", "))
+                );
+            }
+            Ok(())
+        }
+        "import" => {
+            let Some(origin) = args.get(1) else {
+                anyhow::bail!("plugin distro import requires a git repo or a directory")
+            };
+            let collection = niubash_runtime::plugins::distros::import(origin)?;
+            println!(
+                "{} collection '{}' ({} recipes) — apply with `niu plugin distro apply {}`",
+                niubash_runtime::text_style::green("Imported"),
+                collection.name,
+                collection.entry.len(),
+                collection.name
+            );
+            Ok(())
+        }
+        "remove" => {
+            let Some(name) = args.get(1) else {
+                anyhow::bail!("plugin distro remove requires a collection name")
+            };
+            niubash_runtime::plugins::distros::remove(name)?;
+            println!(
+                "{} collection '{name}'",
+                niubash_runtime::text_style::green("Removed")
+            );
+            Ok(())
+        }
+        "apply" => {
+            let Some(name) = args.get(1) else {
+                anyhow::bail!("plugin distro apply requires a collection name")
+            };
+            run_plugin_distro_apply(name)
+        }
+        unknown => anyhow::bail!("unknown plugin distro subcommand '{unknown}'"),
+    }
+}
+
+fn run_plugin_distro_apply(name: &str) -> anyhow::Result<()> {
+    let outcome = niubash_runtime::plugins::distros::apply(name)?;
+    println!(
+        "{}",
+        niubash_runtime::text_style::green(&format!("collection '{}':", outcome.name))
+    );
+    for report in &outcome.reports {
+        println!("  - {}", report.summary);
+    }
+    // Collected failures (lazy.nvim Spec:log pattern): name the entry and
+    // the error; the rest of the collection still landed.
+    for (recipe, error) in &outcome.failures {
+        println!(
+            "  {} {}: {}",
+            niubash_runtime::text_style::red("failed"),
+            recipe,
+            error
+        );
+    }
+    let landed = outcome.reports.iter().any(|report| !report.next.is_empty());
+    if landed {
+        println!("next:");
+        // Deduplicate the per-entry next verbs (trust/enable chains overlap).
+        let mut seen: Vec<&String> = Vec::new();
+        for report in &outcome.reports {
+            for step in &report.next {
+                if !seen.contains(&step) {
+                    seen.push(step);
+                    println!("  {step}");
+                }
+            }
+        }
+        println!(
+            "{}",
+            niubash_runtime::text_style::dim(
+                "sources stay untrusted until reviewed; restart niu after enabling"
+            )
+        );
+    } else if outcome.failures.is_empty() {
+        println!("  everything already active");
+    }
+    if !outcome.failures.is_empty() {
+        anyhow::bail!(
+            "{} of {} collection entries failed",
+            outcome.failures.len(),
+            outcome.reports.len() + outcome.failures.len()
+        );
+    }
+    Ok(())
+}
+
+fn print_plugin_distro_usage() {
+    println!("Usage:  niu plugin distro <command>");
+    println!();
+    println!("  list                        Built-in + imported collections");
+    println!("  import <repo|path>          Import a collection (niu-collection.toml)");
+    println!("  remove <name>               Remove an imported collection");
+    println!("  apply <name>                Install every recipe in the collection");
+    println!();
+    println!("Built-ins: minimal (completions only) · recommended (oh-my-bash + theme +");
+    println!("completions) · full (both frameworks + hooks + fzf + starship)");
+}
+
+/// `niu plugin tool <verb>` — the download-driver channel: direct-binary
+/// recipes (pure-Rust HTTP + unpack, owner ruling 2026-10-03). `remove` is
+/// the undo verb for tool installs and collection applies.
+fn run_plugin_tool_command(args: &[String]) -> anyhow::Result<()> {
+    let Some(verb) = args.first() else {
+        print_plugin_tool_usage();
+        return Ok(());
+    };
+    match verb.as_str() {
+        "-h" | "--help" | "help" => {
+            print_plugin_tool_usage();
+            Ok(())
+        }
+        "list" => {
+            let tools = niubash_runtime::plugins::download::read_tool_registry();
+            if tools.is_empty() {
+                println!("no tools installed (`niu plugin add <download-recipe>`)");
+                return Ok(());
+            }
+            println!(
+                "{}",
+                niubash_runtime::text_style::bold("Installed tools (download driver)")
+            );
+            for tool in &tools {
+                println!(
+                    "  {:<14} {:<10} bins: {} [{}]",
+                    tool.id,
+                    tool.version,
+                    tool.bins.join(", "),
+                    niubash_runtime::text_style::dim(
+                        &tool.archive_sha256[..12.min(tool.archive_sha256.len())]
+                    )
+                );
+            }
+            Ok(())
+        }
+        "remove" => {
+            let Some(id) = args.get(1) else {
+                anyhow::bail!("plugin tool remove requires a tool id")
+            };
+            if niubash_runtime::plugins::download::remove_tool(id)? {
+                println!(
+                    "{} tool '{id}'",
+                    niubash_runtime::text_style::green("Removed")
+                );
+                println!(
+                    "  {}",
+                    niubash_runtime::text_style::dim(
+                        "restart niu (or reload ~/.niubashrc) for the PATH change to take effect"
+                    )
+                );
+            } else {
+                anyhow::bail!("no installed tool '{id}'");
+            }
+            Ok(())
+        }
+        unknown => anyhow::bail!("unknown plugin tool subcommand '{unknown}'"),
+    }
+}
+
+fn print_plugin_tool_usage() {
+    println!("Usage:  niu plugin tool <command>");
+    println!();
+    println!("  list                   Installed download-driver tools");
+    println!("  remove <id>            Remove a tool (PATH block, dir, record)");
+}
+
 /// `niu plugin list [--json]` — sources, their assets, and activation
 /// state (the first-class inventory of the external ecosystem).
 fn run_plugin_list_command(args: &[String]) -> anyhow::Result<()> {
@@ -2239,10 +2646,12 @@ fn run_plugin_enable_command(args: &[String], enable: bool) -> anyhow::Result<()
             if enable { "enable" } else { "disable" }
         );
     };
+    // Tools first (download-driver channel): their enable unit is a PATH
+    // managed block; everything else is the asset layer.
     let outcome = if enable {
-        niubash_runtime::plugins::assets::enable(target)?
+        niubash_runtime::plugins::recipes::enable(target)?
     } else {
-        niubash_runtime::plugins::assets::disable(target)?
+        niubash_runtime::plugins::recipes::disable(target)?
     };
     println!(
         "{} {}",
@@ -2410,7 +2819,8 @@ fn print_plugin_usage() {
     println!("                           [--checksum <sha256>] [--path <dir>]");
     println!("                           Declare + install a source (catalog id,");
     println!("                           GitHub shorthand, url, or local path; the");
-    println!("                           entry lands in the spec, untrusted)");
+    println!("                           entry lands in the spec, untrusted; recipe");
+    println!("                           ids route through their driver)");
     println!("  list [--json]            Sources, their assets, activation state");
     println!("  enable <target>          Activate a source or asset (wild sources");
     println!("                           pick files: <id>/<file>.bash)");
@@ -2426,6 +2836,13 @@ fn print_plugin_usage() {
     println!("  clean                    Remove staging leftovers and orphans");
     println!("  trust <id>               Review and activate a source's assets");
     println!("  discover [--verbose]     Dry ecosystem overview (read-only)");
+    println!("  ui                       Menu UI (sections by state, same verbs)");
+    println!();
+    println!("  recipe <command>         Recipe index: list [--category <c>]");
+    println!("                           [--json], show <id>, add <id>");
+    println!("  distro <command>         Collections: list, import <repo|path>,");
+    println!("                           remove <name>, apply <name>");
+    println!("  tool <command>           Downloaded binaries: list, remove <id>");
     println!();
     println!("  source <command>         Full source protocol (add/trust/sign/");
     println!("                           verify/remove/update/rollback/list)");

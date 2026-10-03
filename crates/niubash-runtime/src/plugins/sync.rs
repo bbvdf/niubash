@@ -193,6 +193,7 @@ fn sync_with_spec(mut spec: PluginSpec, options: SyncOptions) -> anyhow::Result<
                     commit: None,
                     expected_checksum: None,
                     id: entry.id.clone(),
+                    entry: None,
                 };
                 match sources::add_source(request) {
                     Ok(record) => {
@@ -565,6 +566,7 @@ mod tests {
             commit: None,
             expected_checksum: None,
             id: None,
+            entry: None,
         })
         .unwrap();
         let report = sync_spec(SyncOptions::default()).unwrap();

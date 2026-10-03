@@ -49,6 +49,15 @@ fn begin_marker(id: &str) -> String {
     format!("# >>> niu source {id} (managed by `niu plugin enable/disable`) >>>")
 }
 
+/// True when `id` has a managed block in the rc (the enable state as the
+/// loader sees it — one source of truth for listings and the plugin UI).
+pub fn managed_block_present(id: &str) -> bool {
+    let Ok(text) = fs::read_to_string(rc_file()) else {
+        return false;
+    };
+    text.lines().any(|line| line.trim() == begin_marker(id))
+}
+
 fn end_marker(id: &str) -> String {
     format!("# <<< niu source {id} <<<")
 }
@@ -395,6 +404,24 @@ pub fn build_theme_block(source_id: &str, theme: &str) -> Option<String> {
         files: Vec::new(),
     };
     Some(render_block(&record, &model, &state))
+}
+
+/// Write (or replace) the managed PATH block for an executable tool
+/// installed through the download driver (`plugins::download`). Mason's
+/// PATH-as-policy shape (study §10.3): one block per tool, the tool
+/// directory prepended so it wins over system copies.
+pub fn write_tool_path_block(tool_id: &str, tool_dir: &Path) -> anyhow::Result<PathBuf> {
+    let block = format!(
+        "# niu tool path: {tool_id} (managed; edit via `niu plugin enable/disable {tool_id}`)\n\
+         export PATH={}:\"$PATH\"\n",
+        shell_quote(&tool_dir.display().to_string())
+    );
+    write_managed_block(tool_id, &block)
+}
+
+/// Remove a tool's PATH block; `false` when none existed.
+pub fn remove_tool_path_block(tool_id: &str) -> anyhow::Result<bool> {
+    remove_managed_block(tool_id)
 }
 
 // ── bash-it enabled/ directory (tree-side state) ─────────────────────────────
@@ -1312,6 +1339,7 @@ mod tests {
             commit: None,
             expected_checksum: None,
             id: None,
+            entry: None,
         })
         .expect("fixture add");
     }

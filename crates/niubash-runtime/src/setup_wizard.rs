@@ -43,6 +43,17 @@ struct SetupJournal {
     preset: Option<String>,
     /// Lasting niu-git answer ("never" / "installed").
     niu_git: Option<String>,
+    /// Plugin collection applied by this run: name + the ids that landed
+    /// (sources and download tools), so the undo lines can name each one.
+    collection: Option<CollectionJournal>,
+}
+
+/// The journalable part of a wizard collection apply.
+#[derive(Debug, Default)]
+struct CollectionJournal {
+    name: String,
+    sources: Vec<String>,
+    tools: Vec<String>,
 }
 
 fn setup_journal_path(home: &std::path::Path) -> PathBuf {
@@ -81,6 +92,21 @@ fn write_setup_journal(home: &std::path::Path, journal: &SetupJournal) {
     if let Some(niu_git) = &journal.niu_git {
         body.push_str(&format!("niu_git = {}\n", shell_quote(niu_git)));
     }
+    if let Some(collection) = &journal.collection {
+        body.push_str(&format!("collection = {}\n", shell_quote(&collection.name)));
+        if !collection.sources.is_empty() {
+            let ids: Vec<String> = collection
+                .sources
+                .iter()
+                .map(|id| shell_quote(id))
+                .collect();
+            body.push_str(&format!("collection_sources = [{}]\n", ids.join(", ")));
+        }
+        if !collection.tools.is_empty() {
+            let ids: Vec<String> = collection.tools.iter().map(|id| shell_quote(id)).collect();
+            body.push_str(&format!("collection_tools = [{}]\n", ids.join(", ")));
+        }
+    }
     if let Err(err) = std::fs::write(&path, body) {
         println!(
             "  \u{26a0}\u{fe0f}  {} {err}",
@@ -106,6 +132,20 @@ fn setup_undo_lines(home: &std::path::Path, journal: &SetupJournal) -> Vec<Strin
         lines.push(format!(
             "niu plugin source remove {source}   # optional: also delete the tree"
         ));
+    }
+    if let Some(collection) = &journal.collection {
+        for id in &collection.sources {
+            lines.push(format!(
+                "niu plugin source remove {id:<12}  # collection '{}': drop the source",
+                collection.name
+            ));
+        }
+        for id in &collection.tools {
+            lines.push(format!(
+                "niu plugin tool remove {id:<12}    # collection '{}': drop the tool",
+                collection.name
+            ));
+        }
     }
     lines
 }
@@ -797,6 +837,13 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
         }
     }
 
+    // --- Q2.5: plugin collection (only when the ecosystem is empty) ---
+    // LazyVim-style progressive disclosure (study §10.2): first run offers
+    // one bundled starting point; everything else stays behind `niu plugin
+    // recipe list` / `niu plugin ui`. Applying only installs (untrusted);
+    // trust and activation stay explicit user verbs.
+    let collection_pick = ask_plugin_collection(&mut io, &t);
+
     // --- Q3: niu-git, offered once (never auto-installed, never nagged) ---
     // Windows-only question: the wpm install form exists only on Windows,
     // and Linux/macOS users already have native git — the topic (and the
@@ -808,7 +855,13 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
 
     // --- Summary + explicit Apply gate ---
     let cfg = build_config(&theme_pick);
-    print_config_summary(&cfg, &theme_pick, niu_git, lang);
+    print_config_summary(
+        &cfg,
+        &theme_pick,
+        niu_git,
+        collection_pick.as_ref().and_then(|pick| pick.as_deref()),
+        lang,
+    );
     let confirm_options = [t.tr("Apply"), t.tr("Cancel")];
     let confirm = ask!(io.confirm(
         t.tr("  \u{2705}  Apply this configuration?"),
@@ -836,6 +889,14 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
         write_niu_git_answer(&home, "never");
     }
 
+    // The collection apply lands after the rc write: it installs sources
+    // (untrusted) and download tools, collecting per-entry failures the way
+    // lazy.nvim collects spec errors (study §10.1) — a failed entry never
+    // fails the wizard run.
+    let collection_journal = collection_pick
+        .flatten()
+        .and_then(|name| apply_plugin_collection(&name, lang));
+
     // Setup journal + per-entry undo (iron law 3: 失败可回滚).
     let journal = SetupJournal {
         rc_backup: backup_path.clone(),
@@ -847,6 +908,7 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
         // Whatever lasting answer the run recorded ("never"/"installed");
         // a plain Skip stays transient and journaled as none.
         niu_git: read_niu_git_answer(&home),
+        collection: collection_journal,
     };
     write_setup_journal(&home, &journal);
 
@@ -857,6 +919,51 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
     );
 
     Ok(())
+}
+
+/// Apply the picked collection after the Apply gate (study §8/§10.2).
+/// Failures are collected per entry (lazy.nvim Spec:log pattern): each one
+/// is printed with its repair verb and the run continues — the function
+/// itself never fails.
+fn apply_plugin_collection(name: &str, lang: Lang) -> Option<CollectionJournal> {
+    println!();
+    match crate::plugins::distros::apply(name) {
+        Ok(outcome) => {
+            for report in &outcome.reports {
+                println!("    - {}", report.summary);
+            }
+            for (recipe, error) in &outcome.failures {
+                println!("    {} {}: {}", lang.tr("failed"), recipe, error);
+            }
+            if outcome.failures.is_empty() {
+                println!(
+                    "  {}  {}",
+                    lang.tr("plugin collection"),
+                    lang.tr("installed — review with `niu plugin trust <id>`")
+                );
+            } else {
+                println!(
+                    "  {}  {} {} {}",
+                    lang.tr("plugin collection"),
+                    outcome.failures.len(),
+                    lang.tr("entries failed — retry with"),
+                    format!("`niu plugin distro apply {name}`")
+                );
+            }
+            Some(CollectionJournal {
+                name: outcome.name,
+                sources: outcome.installed_sources,
+                tools: outcome.installed_tools,
+            })
+        }
+        Err(err) => {
+            println!(
+                "  \u{26a0}\u{fe0f}  {} '{name}': {err:#}",
+                lang.tr("plugin collection")
+            );
+            None
+        }
+    }
 }
 
 /// Short human description of a theme pick ("classic", "robbyrussell ·
@@ -991,6 +1098,53 @@ fn ask_niu_git(
 
 fn wizard_answers_path(home: &std::path::Path) -> PathBuf {
     home.join(".niubash").join("wizard-answers.toml")
+}
+
+/// Q2.5 — one bundled starting point for a fresh install (study §10.2:
+/// progressive disclosure). Offered only when no plugin sources are
+/// installed yet; Skip is the default and the ecosystem stays one command
+/// away. `None` = cancelled the wizard; `Some(None)` = skip; `Some(name)`
+/// = picked a collection to apply after the Apply gate.
+fn ask_plugin_collection(io: &mut WizardIo, t: &Lang) -> Option<Option<String>> {
+    if !crate::plugins::sources::read_source_registry().is_empty() {
+        return Some(None);
+    }
+    let options = [
+        format!(
+            "{}  {}",
+            pad_display(t.tr("Skip"), 14),
+            t.tr("default — browse later with `niu plugin recipe list`")
+        ),
+        format!(
+            "{}  {}",
+            pad_display("minimal", 14),
+            t.tr("bash-completion only, no frameworks")
+        ),
+        format!(
+            "{}  {}",
+            pad_display("recommended", 14),
+            t.tr("oh-my-bash + its default theme + completions")
+        ),
+        format!(
+            "{}  {}",
+            pad_display("full", 14),
+            t.tr("both frameworks, bash-preexec, fzf, starship")
+        ),
+    ];
+    let option_refs: Vec<&str> = options.iter().map(String::as_str).collect();
+    let idx = io.choice(
+        t.tr("  \u{1f9f0}  Plugin collection?"),
+        0,
+        &option_refs,
+        t.tr("  |  installs stay untrusted until `niu plugin trust`; Skip changes nothing"),
+    )?; // cancelled
+    let name = match idx {
+        1 => Some("minimal"),
+        2 => Some("recommended"),
+        3 => Some("full"),
+        _ => None,
+    };
+    Some(name.map(str::to_string))
 }
 
 /// The recorded niu-git answer, when the user gave a lasting one ("never",
@@ -1158,6 +1312,7 @@ fn print_config_summary(
     cfg: &WizardConfig,
     theme_pick: &ThemePick,
     niu_git: NiuGitChoice,
+    collection_pick: Option<&str>,
     lang: Lang,
 ) {
     let t = lang;
@@ -1171,6 +1326,17 @@ fn print_config_summary(
         match theme_pick {
             ThemePick::Keep => t.tr("unchanged").to_string(),
             ThemePick::External { name, .. } => format!("{} ({})", name, t.tr("oh-my-bash source")),
+        },
+    );
+    row(
+        "plugins",
+        match collection_pick {
+            Some(name) => format!(
+                "{} ({})",
+                name,
+                t.tr("installs stay untrusted until reviewed")
+            ),
+            None => t.tr("unchanged").to_string(),
         },
     );
     row(
@@ -1450,6 +1616,18 @@ fn zh(en: &str) -> Option<&'static str> {
             "尚未安装任何主题 —— 保持内置默认外观。",
         "Browse the ecosystem any time with `niu plugin discover` (read-only)." =>
             "随时用 `niu plugin discover` 浏览生态（只读，不安装）。",
+
+        // Plugin collection question (Q2.5)
+        "  \u{1f9f0}  Plugin collection?" => "  \u{1f9f0}  插件合集？",
+        "default — browse later with `niu plugin recipe list`" =>
+            "默认 —— 以后用 `niu plugin recipe list` 再浏览",
+        "bash-completion only, no frameworks" => "仅 bash-completion，不含框架",
+        "oh-my-bash + its default theme + completions" =>
+            "oh-my-bash + 默认主题 + 补全",
+        "both frameworks, bash-preexec, fzf, starship" =>
+            "双框架 + bash-preexec + fzf + starship",
+        "  |  installs stay untrusted until `niu plugin trust`; Skip changes nothing" =>
+            "  |  安装后保持未信任，待 `niu plugin trust` 审阅；跳过则不做任何改动",
         "current look unchanged" => "当前外观保持不变",
         "keep" => "保留",
         "default" => "默认",
@@ -1490,6 +1668,13 @@ fn zh(en: &str) -> Option<&'static str> {
         // Summary (labels shared with the environment summary above)
         "Summary" => "配置摘要",
         "theme" => "主题",
+        "plugins" => "插件",
+        "installs stay untrusted until reviewed" => "安装后保持未信任，待审阅",
+        "plugin collection" => "插件合集",
+        "installed — review with `niu plugin trust <id>`" =>
+            "已安装 —— 用 `niu plugin trust <id>` 审阅启用",
+        "entries failed — retry with" => "个条目失败 —— 可重试：",
+        "failed" => "失败",
         "completions" => "补全",
         "niu-git" => "niu-git",
         "oh-my-bash source" => "oh-my-bash 源",
@@ -1663,6 +1848,9 @@ mod tests {
             "Welcome to Niubash",
             "  \u{1f3a8}  Pick a theme",
             "Skip — keep my current theme",
+            "  \u{1f9f0}  Plugin collection?",
+            "default — browse later with `niu plugin recipe list`",
+            "plugin collection",
             "  \u{1f9e9}  niu-git — Windows-native git experience?",
             "Apply",
             "Cancel",
@@ -1687,6 +1875,7 @@ mod tests {
             commit: None,
             expected_checksum: None,
             id: None,
+            entry: None,
         })
         .expect("fixture source add must succeed");
         crate::plugins::sources::trust_source("oh-my-bash").expect("fixture trust must succeed");
@@ -1817,6 +2006,11 @@ mod tests {
             theme: Some(("robbyrussell".to_string(), "oh-my-bash".to_string())),
             preset: None,
             niu_git: None,
+            collection: Some(CollectionJournal {
+                name: "recommended".to_string(),
+                sources: vec!["oh-my-bash".to_string()],
+                tools: vec!["starship".to_string()],
+            }),
         };
         write_setup_journal(&temp, &journal);
         let text = std::fs::read_to_string(setup_journal_path(&temp)).unwrap();
@@ -1824,11 +2018,17 @@ mod tests {
         assert!(text.contains("rc_backup = "), "{text}");
         assert!(text.contains("theme = 'robbyrussell'"), "{text}");
         assert!(text.contains("theme_source = 'oh-my-bash'"), "{text}");
+        assert!(text.contains("collection = 'recommended'"), "{text}");
+        assert!(
+            text.contains("collection_sources = ['oh-my-bash']"),
+            "{text}"
+        );
+        assert!(text.contains("collection_tools = ['starship']"), "{text}");
 
-        // One undo command per entry: rc restore, theme disable, and the
-        // optional source removal hint.
+        // One undo command per entry: rc restore, theme disable, the
+        // optional source removal hint, and one line per collection entry.
         let undo = setup_undo_lines(&temp, &journal);
-        assert!(undo.len() == 3, "{undo:?}");
+        assert!(undo.len() == 5, "{undo:?}");
         assert!(undo[0].starts_with("cp "), "{undo:?}");
         assert!(undo[0].contains(".niubashrc"), "{undo:?}");
         assert!(
@@ -1837,6 +2037,14 @@ mod tests {
         );
         assert!(
             undo[2].contains("niu plugin source remove oh-my-bash"),
+            "{undo:?}"
+        );
+        assert!(
+            undo[3].contains("niu plugin source remove oh-my-bash"),
+            "{undo:?}"
+        );
+        assert!(
+            undo[4].contains("niu plugin tool remove starship"),
             "{undo:?}"
         );
 

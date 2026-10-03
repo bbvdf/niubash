@@ -281,22 +281,33 @@ fn install_git_source(
     origin: Option<&str>,
 ) -> anyhow::Result<RecipeInstall> {
     let origin = origin.ok_or_else(|| anyhow!("recipe '{id}' has no git origin"))?;
+    // Recipe kind → adapter id. The wt47 "generic" single-entry adapter
+    // merged into the anyplug model as the open file source ("file"):
+    // every candidate is still enumerated honestly (§14.6.1 — no guessed
+    // unique entry); the recipe's `entry` names the *recommended* file,
+    // verified on staging and surfaced as the enable verb below. Manager
+    // kinds (oh-my-bash, bash-it, bash-completion, bpkg) pass through.
+    let (adapter_kind, per_install) = if kind == "generic" {
+        ("file", true)
+    } else {
+        (kind, false)
+    };
     let mut request = sources::SourceInstallRequest {
-        adapter: Some(kind.to_string()),
+        adapter: Some(adapter_kind.to_string()),
         origin: sources::normalize_origin(origin),
         ..Default::default()
     };
-    if kind == "generic" {
+    if per_install {
         request.id = Some(id.to_string());
         request.entry = entry.map(str::to_string);
     }
     let record = sources::add_source(request)?;
     let mut next = vec![format!("niu plugin trust {}", record.id)];
-    if record.id != id {
-        // Generic sources activate whole-source after trust.
-        next.push(format!("niu plugin enable {}", record.id));
-    } else {
-        next.push(format!("niu plugin enable {}", record.id));
+    match entry {
+        // File sources enable per-file (DirectFiles); the recipe's entry is
+        // the recommended pick, spelled out so the next verb works as-is.
+        Some(entry) => next.push(format!("niu plugin enable {}/{}", record.id, entry)),
+        None => next.push(format!("niu plugin enable {}", record.id)),
     }
     Ok(RecipeInstall {
         recipe_id: id.to_string(),
@@ -438,13 +449,12 @@ pub fn disable(id: &str) -> anyhow::Result<assets::ActivationOutcome> {
     if download::read_tool_registry()
         .iter()
         .any(|record| record.id == id)
+        && assets::remove_tool_path_block(id)?
     {
-        if assets::remove_tool_path_block(id)? {
-            return Ok(assets::ActivationOutcome {
-                summary: format!("tool '{id}' PATH block removed"),
-                undo: format!("niu plugin enable {id}"),
-            });
-        }
+        return Ok(assets::ActivationOutcome {
+            summary: format!("tool '{id}' PATH block removed"),
+            undo: format!("niu plugin enable {id}"),
+        });
     }
     assets::disable(id)
 }

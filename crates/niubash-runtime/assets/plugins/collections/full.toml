@@ -1,0 +1,25 @@
+# niubash plugin collection: full
+schema = "niubash:plugin-collection@1"
+name = "full"
+description = "both frameworks + hooks + tooling: omb, bash-it, completions, bash-preexec, fzf, starship"
+
+[[entry]]
+recipe = "oh-my-bash"
+
+[[entry]]
+recipe = "omb-theme-robbyrussell"
+
+[[entry]]
+recipe = "bash-it"
+
+[[entry]]
+recipe = "bash-completion"
+
+[[entry]]
+recipe = "bash-preexec"
+
+[[entry]]
+recipe = "fzf"
+
+[[entry]]
+recipe = "starship"

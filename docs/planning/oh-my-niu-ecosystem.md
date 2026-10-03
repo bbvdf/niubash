@@ -1102,3 +1102,36 @@ source 输出同一行诊断（`line N: _omb_module_require: command not found`�
 新动词、docs/plugins-guide.md（spec 入门/三种添加方式对照/trust 流程/排障）与
 AI 速查（docs/plugins-quickref.md）；引擎树零改动（审计只读：引擎源码对插件/
 管理器名仅出现在注释出处，无字符串字面量特判，2026-10-02 复核）。
+
+### 14.7 lazystudy 三 commit 并入 anyplug 主线（2026-10-02，wt48/release161）
+
+wt47/lazystudy 的 `4506a0b`（纯 Rust 下载驱动 ureq/flate2/tar）、`074eb88`
+（合集 distros + 向导 Q2.5 + tool 通道）、`3e013a0`（`niu plugin ui` 菜单 +
+用户 guide）手工并入 master。seed/研究文档已先行 cherry-pick（master
+`3ac1163`/`660e507`），但 recipes.rs 当时**未接线**（无 `mod recipes` 声明，
+依赖的 `entry` 字段与 tool PATH 块函数不在 master 上）——本次合并补齐接线。
+两个合并裁定（均保持两边的不变量，非新增语义）：
+
+1. **`niu plugin add <id>` 的 recipe 路由：catalog 优先**。bare word 先查
+   catalog（三管理器，一机一份）：命中 → anyplug 的 spec 声明流（spec 仍是
+   它们的事实源）；未命中而命中 recipe → recipe 驱动（generic file source
+   带 entry / download 直装 / manager-asset 链）。recipe 通道落在 registry
+   （untrusted），`niu plugin sync` 按"未声明"提示，`--prune` 才删——与
+   14.6.3 的存量语义一致。recipe id 均为带前缀平名（`omb-theme-*`），
+   与 `<source>/<asset>` 限定名无歧义。
+2. **wt47 的 `generic` 单入口适配器并入 anyplug 开放 file source（"file"）**。
+   14.6.1 的"诚实枚举、不猜唯一入口"不变量保留：树的全部 `*.sh/*.bash`
+   候选照列；recipe 的 `entry` 是**数据**（recipe 声明的推荐文件），落在
+   `SourceInstallRequest.entry`——staging 阶段校验存在（过期 recipe 在装时
+   如实报错，即 wt47 `detect_entry` 契约、单点表达于
+   `fetch_source_to_staging`），并在 next-verb 里点名
+   `niu plugin enable <id>/<entry>`。`enable/disable` 路由先查 tool 注册表
+   （PATH 块），否则走资产层——与 wt47 相同。
+
+hooks.md 死契约处置（niubash#161 顺带裁定）：**改写为"活面 + 待实作"而非
+删除**。理由：`run_precmd_hooks` 等并非纯存根——它们承载 §14.5 的活的
+PROMPT_COMMAND 执行、PS1 认领/释放同步、PS0 渲染与标题解析（defaults-floor
+测试依赖），删除 = 拆活机器。死的只是用户注册面（`niubash_add_*_hook` 随
+框架退役，无运行时注册路径）。文档如实记录两件事：今天的 bash 原生钩子面
+（PROMPT_COMMAND/PS0/trap/PS1 认领），与"niu 原生命名钩子待外部生态模型
+owner 裁定"。

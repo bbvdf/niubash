@@ -14,11 +14,21 @@
 //! plugins / aliases / completions to `niu plugin enable/disable` through
 //! each manager's own selection mechanism ([`assets`]). No vendoring: the
 //! license stays between the user and upstream.
+//!
+//! Recipe-shaped access (lazy.nvim/mason conventions, owner ruling
+//! 2026-10-03): [`recipes`] is the data index over the ecosystem,
+//! [`download`] the pure-Rust direct-binary driver, [`distros`] the
+//! collection manifests (LazyVim extras pattern), and [`ui`] the menu-level
+//! view over the same verbs.
 
 pub mod assets;
 pub mod catalog;
 pub mod descriptors;
+pub mod distros;
+pub mod download;
+pub mod recipes;
 pub mod sources;
 pub mod spec;
 pub mod sync;
 pub mod trust;
+pub mod ui;
