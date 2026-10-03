@@ -2060,7 +2060,7 @@ mod tests {
 
     #[test]
     fn setup_home_dir_accepts_shell_style_home_env() {
-        let _process_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _process_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = unique_temp_dir("niubash-setup-home").join("home");
         let _home = EnvGuard::set("HOME", &host_to_shell_style_path(&home));
         let _userprofile = EnvGuard::unset("USERPROFILE");
@@ -2209,7 +2209,7 @@ mod tests {
 
     #[test]
     fn theme_gallery_lists_trusted_external_sources_only() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("wizard-gallery");
         let root = temp.join("sources");
         let _sources = EnvGuard::set("NIU_PLUGIN_SOURCES_ROOT", &root.to_string_lossy());
@@ -2247,7 +2247,7 @@ mod tests {
 
     #[test]
     fn wizard_skip_answers_leave_zero_rc_overrides() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("wizard-skip");
         let home = temp.join("home");
         std::fs::create_dir_all(&home).unwrap();
@@ -2273,7 +2273,7 @@ mod tests {
 
     #[test]
     fn wizard_external_theme_pick_writes_guarded_loader() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("wizard-omb-theme");
         let root = temp.join("sources");
         let _sources = EnvGuard::set("NIU_PLUGIN_SOURCES_ROOT", &root.to_string_lossy());
@@ -2350,7 +2350,7 @@ mod tests {
     /// block — journal/undo cover the pick exactly like a Q1 pick.
     #[test]
     fn post_install_pick_trusts_then_writes_the_guarded_theme_block() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("wizard-post-install");
         let root = temp.join("sources");
         let home = temp.join("home");
@@ -2426,7 +2426,7 @@ mod tests {
     /// left them.
     #[test]
     fn post_install_declined_trust_changes_nothing() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("wizard-post-decline");
         let root = temp.join("sources");
         let home = temp.join("home");
@@ -2490,7 +2490,7 @@ mod tests {
     /// never lands in the 1.3.0 nag state and no migration verb is needed.
     #[test]
     fn collection_apply_ends_spec_managed() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("wizard-spec-managed");
         let root = temp.join("sources");
         let home = temp.join("home");
@@ -2540,7 +2540,7 @@ mod tests {
     /// apply, or an apply whose sources bear no themes all stay silent.
     #[test]
     fn post_install_candidates_stay_empty_for_minimal_or_skipped_runs() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("wizard-post-minimal");
         let root = temp.join("sources");
         let _sources = EnvGuard::set("NIU_PLUGIN_SOURCES_ROOT", &root.to_string_lossy());
@@ -2648,7 +2648,7 @@ mod tests {
 
     #[test]
     fn current_theme_pick_reads_existing_rc() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _theme_env = EnvGuard::unset("NIU_THEME");
         let temp = unique_temp_dir("wizard-current-theme");
         std::fs::create_dir_all(&temp).unwrap();

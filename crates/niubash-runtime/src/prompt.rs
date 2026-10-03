@@ -496,7 +496,7 @@ mod tests {
 
     #[test]
     fn cwd_token_defaults_to_home_relative_display() {
-        let _process_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _process_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = unique_temp_dir("niubash-prompt-home");
         let project = home.join("repo").join("project");
         std::fs::create_dir_all(&project).unwrap();
@@ -520,7 +520,7 @@ mod tests {
 
     #[test]
     fn cwd_token_accepts_shell_style_home_env() {
-        let _process_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _process_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = unique_temp_dir("niubash-prompt-shell-home");
         let project = home.join("repo").join("project");
         std::fs::create_dir_all(&project).unwrap();

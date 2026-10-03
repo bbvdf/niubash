@@ -721,7 +721,7 @@ mod tests {
 
     #[test]
     fn sync_installs_declared_sources_and_materializes_idempotently() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let holder = unique_temp_dir("omb-holder");
         let origin = holder.join("oh-my-fixture");
         fs::create_dir_all(&origin).unwrap();
@@ -795,7 +795,7 @@ mod tests {
 
     #[test]
     fn sync_undeclared_sources_are_suggested_then_pruned() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let holder = unique_temp_dir("prune-holder");
         let origin = holder.join("wildy");
         fs::create_dir_all(&origin).unwrap();
@@ -851,7 +851,7 @@ mod tests {
 
     #[test]
     fn spec_declared_source_removal_drops_the_block_and_keeps_the_tree() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let holder = unique_temp_dir("drop-holder");
         let origin = holder.join("oh-my-fixture");
         fs::create_dir_all(&origin).unwrap();
@@ -898,7 +898,7 @@ mod tests {
 
     #[test]
     fn sync_binds_derived_ids_back_into_the_spec() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let holder = unique_temp_dir("bind-holder");
         let origin = holder.join("prelib");
         fs::create_dir_all(&origin).unwrap();
@@ -938,7 +938,7 @@ mod tests {
 
     #[test]
     fn missing_spec_reports_legacy_mode() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let box_ = sandbox("legacy");
         let report = sync_spec(SyncOptions::default()).unwrap();
         assert!(!report.spec_present);
@@ -952,7 +952,7 @@ mod tests {
     /// plain sync afterwards is a byte-stable no-op.
     #[test]
     fn adopt_snapshots_live_selection_and_round_trips() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let holder = unique_temp_dir("adopt-holder");
         let origin = holder.join("oh-my-fixture");
         fs::create_dir_all(&origin).unwrap();
@@ -1025,7 +1025,7 @@ mod tests {
     /// visible, and plain syncs churn nothing.
     #[test]
     fn adopt_declares_untrusted_sources_without_activating() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let holder = unique_temp_dir("adopt-untrusted");
         let origin = holder.join("wildy");
         fs::create_dir_all(&origin).unwrap();
@@ -1078,7 +1078,7 @@ mod tests {
     /// one line and no fetch churn; the explicit verb retries and clears.
     #[test]
     fn startup_bootstrap_defers_failed_installs_until_explicit_sync() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let holder = unique_temp_dir("defer-holder");
         let origin = holder.join("not-bash-it");
         fs::create_dir_all(&origin).unwrap();
@@ -1162,7 +1162,7 @@ mod tests {
     /// lists would otherwise flip the rc on every sync.
     #[test]
     fn duplicate_declarations_of_one_source_merge() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let holder = unique_temp_dir("merge-holder");
         let origin = holder.join("oh-my-fixture");
         fs::create_dir_all(&origin).unwrap();

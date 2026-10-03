@@ -503,7 +503,7 @@ mod tests {
         // recipe's generic source at a local fixture? bash-preexec clones
         // from GitHub — not in tests. Validate import + listing only; the
         // apply path is covered by the recipes unit tests.
-        let _guard = PROCESS_STATE_LOCK.lock().unwrap();
+        let _guard = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _distros = EnvGuard::set(
             "NIU_PLUGIN_DISTROS_ROOT",
             &temp.join("distros").to_string_lossy(),
@@ -564,7 +564,7 @@ mod tests {
             "schema = \"niubash:plugin-collection@1\"\nname = \"minimal\"\n\n[[entry]]\nrecipe = \"bash-completion\"\n",
         )
         .unwrap();
-        let _guard = PROCESS_STATE_LOCK.lock().unwrap();
+        let _guard = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _distros = EnvGuard::set(
             "NIU_PLUGIN_DISTROS_ROOT",
             &temp.join("distros").to_string_lossy(),
@@ -581,7 +581,7 @@ mod tests {
         // trusted, a collection entry that rides it activates locally (the
         // recipes::install manager-asset branch). The collection itself is
         // imported from a local directory so no git clone runs.
-        let _guard = PROCESS_STATE_LOCK.lock().unwrap();
+        let _guard = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = std::env::temp_dir().join(format!(
             "niu-distros-apply-{}-{}",
             std::process::id(),

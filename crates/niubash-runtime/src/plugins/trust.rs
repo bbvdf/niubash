@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn signature_round_trip_and_tamper_detection() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = temp_root("round-trip");
         let _guard = EnvVarGuard::set("NIU_PLUGIN_SOURCES_ROOT", &temp);
         let signature = sign_digest(&"a".repeat(64)).unwrap();
@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn signing_key_is_created_once_and_reused_per_root() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = temp_root("key-reuse");
         let _guard = EnvVarGuard::set("NIU_PLUGIN_SOURCES_ROOT", &temp);
         assert!(!local_signing_key_path().exists());

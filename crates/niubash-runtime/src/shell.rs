@@ -3074,7 +3074,7 @@ mod tests {
 
     #[test]
     fn compatible_shell_path_env_is_explicit_and_non_empty() {
-        let _lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         {
             let _guard = EnvVarGuard::unset(COMPATIBLE_SHELL_PATH_ENV);
@@ -3093,7 +3093,7 @@ mod tests {
 
     #[test]
     fn precmd_invokes_title_hooks_with_env_title() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
 
         let mut shell = test_shell(HookConfig {
@@ -3117,7 +3117,7 @@ mod tests {
 
     #[test]
     fn precmd_invokes_title_hooks_with_pwd_fallback() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let temp = unique_temp_dir("niubash-title-pwd-fallback");
         std::fs::create_dir_all(&temp).unwrap();
@@ -3145,7 +3145,7 @@ mod tests {
 
     #[test]
     fn compat_winuxshrc_is_migrated_and_sourced() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let temp = unique_temp_dir("niubash-compat-rc-migration");
         let home = temp.join("home");
@@ -3175,7 +3175,7 @@ mod tests {
 
     #[test]
     fn standard_prompt_does_not_expose_private_use_markers() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let mut shell = Shell::new().unwrap();
         shell.run_precmd_hooks();
@@ -3191,7 +3191,7 @@ mod tests {
 
     #[test]
     fn niubashrc_runs_once_for_repl_startup_shell_customization() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let temp = unique_temp_dir("niubash-winshrc-startup");
         let home = temp.join("home");
@@ -3222,7 +3222,7 @@ alias hello='echo from-alias'
 
     #[test]
     fn niubashrc_takes_precedence_over_compat_winuxshrc() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let temp = unique_temp_dir("niubash-primary-rc-startup");
         let home = temp.join("home");
@@ -3245,7 +3245,7 @@ alias hello='echo from-alias'
 
     #[test]
     fn compat_winuxshrc_used_when_primary_absent() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let temp = unique_temp_dir("niubash-compat-rc-startup");
         let home = temp.join("home");
@@ -3267,7 +3267,7 @@ alias hello='echo from-alias'
 
     #[test]
     fn legacy_winuxshrc_is_migrated_to_niubashrc_once() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let temp = unique_temp_dir("niubash-rc-migration");
         let home = temp.join("home");
@@ -3310,7 +3310,7 @@ export WINUXSH_OLD_PREFIX=kept-as-niu
 
     #[test]
     fn non_interactive_env_is_noop_when_unset() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let _niu_guard = EnvVarGuard::unset("NIU_ENV");
         let _bash_guard = EnvVarGuard::unset("BASH_ENV");
@@ -3331,7 +3331,7 @@ export WINUXSH_OLD_PREFIX=kept-as-niu
 
     #[test]
     fn niu_env_sources_agent_init_file() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let _bash_guard = EnvVarGuard::unset("BASH_ENV");
 
@@ -3360,7 +3360,7 @@ export WINUXSH_OLD_PREFIX=kept-as-niu
 
     #[test]
     fn bash_env_sources_when_niu_env_unset() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let _niu_guard = EnvVarGuard::unset("NIU_ENV");
 
@@ -3383,7 +3383,7 @@ export WINUXSH_OLD_PREFIX=kept-as-niu
 
     #[test]
     fn niu_env_takes_precedence_over_bash_env() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
 
         let temp = unique_temp_dir("niubash-env-precedence");
@@ -3408,7 +3408,7 @@ export WINUXSH_OLD_PREFIX=kept-as-niu
 
     #[test]
     fn non_interactive_env_expands_tilde_in_path() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let _bash_guard = EnvVarGuard::unset("BASH_ENV");
 
@@ -3437,7 +3437,7 @@ export WINUXSH_OLD_PREFIX=kept-as-niu
 
     #[test]
     fn non_interactive_env_ignores_empty_value() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let _bash_guard = EnvVarGuard::unset("BASH_ENV");
 
@@ -3462,7 +3462,7 @@ export WINUXSH_OLD_PREFIX=kept-as-niu
     }
     #[test]
     fn user_bindkeys_load_from_rc_and_widgets_round_trip() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let temp = unique_temp_dir("niubash-user-widget-bindkeys");
         let home = temp.join("home");
@@ -3504,7 +3504,7 @@ niu_fzf_file() {
 
     #[test]
     fn user_compdefs_load_from_rc_and_run_in_engine() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let temp = unique_temp_dir("niubash-user-compdefs");
         let home = temp.join("home");
@@ -3543,7 +3543,7 @@ niu_git_comp() {
 
     #[test]
     fn run_startup_rc_syncs_process_path_from_executor() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let temp = unique_temp_dir("niubash-rc-path-sync");
         let home = temp.join("home");
@@ -3684,7 +3684,7 @@ niu_git_comp() {
     }
     #[test]
     fn alias_mirror_tracks_successful_interactive_alias_commands() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let mut shell = test_shell(HookConfig::default());
 
@@ -3702,7 +3702,7 @@ niu_git_comp() {
 
     #[test]
     fn completion_state_tracks_shell_local_variables_after_interactive_source() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let mut shell = test_shell(HookConfig::default());
 
@@ -3721,7 +3721,7 @@ niu_git_comp() {
 
     #[test]
     fn execute_interactive_script_runs_multiline_compound_blocks() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let mut shell = test_shell(HookConfig::default());
 
@@ -3771,7 +3771,7 @@ niu_git_comp() {
 
     #[test]
     fn resolve_shell_path_argument_expands_current_user_tilde() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("niubash-tilde-path");
         let home = temp.join("home");
         let _home_guard = EnvVarGuard::set("HOME", &home);
@@ -3797,7 +3797,7 @@ niu_git_comp() {
 
     #[test]
     fn shell_home_dir_accepts_shell_style_userprofile() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _home_guard = EnvVarGuard::set_value("HOME", "");
         let _userprofile_guard = EnvVarGuard::set_value("USERPROFILE", "/c/Users/example");
 
@@ -3812,7 +3812,7 @@ niu_git_comp() {
     #[cfg(windows)]
     #[test]
     fn shell_home_dir_prefers_userprofile_over_home() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("niubash-userprofile-home-precedence");
         let home = temp.join("home");
         let userprofile = temp.join("userprofile");
@@ -3831,7 +3831,7 @@ niu_git_comp() {
 
     #[test]
     fn startup_rc_uses_shell_style_userprofile_when_home_is_empty() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("niubash-shell-style-home-startup");
         let home = temp.join("home");
         std::fs::create_dir_all(&home).unwrap();
@@ -4423,7 +4423,7 @@ niu_git_comp() {
 
     #[test]
     fn interactive_cd_syncs_process_cwd_and_normalizes_pwd() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let temp = unique_temp_dir("niubash-cwd-sync");
         let target = temp.join("target");
@@ -4479,7 +4479,7 @@ niu_git_comp() {
             return;
         }
 
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let temp = unique_temp_dir("niubash-cwd-sequence");
         let start = temp.join("start");
@@ -4522,7 +4522,7 @@ niu_git_comp() {
 
     #[test]
     fn bash_prompt_command_updates_ps1_before_prompt_render() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let _columns_guard = EnvVarGuard::set_value("COLUMNS", "80");
         let mut shell = test_shell(HookConfig::default());
@@ -4545,7 +4545,7 @@ niu_git_comp() {
 
     #[test]
     fn bash_ps1_prompt_escapes_render_from_executor_state() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let mut shell = test_shell(HookConfig::default());
         shell
@@ -4574,7 +4574,7 @@ niu_git_comp() {
         // into child processes must not be adopted by an interactive shell.
         // enter_interactive runs before the startup rc, so discarding there
         // leaves a PS1 set by the user's own rc fully in charge.
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let mut shell = test_shell(HookConfig::default());
         shell
@@ -4608,7 +4608,7 @@ niu_git_comp() {
     /// must never grow another content-detector.
     #[test]
     fn framework_ps1_set_after_interactive_entry_is_never_discarded() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let mut shell = test_shell(HookConfig::default());
         shell.enter_interactive();
@@ -4635,7 +4635,7 @@ niu_git_comp() {
     /// product floor instead of freezing the last claimed face.
     #[test]
     fn prompt_claim_release_restores_the_floor() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let mut shell = test_shell(HookConfig::default());
         shell.executor.set_env("PS1", "claimed-face> ");
@@ -4674,7 +4674,7 @@ niu_git_comp() {
     /// with a placeholder PS1; the hook still runs every prompt.
     #[test]
     fn hook_only_prompt_command_keeps_the_floor() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let mut shell = test_shell(HookConfig::default());
         shell.executor.set_env("PROMPT_COMMAND", "NIU_HOOK_RAN=1");
@@ -4698,7 +4698,7 @@ niu_git_comp() {
     /// cycle — the floor steps aside on the very first starship prompt.
     #[test]
     fn starship_style_precmd_hook_claims_via_ps1_same_cycle() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let mut shell = test_shell(HookConfig::default());
         shell
@@ -4720,7 +4720,7 @@ niu_git_comp() {
 
     #[test]
     fn bash_ps0_runs_before_interactive_command() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _cwd_guard = CwdGuard::capture();
         let mut shell = test_shell(HookConfig::default());
         shell.executor.set_env(

@@ -1543,7 +1543,7 @@ mod tests {
 
     #[test]
     fn add_trust_remove_round_trip_local_origin() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("add-round-trip");
         let origin = temp.join("origin");
         let root = temp.join("sources");
@@ -1593,7 +1593,7 @@ mod tests {
     /// `mirrors::git_clone_args(origin)` result into its subcommands.
     #[test]
     fn git_clone_args_carry_instead_of_mirror_for_github_origins_only() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("mirror-args");
         let config = temp.join("mirrors.toml");
         fs::write(
@@ -1646,7 +1646,7 @@ mod tests {
 
     #[test]
     fn add_rejects_checksum_mismatch_and_records_nothing() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("add-checksum");
         let origin = temp.join("origin");
         let root = temp.join("sources");
@@ -1684,7 +1684,7 @@ mod tests {
 
     #[test]
     fn verify_detects_tampering() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("verify-tamper");
         let origin = temp.join("origin");
         let root = temp.join("sources");
@@ -1709,7 +1709,7 @@ mod tests {
 
     #[test]
     fn update_records_previous_and_rollback_restores_git_origin() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("update-rollback-git");
         let repo = temp.join("omb-repo");
         let root = temp.join("sources");
@@ -1785,7 +1785,7 @@ mod tests {
     fn rollback_refuses_when_local_origin_drifted() {
         // §12.4: a local-path origin cannot rebuild the old tree; rollback
         // must fail the checksum and leave the current install intact.
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("rollback-drifted");
         let origin = temp.join("origin");
         let root = temp.join("sources");
@@ -1805,7 +1805,7 @@ mod tests {
 
     #[test]
     fn update_with_changed_origin_resets_trust() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("update-origin");
         let origin_a = temp.join("origin-a");
         let origin_b = temp.join("origin-b");
@@ -1826,7 +1826,7 @@ mod tests {
 
     #[test]
     fn degraded_source_is_excluded_from_theme_entries() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("degraded");
         let origin = temp.join("origin");
         let root = temp.join("sources");
@@ -1884,7 +1884,7 @@ mod tests {
 
     #[test]
     fn duplicate_add_is_rejected() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("dup");
         let origin = temp.join("origin");
         let root = temp.join("sources");
@@ -1903,7 +1903,7 @@ mod tests {
     /// instead of dead-ending on the imperative refusal.
     #[test]
     fn install_or_adopt_adopts_a_registered_identity() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("adopt");
         let origin = temp.join("origin");
         let root = temp.join("sources");
@@ -1936,7 +1936,7 @@ mod tests {
     /// wizard's undo receipts name this verb, so it must be complete.
     #[test]
     fn remove_source_drops_the_spec_declaration() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("remove-spec");
         let origin = temp.join("origin");
         let root = temp.join("sources");
@@ -1967,7 +1967,7 @@ mod tests {
 
     #[test]
     fn unknown_origin_without_manager_layout_fails_with_hint() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("unknown-layout");
         let origin = temp.join("origin");
         let root = temp.join("sources");
@@ -2100,7 +2100,7 @@ mod tests {
 
     #[test]
     fn trust_refuses_tampered_tree_and_reports_checksums() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("trust-tamper");
         let origin = temp.join("origin");
         let root = temp.join("sources");
@@ -2159,7 +2159,7 @@ mod tests {
 
     #[test]
     fn sign_source_upgrades_policy_and_update_re_gates() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("sign-update");
         let repo = temp.join("omb-repo");
         let root = temp.join("sources");
@@ -2241,7 +2241,7 @@ mod tests {
 
     #[test]
     fn restore_source_rebuilds_the_pinned_commit() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("restore-pin");
         let repo = temp.join("omb-repo");
         let root = temp.join("sources");
@@ -2344,7 +2344,7 @@ mod tests {
 
     #[test]
     fn clean_removes_staging_leftovers_and_orphan_trees() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = unique_temp_dir("clean");
         let root = temp.join("sources");
         let origin = temp.join("origin");

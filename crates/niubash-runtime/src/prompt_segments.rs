@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn short_dir_replaces_home_with_tilde() {
-        let _process_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _process_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = unique_temp_dir("niubash-segment-prompt-home");
         std::fs::create_dir_all(&home).unwrap();
         let _home = EnvGuard::set("HOME", &home.to_string_lossy());

@@ -1367,7 +1367,7 @@ mod tests {
 
     #[test]
     fn omb_enable_disable_round_trip_edits_rc_arrays() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let origin = unique_temp_dir("omb-origin");
         write_omb_fixture(&origin);
         let box_ = sandbox("omb-roundtrip");
@@ -1441,7 +1441,7 @@ mod tests {
 
     #[test]
     fn rc_lines_outside_the_managed_block_survive_edits() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let origin = unique_temp_dir("omb-user-rc");
         write_omb_fixture(&origin);
         let box_ = sandbox("omb-user-rc");
@@ -1470,7 +1470,7 @@ mod tests {
 
     #[test]
     fn bash_it_enable_uses_enabled_dir_and_theme_var() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let origin = unique_temp_dir("bit-origin");
         write_bash_it_fixture(&origin);
         let box_ = sandbox("bash-it");
@@ -1510,7 +1510,7 @@ mod tests {
 
     #[test]
     fn bash_completion_is_whole_source_activation() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let origin = unique_temp_dir("bc-origin");
         write_bash_completion_fixture(&origin);
         let box_ = sandbox("bash-completion");
@@ -1533,7 +1533,7 @@ mod tests {
 
     #[test]
     fn wild_file_source_enables_files_directly_and_honestly() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let holder = unique_temp_dir("wild-holder");
         let origin = holder.join("sparkline");
         fs::create_dir_all(&origin).unwrap();
@@ -1609,7 +1609,7 @@ mod tests {
 
     #[test]
     fn ambiguous_bare_names_require_the_qualified_form() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let omb = unique_temp_dir("amb-omb");
         let bc = unique_temp_dir("amb-bc");
         write_omb_fixture(&omb);
@@ -1634,7 +1634,7 @@ mod tests {
 
     #[test]
     fn degraded_source_refuses_activation_with_restore_hint() {
-        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let origin = unique_temp_dir("deg-origin");
         write_omb_fixture(&origin);
         let box_ = sandbox("degraded");

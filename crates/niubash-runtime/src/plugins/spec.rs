@@ -231,7 +231,9 @@ mod tests {
 
     #[test]
     fn spec_round_trips_through_toml() {
-        let _env_lock = crate::test_support::PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = crate::test_support::PROCESS_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (path, _guard) = temp_spec("round-trip");
         let spec = PluginSpec {
             schema: Some(PLUGIN_SPEC_SCHEMA.to_string()),
@@ -269,7 +271,9 @@ mod tests {
 
     #[test]
     fn missing_spec_reads_as_none_and_empty_spec_writes_a_starter() {
-        let _env_lock = crate::test_support::PROCESS_STATE_LOCK.lock().unwrap();
+        let _env_lock = crate::test_support::PROCESS_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (path, _guard) = temp_spec("missing");
         assert!(load_spec().unwrap().is_none());
         save_spec(&PluginSpec::default()).unwrap();
