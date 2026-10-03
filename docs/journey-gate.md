@@ -75,7 +75,8 @@ same gate added a second, sharper mode: **the themed prompt's
 per-second clock repaint eats the FIRST input byte typed after idle**
 (`echo` executes as `cho`, `niu` as `iu` — `niu: cho: command not
 found` in the transcripts). So the driver hardens INPUT DELIVERY only —
-four layers, all bounded:
+four layers, all bounded — plus one sequencing rule (the output anchor
+below, which owns the space *between* two sends):
 
 - **settle** — before every send (`send_line`, `answer`, the gallery
   walk's first arrow), wait for a quiet screen (two polls, no new
@@ -100,6 +101,34 @@ four layers, all bounded:
   expected-output waits (`wait_for`) never retry, so a real product
   failure still fails the gate.
 
+### Output-anchored sequencing
+
+Release run 37153503706 (journey job, J6) exposed a hole the four
+delivery layers cannot close: `echo J6_ALIVE` and the line typed right
+after it executed as **one glued command**
+(`❯ echo J6_ALIVEniu plugin trust bash-completion`). The second send
+was delivered while the first was still being processed — the wake
+Ctrl-U was the clock-repaint's eaten byte, and the text appended to the
+unsubmitted input line. The settle check cannot see that state: the
+typed input line *itself* starts with the prompt glyph, so the
+prompt-ish matcher fires **during** execution, before the prompt has
+returned.
+
+So between two consecutive REPL sends in the same session, `send_line`
+now returns only when the command it typed has **completed** — an
+*output anchor*: a NEW prompt-ish last row that is neither the typed
+input line nor any row carrying the command text (the command-text
+guard also survives the theme clock's repaints). Bounded at 30s by
+default; the known-long journey commands carry their own bound (90s for
+`niu plugin trust bash-completion`, 60s for `source ~/.niubashrc`,
+matching each step's expected-output wait). Every anchor outcome lands
+in the `delivery` ledger as kind `anchor-wait` — one line per REPL
+send, with its elapsed time: the sequencing trace a future CI flake
+needs, never silent. The hidden `--stress-delay-ms N` harness
+(randomized 0–N ms pause before every settle check, simulating runner
+slowness — the shape that broke two release runs) validates it: normal
+PASS plus three stress runs at N=800, all PASS.
+
 The gallery's DOWN walk deliberately does not resend per key: repaint
 can lag a delivered arrow, a resent arrow can overshoot the verified
 row, and the walk already self-heals by polling the highlight.
@@ -107,9 +136,10 @@ row, and the walk already self-heals by polling the highlight.
 Every resend (and every give-up) lands in a `delivery` ledger inside
 `verdict.json` and as an `INPUT DELIVERY EVENTS` section in
 `verdict.txt` — session, kind (`send_line` / `send_line-enter` /
-`answer`), attempt, keys, reason (including the settle outcome), and
-action (`resend` / `undelivered`). The raw-stream and transcript
-artifact formats are unchanged.
+`answer` / `anchor-wait`), attempt, keys (the waited marker, for
+anchors), reason (including the settle outcome), and action (`resend` /
+`undelivered` / `anchored` / `anchor-timeout`). The raw-stream and
+transcript artifact formats are unchanged.
 
 (The first-byte eat itself is product behavior worth its own ticket —
 a human typing at the themed prompt after a clock tick would lose their
