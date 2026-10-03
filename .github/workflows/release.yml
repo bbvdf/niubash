@@ -632,7 +632,10 @@ jobs:
       - name: Run the golden user journey
         shell: pwsh
         run: |
-          python scripts/journey/golden-journey.py `
+          # Invoke the preserved gate copy directly from RUNNER_TEMP:
+          # the workspace copy is at the mercy of checkout/copy semantics
+          # (runs 2-5 nested copy, run 6 vanished); the temp copy is intact.
+          python "$env:RUNNER_TEMP/journey/golden-journey.py" `
             (Resolve-Path target/release/niu.exe) `
             --artifacts journey-artifacts
 
