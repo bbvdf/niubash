@@ -2,6 +2,47 @@
 
 All notable changes to Niubash are documented in this file.
 
+## [1.3.2] - 2026-10-04
+
+### First three-platform release (engine rubash 1.3.2)
+
+- **Linux (x86_64 + aarch64, glibc) and macOS (arm64 + x86_64) portable
+  tarballs** join the Windows packages. Every platform's build job
+  smoke-runs the binary it ships, on that OS, before any artifact is
+  attached. Windows asset names and the self-update link logic are
+  unchanged.
+
+### Engine fixes
+
+- Alias expansion no longer leaks into compound array assignments OR
+  `[[ ]]` conditional / extglob pattern words - the oh-my-bash +
+  bash-completion interactive corruption family is closed (the
+  `bash_completion: line 1376` syntax error).
+- Single-quoted words keep their integrity through pipeline and
+  command-substitution stages (three stacked root causes fixed).
+- `cat` applies all formatting options when reading a pipe (`cat -n`
+  in a pipeline numbers lines).
+- `cd` reaches external children (interactive reader no longer restores
+  the process cwd per line).
+- `-c` subshell fatal expansions exit 1 like GNU, not 127.
+- `\u` renders the OS account name, env-independent.
+- Virtual system-root arguments (`/usr/bin`, `/etc`, `/tmp`, ...) are
+  resolved through the root map for every child class.
+- Console-attached bare rubash renders the real PS1/PS2 channel instead
+  of a placeholder REPL (GNU interactivity rule, error survival, exit
+  codes).
+
+### Product fixes (found by the new golden user journey gate)
+
+- Same-name themes (powerline-multiline exists in both frameworks) now
+  route to the owning framework's native loader and actually apply.
+- The curated bash-preexec recipe entry matches the real upstream file;
+  all curated entries are pinned against upstream roots.
+- A failed collection apply journals and reports the failure honestly
+  with the retry command.
+- The golden user journey (fresh install -> wizard -> trust -> theme ->
+  new terminals -> daily battery) now runs as a required release gate.
+
 ## [1.3.1] - 2026-10-03
 
 ### Fixed
