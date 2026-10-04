@@ -1042,6 +1042,43 @@ impl Shell {
         self.executor.set_last_exit_code(last_exit_code);
     }
 
+    /// niubash#170 theme-preview channel: run the interactive pre-prompt
+    /// pipeline once — the native hooks plus `PROMPT_COMMAND` through the
+    /// engine's `execute_prompt_command` (exactly [`Shell::run_precmd_hooks`])
+    /// — then print the rendered PS1 between the preview markers. The
+    /// expansion is the same `expand_prompt_string_mut` call
+    /// `sync_bash_prompt_from_env` makes for every interactive prompt, so a
+    /// gallery preview shows the face the session would actually draw.
+    ///
+    /// Gated by `plugins::theme_preview::PRINT_RENDERED_PS1_ENV` on a
+    /// `niu -c` child (`src/main.rs` -c route): the theme-gallery preview
+    /// sources the theme's managed block in a throwaway child and reads the
+    /// marked bytes. When no PS1 is claimed — the block failed, or the theme
+    /// set no prompt — nothing is printed and the parent degrades the
+    /// preview; a claimed-but-foreign PS1 cannot occur because the preview
+    /// child strips PS1/PROMPT_COMMAND from its environment.
+    pub fn print_rendered_prompt_for_preview(&mut self) {
+        self.run_precmd_hooks();
+        let Some(ps1) = self
+            .executor
+            .get_env("PS1")
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+        else {
+            return;
+        };
+        let rendered = self.executor.expand_prompt_string_mut(&ps1);
+        let stdout = std::io::stdout();
+        let mut out = stdout.lock();
+        let _ = out.write_all(crate::plugins::theme_preview::PS1_BEGIN_MARKER.as_bytes());
+        let _ = out.write_all(b"\n");
+        let _ = out.write_all(rendered.as_bytes());
+        let _ = out.write_all(b"\n");
+        let _ = out.write_all(crate::plugins::theme_preview::PS1_END_MARKER.as_bytes());
+        let _ = out.write_all(b"\n");
+        let _ = out.flush();
+    }
+
     fn source_file_into_current_shell(&mut self, path: &Path) -> anyhow::Result<i32> {
         let shell_path = host_path_to_shell_path(&path.to_string_lossy());
         self.execute_script(&format!(". {}", shell_quote(&shell_path)))

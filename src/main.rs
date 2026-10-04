@@ -453,8 +453,31 @@ fn run_shell_invocation(args: &[String]) -> anyhow::Result<()> {
         // (rubash invocation.rs:273-275) sets it for every command string,
         // so parser diagnostics take the `$0: -c: line N:` shape (error.c
         // get_name_for_error; niubash#160).
+        // niubash#170 theme-preview channel: a `-c` child gated by
+        // NIU_PRINT_RENDERED_PS1=1 (spawned by plugins::theme_preview) has
+        // just sourced a theme's managed block; print the session's rendered
+        // PS1 between the preview markers — the prompt renders before any
+        // EXIT trap in a real session, so the print lands before the trap.
+        // The child's own exit code still propagates: the preview parent
+        // treats a failing block like any other degradation.
+        //
+        // The gated child also carries the engine's interactive marker
+        // (exactly what the piped `niu -i` route sets, main.rs above): a
+        // theme loader guards on it — oh-my-bash.sh opens with
+        // `case $- in *i*) ;; *) return ;;` — and the preview must render
+        // the face an interactive session draws, not the bare script face.
+        if std::env::var_os(niubash_runtime::plugins::theme_preview::PRINT_RENDERED_PS1_ENV)
+            .is_some_and(|value| value == "1")
+        {
+            shell.executor.set_env("__RUBASH_INTERACTIVE", "1");
+        }
         let code = shell.execute_script(&command)?;
         niubash_runtime::startup_trace::tick("invocation: execute_script");
+        if std::env::var_os(niubash_runtime::plugins::theme_preview::PRINT_RENDERED_PS1_ENV)
+            .is_some_and(|value| value == "1")
+        {
+            shell.print_rendered_prompt_for_preview();
+        }
         let code = shell.finish_with_exit_trap(code)?;
         niubash_runtime::startup_trace::tick("invocation: exit trap");
         if code != 0 {

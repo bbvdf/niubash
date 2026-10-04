@@ -21,7 +21,7 @@ pattern), in a sandboxed HOME (`USERPROFILE` and `HOME` both overridden;
 `USERPROFILE` wins in this product, a known pitfall, so both point at the
 sandbox and the real `~/.niubash` is never touched).
 
-## The journey (J1–J6)
+## The journey (J1–J7)
 
 | Step | The user's move | The gate asserts |
 | --- | --- | --- |
@@ -31,6 +31,7 @@ sandbox and the real `~/.niubash` is never touched).
 | J4 new terminal ×3 | open three fresh `niu` sessions | no `Cloning into` (no re-downloads), no "not declared" nags, at most the documented per-source `awaiting-trust` notices, prompt renders |
 | J5 daily battery | `ls \| wc -l`, `echo hi \| cat -n`, `cd ~ && pwd`, `[[ a != b ]] && echo ok` | each produces output, not errors; prompt still alive after each |
 | J6 trust + activate bash-completion | `niu plugin trust bash-completion` → `source ~/.niubashrc` → new terminal | trust reports success; ZERO syntax errors — bash_completion included |
+| J7 gallery live preview (niubash#170) | re-run `niu setup`, walk the theme gallery | the pane below the highlight renders that theme's real PS1 (header follows the highlight; the old static sentence is gone; Esc fast-forwards, Cancel writes nothing) |
 
 Exit code `0` only if every assertion holds. The run writes:
 
@@ -62,6 +63,21 @@ Currently registered:
 Unregistered failures stay plain RED. A red gate blocks the release
 until each red is either fixed or registered — registering is labeling,
 never waiving.
+
+### The gallery live-preview golden (J7 + the offline ConPTY probe)
+
+J7 asserts the user moment on the REAL gallery (>60 oh-my-bash themes):
+the pane below the highlight renders that theme's actual prompt and
+follows the highlight. Its deterministic sibling is
+`scripts/smoke-theme-gallery-preview.py` — an offline ConPTY golden over
+a fixture source carrying every representative theme class (single-line,
+two-line, colored, right-aligned, powerline glyph, loads-but-no-PS1,
+hung-forever). It snapshots the preview block per theme into the journey
+manifest format (`verdict.json` / `verdict.txt` / `transcripts/`), runs
+as leg `d3` of `scripts/smoke-test-1.3.0.sh`, and pins the niubash#170
+degradation contract: a theme whose render fails or hangs shows
+"(preview unavailable: …)" within the 1.5s bound — the gallery never
+freezes, and the browse leaves no OSH_THEME anywhere.
 
 ### Network reality
 
