@@ -1,0 +1,147 @@
+Usage: find [path...] [expression]
+
+Search for files in a directory hierarchy.
+If no path is given, '.' is used.
+
+OPTIONS:
+  -name ARG               base of file name (the path with the leading
+                          directories removed) matches shell pattern PATTERN
+  -iname ARG              like -name, but the match is case insensitive
+  -path ARG               file name matches shell pattern PATTERN
+  -ipath ARG              like -path, but the match is case insensitive
+  -wholename ARG          same as -path
+  -iwholename ARG         same as -ipath, but case insensitive
+  -type ARG               file is of type c: b,d,p,f,l,s,D [only d,f,l,p are
+                          supported]
+  -xtype ARG              like -type but checks the opposite symlink resolution
+                          state [only d,f,l,p are supported]
+  -execdir ARG            execute command from the subdirectory containing the
+                          matched file
+  -D, --debug ARG         print find traversal diagnostics [DIFFERS: Windows
+                          diagnostics]
+  -nowarn                 turn off file traversal warnings
+  -warn                   turn on file traversal warnings
+  -ignore_readdir_race    ignore errors when entries disappear during traversal
+  -noignore_readdir_race  report errors when entries disappear during traversal
+  -nouser                 file has no user corresponding to its owner ID
+  -used ARG               file was last accessed n days after its status was
+                          last changed
+  -perm ARG               file's permission bits match MODE [PARTIAL: octal
+                          modes only]
+  -readable               file can be read
+  -writable               file can be written
+  -executable             file can be executed or searched
+  -inum ARG               file has inode/file-index number N
+  -links ARG              file has N hard links
+  -user ARG               file is owned by user name or UID
+  -group ARG              file belongs to group name or GID
+  -nogroup                file has no group corresponding to its group ID
+                          [DIFFERS: Windows account mapping]
+  -uid ARG                file owner's numeric UID matches N
+  -gid ARG                file group's numeric GID matches N
+  -size ARG               file uses n units of space
+  -empty                  file is empty and is either a regular file or a
+                          directory
+  -amin ARG               file was last accessed n minutes ago
+  -atime ARG              file was last accessed n*24 hours ago
+  -cmin ARG               file status was last changed n minutes ago
+  -ctime ARG              file status was last changed n*24 hours ago
+  -mtime ARG              file data was last modified n*24 hours ago
+  -mmin ARG               file data was last modified n minutes ago
+  -mindepth NUM           descend at least LEVELS levels of directories before
+                          tests
+  -maxdepth NUM           descend at most LEVELS levels of directories below
+                          starting-points
+  -print                  print the full file name on the standard output
+  -print0                 print the full file name on the standard output,
+                          followed by a null character
+  -fprint ARG             print the full file name into FILE
+  -fprint0 ARG            print the full file name into FILE, followed by a null
+                          character
+  -L                      follow symbolic links
+  -H                      do not follow symbolic links, except while processing
+                          command line arguments
+  -P                      never follow symbolic links (default)
+  -follow                 dereference symbolic links
+  -O NUM                  set optimization level (0-3, currently ignored)
+  -delete                 delete files
+  -exec ARG               execute command
+  -ok ARG                 execute command after confirmation
+  -okdir ARG              execute command from the subdirectory after
+                          confirmation [DIFFERS: Windows command prompt]
+  -ls                     list current file in ls -dils format [DIFFERS: Windows
+                          metadata]
+  -fls ARG                list current file in ls -dils format into FILE
+                          [DIFFERS: Windows metadata]
+  -printf ARG             print format [PARTIAL:
+                          %p,%f,%h,%l,%H,%P,%y,%Y,%s,%b,%k,%d,%D,%F,%g,%G,%o,%u,
+                          %U,%S,%m,%M,%n,%i,%A@,%B@,%C@,%T@,%AY,%Am,%Ad,%AH,%AM,
+                          %AS,%Aj,%BY,%Bm,%Bd,%BH,%BM,%BS,%Bj,%CY,%Cm,%Cd,%CH,%C
+                          M,%CS,%Cj,%TY,%Tm,%Td,%TH,%TM,%TS,%Tj,%%]
+  -fprintf ARG            print format into FILE
+  -prune                  prune tree
+  -quit                   exit immediately
+  -true                   always true
+  -false                  always false
+  -regex ARG              whole path matches regular expression
+  -iregex ARG             whole path matches regular expression, case
+                          insensitive
+  -newer ARG              file was modified more recently than the reference
+                          file
+  -anewer ARG             file was accessed more recently than the reference
+                          file
+  -cnewer ARG             file status changed more recently than the reference
+                          file [DIFFERS: Windows change time]
+  -fstype ARG             file is on a file system of type TYPE [DIFFERS:
+                          Windows volume file system name]
+  -ilname ARG             symbolic link target matches shell pattern PATTERN,
+                          case insensitive
+  -lname ARG              symbolic link target matches shell pattern PATTERN
+  -neweraa ARG            compare access time to reference access time
+  -neweraB ARG            compare access time to reference birth time
+  -newerac ARG            compare access time to reference change time
+  -neweram ARG            compare access time to reference modify time
+  -newerat ARG            compare access time to literal time
+  -newerBa ARG            compare birth time to reference access time
+  -newerBB ARG            compare birth time to reference birth time
+  -newerBc ARG            compare birth time to reference change time
+  -newerBm ARG            compare birth time to reference modify time
+  -newerBt ARG            compare birth time to literal time
+  -newerca ARG            compare change time to reference access time
+  -newercB ARG            compare change time to reference birth time
+  -newercc ARG            compare change time to reference change time
+  -newercm ARG            compare change time to reference modify time
+  -newerct ARG            compare change time to literal time
+  -newerma ARG            compare modify time to reference access time
+  -newermB ARG            compare modify time to reference birth time
+  -newermc ARG            compare modify time to reference change time
+  -newermm ARG            compare modify time to reference modify time
+  -newermt ARG            compare modify time to literal time
+  -samefile ARG           file refers to the same file as the reference file
+  -files0-from ARG        read starting points from NUL-delimited file
+  -depth                  process each directory's contents before the directory
+                          itself
+  -d                      same as -depth
+  -daystart               measure times from start of today
+  -mount                  do not descend into other file systems
+  -xdev                   same as -mount
+  -noleaf                 do not optimize by assuming 2+ hard links
+  -regextype ARG          set regex syntax for later -regex/-iregex
+  !                       negate expression
+  -not                    negate expression
+  -a                      and expression
+  -and                    and expression
+  -o                      or expression
+  -or                     or expression
+  -help                   display this help and exit
+  -version                output version information and exit
+  -context ARG            file matches SELinux security context CTX
+      --help              display this help and exit
+  -V, --version           output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

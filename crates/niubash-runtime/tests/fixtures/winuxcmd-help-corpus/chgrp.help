@@ -1,0 +1,48 @@
+Usage: chgrp [OPTION]... GROUP FILE...
+
+Change the group of each FILE to GROUP.
+
+Mandatory arguments to long options are mandatory for short options too.
+
+  -c, --changes          like verbose but report only when a change is made
+  -f, --silent           suppress most error messages
+  -f, --quiet            suppress most error messages
+  -v, --verbose          output a diagnostic for every file processed
+  -R, --recursive        operate on files and directories recursively
+  -h, --no-dereference   affect symbolic links instead of any referenced file
+      --dereference      affect the referent of each symbolic link (default)
+  -H                     command line symbolic links are followed
+  -L                     indirect symbolic links are followed
+  -P                     no symbolic links are followed (default)
+      --from=GROUP       change only if current group is GROUP
+      --reference=RFILE  use RFILE's group instead of specifying GROUP
+      --preserve-root    fail to operate recursively on '/'
+      --no-preserve-root do not treat '/' specially (default)
+
+Note: On Windows, this requires administrator privileges.
+The GROUP must be a valid Windows group name.
+
+OPTIONS:
+  -c, --changes           like verbose but report only when a change is made
+  -f, --silent            suppress most error messages
+  -f, --quiet             suppress most error messages
+  -v, --verbose           output a diagnostic for every file processed
+  -R, --recursive         operate on files and directories recursively
+  -h, --no-dereference    affect symbolic links instead of any referenced file
+      --dereference       affect the referent of each symbolic link (default)
+  -H                      command line symbolic links are followed
+  -L                      indirect symbolic links are followed
+  -P                      no symbolic links are followed (default)
+      --from ARG          change only if current group is GROUP
+      --reference ARG     use RFILE's group instead of specifying GROUP
+      --preserve-root     fail to operate recursively on '/'
+      --no-preserve-root  do not treat '/' specially (default)
+      --help              display this help and exit
+  -V, --version           output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

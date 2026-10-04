@@ -1,0 +1,27 @@
+Usage: cmp [OPTION]... FILE1 [FILE2 [SKIP1 [SKIP2]]]
+
+Compare two files byte by byte.
+
+Compare FILE1 with FILE2.
+If FILE1 or FILE2 is -, read standard input.
+
+Exit status is 0 if inputs are the same, 1 if different, 2 if trouble.
+
+FILE1 FILE2 may be followed by SKIP1 and SKIP2 for GNU-compatible
+initial byte skipping.
+
+OPTIONS:
+  -b, --print-bytes         print differing bytes
+  -i, --ignore-initial ARG  skip specified number of initial bytes
+  -l, --verbose             output byte numbers of differing bytes
+  -n, --bytes ARG           compare specified number of bytes
+  -s, --quiet               silent mode
+      --help                display this help and exit
+  -V, --version             output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

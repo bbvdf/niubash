@@ -1,0 +1,21 @@
+Usage: tee [OPTION]... [FILE]...
+
+Copy standard input to each FILE, and also to standard output.
+
+FILE operands are opened literally; '-' names a file called '-'.
+
+OPTIONS:
+  -a, --append              append to the given FILEs, do not overwrite
+  -i, --ignore-interrupts   ignore interrupt signals
+  -p, --diagnose            write errors to standard error
+      --output-error[=ARG]  set behavior on write error: 'warn' (default),
+                            'warn-nopipe', 'exit', 'exit-nopipe'
+      --help                display this help and exit
+  -V, --version             output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

@@ -1,0 +1,29 @@
+Usage: updatedb [OPTION]...
+
+Update the filename database used by locate.
+Walks the filesystem and writes a sorted path list.
+The database is written to a temporary file and renamed
+into place, replacing any previous database atomically.
+Database entries are plain path lines (a Windows platform
+deviation from GNU LOCATE02).
+
+OPTIONS:
+  -d, --directory ARG    directory to start walking
+  -e, --exclude ARG      prune entries whose path contains this pattern
+  -f                     accepted for compatibility; ignored
+      --localpaths ARG   walk these roots (semicolon separated) instead of
+                         --directory
+  -o, --output ARG       database output file
+      --prunepaths ARG   directories (semicolon separated) not to descend into
+  -s                     accepted for compatibility; ignored
+  -v, --verbose          be verbose
+  -x, --exclude-dir ARG  directory name pattern to exclude
+      --help             display this help and exit
+  -V, --version          output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

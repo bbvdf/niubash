@@ -1,0 +1,172 @@
+Usage: vdir [OPTION]... [FILE]...
+
+List information about files (the current directory by default).
+vdir is equivalent to ls -l; it uses long listing format.
+
+Mandatory arguments to long options are mandatory for short options too.
+
+  -a, --all                  do not ignore entries starting with .
+  -A, --almost-all           do not list implied . and ..
+  -b, --escape               print C-style escapes for nongraphic characters
+  -B, --ignore-backups       do not list implied entries ending with ~
+  -C                         list entries by columns
+  -d, --directory            list directories themselves, not their contents
+  -F, --classify             append indicator (one of */=>@|) to entries
+  -g                         like -l, but do not list owner
+  -h, --human-readable       with -l and -s, print sizes like 1K 234M 2G
+  -i, --inode                print the index number of each file
+  -l                         use a long listing format (default)
+      --long, --long-list     use a long listing format
+  -m                         fill width with a comma separated list of entries
+  -n, --numeric-uid-gid      like -l, but list numeric user and group IDs
+  -o                         like -l, but do not list group information
+  -p                         append / indicator to directories
+  -q, --hide-control-chars   print ? instead of nongraphic characters
+  -Q, --quote-name           enclose entry names in double quotes
+  -r, --reverse              reverse order while sorting
+  -R, --recursive            list subdirectories recursively
+  -s, --size                 print the allocated size of each file, in blocks
+  -S                         sort by file size, largest first
+  -t                         sort by time, newest first
+  -u                         with -lt: sort by, and show, access time
+  -U                         do not sort; list entries in directory order
+  -v                         natural sort of (version) numbers within text
+  -T, --tabsize=COLS          assume tab stops at each COLS instead of 8
+  -w, --width=COLS           assume screen is COLS wide
+  -x                         list entries by lines across
+  -X                         sort alphabetically by entry extension
+  -1                         list one file per line
+      --sort=WORD             sort entries by WORD
+      --format=WORD           set output format
+      --time=WORD             change time field used for sorting/display
+      --color=WHEN            colorize output
+      --group-directories-first group directories before files
+      --zero                  end each output line with NUL
+
+vdir is a wrapper around ls with -l (long format) as the default.
+
+OPTIONS:
+  -a, --all                                       do not ignore entries starting
+                                                  with .
+  -A, --almost-all                                do not list implied . and ..
+  -b, --escape                                    print C-style escapes for
+                                                  nongraphic characters
+  -B, --ignore-backups                            do not list implied entries
+                                                  ending with ~
+  -C                                              list entries by columns
+  -d, --directory                                 list directories themselves,
+                                                  not their contents
+  -F, --classify                                  append indicator (one of
+                                                  */=>@|) to entries
+  -g                                              like -l, but do not list owner
+  -h, --human-readable                            with -l and -s, print sizes
+                                                  like 1K 234M 2G etc.
+  -i, --inode                                     print the index number of each
+                                                  file
+  -l                                              use a long listing format
+      --long                                      use a long listing format
+      --long-list                                 use a long listing format
+  -m                                              fill width with a comma
+                                                  separated list of entries
+  -n, --numeric-uid-gid                           like -l, but list numeric user
+                                                  and group IDs
+  -o                                              like -l, but do not list group
+                                                  information
+  -p                                              append / indicator to
+                                                  directories
+  -q, --hide-control-chars                        print ? instead of nongraphic
+                                                  characters
+  -Q, --quote-name                                enclose entry names in double
+                                                  quotes
+  -r, --reverse                                   reverse order while sorting
+  -R, --recursive                                 list subdirectories
+                                                  recursively
+  -s, --size                                      print the allocated size of
+                                                  each file, in blocks
+  -S                                              sort by file size, largest
+                                                  first
+  -t                                              sort by time, newest first
+  -u                                              with -lt: sort by, and show,
+                                                  access time
+  -U                                              do not sort; list entries in
+                                                  directory order
+  -v                                              natural sort of (version)
+                                                  numbers within text
+  -T, --tabsize ARG                               assume tab stops at each COLS
+                                                  instead of 8
+  -w, --width ARG                                 assume screen is instead of
+                                                  COLS wide
+  -x                                              list entries by lines across
+  -X                                              sort alphabetically by entry
+                                                  extension
+  -1                                              list one file per line
+      --sort ARG                                  sort by WORD: none (-U), size
+                                                  (-S), time (-t), version (-v),
+                                                  extension (-X)
+      --format ARG                                set output format: across,
+                                                  commas, horizontal, long,
+                                                  single-column, verbose,
+                                                  vertical
+      --time ARG                                  show time as WORD instead of
+                                                  default: atime, access, use,
+                                                  ctime, status
+      --color ARG                                 colorize the output: always,
+                                                  auto, never
+      --group-directories-first                   group directories before files
+      --author                                    show author in long format
+      --block-size ARG                            scale sizes by SIZE
+  -Z, --context                                   print any security context of
+                                                  each file
+  -L, --dereference                               when showing file information
+                                                  for a symbolic link, show
+                                                  information for the file the
+                                                  link references
+  -H, --dereference-command-line                  follow symlinks listed on the
+                                                  command line
+      --dereference-command-line-symlink-to-dir   follow each command-line
+                                                  symlink to a directory
+      --dereference-command-line-symlinks-to-dir  follow each command-line
+                                                  symlink to a directory
+  -D, --dired                                     generate output designed for
+                                                  Emacs dired mode
+      --file-type                                 append file type indicators,
+                                                  without *
+      --hide ARG                                  do not list implied entries
+                                                  matching PATTERN
+      --hyperlink[=ARG]                           hyperlink file names when
+                                                  outputting to a terminal
+  -I, --ignore ARG                                do not list implied entries
+                                                  matching PATTERN
+      --indicator-style ARG                       append indicator using WORD
+  -N, --literal                                   print entry names without
+                                                  quoting
+  -G, --no-group                                  in a long listing, don't print
+                                                  group names
+      --quoting-style ARG                         use quoting style WORD
+      --show-control-chars                        show nongraphic characters
+                                                  as-is in file names
+      --si                                        like -h, but use powers of
+                                                  1000 not 1024
+      --time-style ARG                            time/date format with -l (e.g.
+                                                  full-iso, long-iso, iso,
+                                                  locale, +FORMAT)
+      --full-time                                 like -l --time-style=full-iso
+  -c                                              with -lt: sort by, and show,
+                                                  ctime; otherwise: sort by
+                                                  ctime, newest first
+  -f                                              list all entries in directory
+                                                  order
+  -k, --kibibytes                                 default to 1024-byte blocks
+                                                  for file system usage
+      --zero                                      end each output line with NUL,
+                                                  not newline
+      --help                                      display this help and exit
+  -V, --version                                   output version information and
+                                                  exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

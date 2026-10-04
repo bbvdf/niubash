@@ -1,0 +1,25 @@
+Usage: cpio [OPTION]
+
+Copy files to and from archives.
+Copy files to and from cpio archives. Supports creating, extracting,
+and listing archive contents. Uses new ASCII format (070701/070702).
+
+OPTIONS:
+  -o, --create                      create archive
+  -i, --extract                     extract archive
+  -t, --list                        list archive contents
+  -p, --pass-through                run in copy-pass mode
+  -d, --make-directories            create leading directories where needed
+  -m, --preserve-modification-time  preserve modification time
+  -v, --verbose                     verbose output
+  -H, --format ARG                  use given archive FORMAT
+  -R, --owner ARG                   set the ownership of all files
+      --help                        display this help and exit
+  -V, --version                     output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

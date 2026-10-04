@@ -1,0 +1,71 @@
+Usage: cksum [OPTION]... [FILE]...
+
+Print or verify checksums.
+
+By default use the 32 bit CRC algorithm.
+
+With no FILE, or when FILE is -, read standard input.
+
+  -a, --algorithm=TYPE  select the digest type to use.  See DIGEST below
+      --base64          print base64-encoded digests (not hexadecimal)
+  -b, --binary          read in binary mode (default unless reading tty stdin)
+  -c, --check           read checksums from the FILEs and check them
+      --ignore-missing  don't fail or report status for missing files
+  -l, --length=BITS     digest length in bits; must not exceed the max for
+                          the blake2 algorithm and must be a multiple of 8
+  -q, --quiet           don't print OK for each successfully verified file
+      --raw             print a raw binary digest, not hexadecimal
+  -s, --status          don't output anything, status code shows success
+      --strict          exit non-zero for improperly formatted checksum lines
+  -t, --text            read in text mode (default if reading tty stdin)
+      --tag             create a BSD-style checksum (the default for digest algorithms)
+      --untagged        create a reversed style checksum, without digest type
+  -w, --warn            warn about improperly formatted checksum lines
+  -z, --zero            end each output line with NUL, not newline
+      --debug           print debug output
+
+DIGEST determines the digest algorithm and default output format:
+
+  sysv    (equivalent to sum -s)
+  bsd     (equivalent to sum -r)
+  crc     (equivalent to cksum)
+  md5     (equivalent to md5sum)
+  sha1    (equivalent to sha1sum)
+  sha224  (equivalent to sha224sum)
+  sha256  (equivalent to sha256sum)
+  sha384  (equivalent to sha384sum)
+  sha512  (equivalent to sha512sum)
+  blake2b (equivalent to b2sum)
+  sm3     (only available through cksum)
+
+
+OPTIONS:
+  -a, --algorithm ARG   select the digest type to use.  See DIGEST below
+  -b, --binary          read in binary mode (default unless reading tty stdin)
+  -c, --check           read checksums from the FILEs and check them
+      --ignore-missing  don't fail or report status for missing files
+  -q, --quiet           don't print OK for each successfully verified file
+  -s, --status          don't output anything, status code shows success
+  -t, --text            read in text mode (default if reading tty stdin)
+  -w, --warn            warn about improperly formatted checksum lines
+      --strict          exit non-zero for improperly formatted checksum lines
+      --tag             create a BSD-style checksum (the default for
+                        compatibility)
+      --untagged        create a reversed style checksum, without digest type
+  -z, --zero            end each output line with NUL, not newline, and disable
+                        file name escaping
+      --raw             print a raw binary digest, not hexadecimal
+      --base64          print a base64-encoded digest
+  -l, --length ARG      digest length in bits; must not exceed the maximum for
+                        the blake2 algorithm and must be a multiple of 8
+      --debug           print debug output
+  -r                    create a reversed style checksum, without digest type
+      --help            display this help and exit
+  -V, --version         output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

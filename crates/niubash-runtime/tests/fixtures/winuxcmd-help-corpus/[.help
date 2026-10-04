@@ -1,0 +1,51 @@
+Usage: [ expression
+
+Evaluate conditional expression (requires closing ]).
+
+OPTIONS:
+  -n             string length is non-zero
+  -N             file exists and has been modified since it was last read
+  -z             string length is zero
+  -b             file is block special
+  -c             file is character special
+  -d             file is a directory
+  -e             file exists
+  -f             file is a regular file
+  -g             file has set-group-ID bit
+  -G             file is owned by effective group ID (unsupported on Windows)
+  -h             file is a symbolic link
+  -L             file is a symbolic link
+  -k             file has sticky bit
+  -p             file is a named pipe
+  -r             file is readable
+  -s             file size is non-zero
+  -S             file is a socket (unsupported for filesystem paths on Windows)
+  -t             file descriptor is a terminal
+  -u             file has set-user-ID bit
+  -w             file is writable
+  -x             file is executable
+  -O             file is owned by effective user ID (unsupported on Windows)
+  -eq            integer equal
+  -ne            integer not equal
+  -lt            integer less than
+  -le            integer less than or equal
+  -gt            integer greater than
+  -ge            integer greater than or equal
+  -a             logical and
+  -o             logical or
+  !              logical not
+  =              string equal
+  ==             string equal
+  !=             string not equal
+  -nt            file1 is newer than file2
+  -ot            file1 is older than file2
+  -ef            file1 and file2 have the same device and inode
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

@@ -1,0 +1,19 @@
+Usage: uptime [OPTION]...
+
+Tell how long the system has been running.
+
+Note: This implementation provides Windows-specific information.
+Load average is not available on Windows.
+
+OPTIONS:
+  -p, --pretty   show uptime in pretty format
+  -s, --since    system up since
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

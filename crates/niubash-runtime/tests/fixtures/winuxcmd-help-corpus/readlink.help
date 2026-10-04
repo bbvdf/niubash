@@ -1,0 +1,29 @@
+Usage: readlink [OPTION]... FILE...
+
+Print value of a symbolic link or canonical file name.
+
+Mandatory arguments to long options are mandatory for short options too.
+
+Note: This is a Windows implementation. Windows supports
+reparse points (symlinks/junctions) but they work differently
+than Unix symlinks. This command provides basic detection.
+
+OPTIONS:
+  -f, --canonicalize           canonicalize by following every symlink
+  -e, --canonicalize-existing  canonicalize by following symlinks (must exist)
+  -m, --canonicalize-missing   canonicalize by following symlinks (may not
+                               exist)
+  -n, --no-newline             do not output the trailing delimiter
+  -q, --quiet                  suppress most error messages
+  -s, --silent                 suppress most error messages
+  -v, --verbose                report error message
+  -z, --zero                   end each output line with NUL
+      --help                   display this help and exit
+  -V, --version                output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

@@ -1,0 +1,25 @@
+Usage: uniq [OPTION]... [INPUT [OUTPUT]]
+
+Filter adjacent matching lines from INPUT (or standard input),
+writing to OUTPUT (or standard output).
+
+OPTIONS:
+  -c, --count               prefix lines by the number of occurrences
+  -d, --repeated            only print duplicate lines
+  -D, --all-repeated[=ARG]  print all duplicate lines
+  -f, --skip-fields NUM     avoid comparing the first N fields
+  -i, --ignore-case         ignore differences in case
+  -s, --skip-chars NUM      avoid comparing the first N characters
+  -u, --unique              only print unique lines
+  -w, --check-chars NUM     compare no more than N characters
+  -z, --zero-terminated     line delimiter is NUL, not newline
+      --group[=ARG]         show all items, separating groups
+      --help                display this help and exit
+  -V, --version             output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

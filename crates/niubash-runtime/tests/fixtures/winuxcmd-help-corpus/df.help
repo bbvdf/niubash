@@ -1,0 +1,35 @@
+Usage: df [OPTION]... [FILE]...
+
+The df command displays the amount of available disk space on file
+systems of which the invoking user has adequate read access.
+
+On Windows, it reports information about volumes that contain the
+specified paths, including total size, used space, and available space.
+
+OPTIONS:
+  -a, --all               include all file systems
+  -B, --block-size ARG    scale sizes by SIZE before printing them
+  -h, --human-readable    print sizes in powers of 1024 (e.g., 1023M)
+  -H, --si                print sizes in powers of 1000 (e.g., 1.1G)
+  -i, --inodes            list inode information instead of block usage
+  -k                      like --block-size=1K
+  -m                      like --block-size=1M
+  -l, --local             limit listing to local file systems
+  -T, --print-type        print file system type
+  -t, --type ARG          limit listing to file systems of type TYPE
+  -x, --exclude-type ARG  limit listing to file systems not of type TYPE
+      --total             produce a grand total
+      --sync              invoke sync before getting usage info
+      --no-sync           do not invoke sync before getting usage info
+      --output[=ARG]      use the output format defined by FIELD_LIST
+  -P, --portability       use the POSIX output format
+  -v                      (ignored) [DIFFERS: GNU ignores -v]
+      --help              display this help and exit
+  -V, --version           output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

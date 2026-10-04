@@ -1,0 +1,19 @@
+Usage: pathchk [OPTION] NAME...
+
+Check whether file names are valid or portable.
+Check that each file name is valid for the current filesystem,
+and optionally check for POSIX portability.
+
+OPTIONS:
+  -p                 check for most POSIX systems
+  -P                 check for empty names and leading dash
+      --portability  check for all POSIX systems (equivalent to -p -P)
+      --help         display this help and exit
+  -V, --version      output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

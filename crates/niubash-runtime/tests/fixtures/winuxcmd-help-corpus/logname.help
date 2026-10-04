@@ -1,0 +1,18 @@
+Usage: logname
+
+Print the name of the current user.
+
+Print the login name of the user that is currently logged in.
+On Windows, this returns the current Windows username.
+
+OPTIONS:
+                 print user's login name
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

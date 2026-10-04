@@ -1,0 +1,18 @@
+Usage: clear
+
+Clear the terminal screen.
+
+Clears the terminal screen by sending ANSI escape sequences.
+This works on Windows Terminal, modern terminals, and terminals that support ANSI escape codes.
+
+OPTIONS:
+                 clear terminal screen
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

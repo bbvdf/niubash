@@ -6,3 +6,8 @@ scripts/*.sh text eol=lf
 # External plugin-manager source fixtures are shell trees; CRLF would kill
 # sourcing under the engine (same lesson as the rubash repo's *.sh pin).
 tests/fixtures/sources/** text eol=lf
+
+# Generated completion assets and help transcripts are golden fixtures;
+# CRLF would change the bytes the generator diff and Rust corpus tests see.
+crates/niubash-runtime/assets/completions/** text eol=lf
+crates/niubash-runtime/tests/fixtures/winuxcmd-help-corpus/** text eol=lf

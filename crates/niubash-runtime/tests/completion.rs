@@ -58,16 +58,22 @@ fn loads_toml_definitions_from_dir() {
 }
 
 #[test]
-fn runtime_does_not_load_winuxcmd_definitions_without_bundle_or_user_dirs() {
+fn runtime_loads_embedded_winuxcmd_definitions_without_bundle_or_user_dirs() {
+    // The embedded WinuxCmd applet definitions are the compiled base layer:
+    // they must serve flag completion even with no bundle pack and no user
+    // completion dir configured.
     let state = Arc::new(Mutex::new(CompletionState::new(PathBuf::from("."))));
     {
         let mut s = state.lock().unwrap();
         s.load_completion_dirs(&[]);
     }
 
-    assert_not_suggests(&state, "ls -", "--all");
-    assert_not_suggests(&state, "grep -", "--ignore-case");
-    assert_not_suggests(&state, "find -", "-name");
+    assert_suggests(&state, "ls -", "--all");
+    assert_suggests(&state, "grep -", "--color");
+    assert_suggests(&state, "find -", "-name");
+
+    // Non-applets stay unaffected: no definition, no flag completion.
+    assert_not_suggests(&state, "rg -", "--ignore-case");
 }
 
 #[test]
@@ -173,7 +179,7 @@ fn injected_definitions_are_loaded_before_user_dirs() {
 }
 
 #[test]
-fn injected_definitions_load_without_runtime_defaults() {
+fn injected_definitions_merge_over_embedded_defaults() {
     let imported = CommandDef {
         command: "ls".to_string(),
         description: Some("injected ls completion".to_string()),
@@ -193,8 +199,10 @@ fn injected_definitions_load_without_runtime_defaults() {
         s.load_completion_dirs_with_definitions(&[], vec![imported]);
     }
 
-    assert_not_suggests(&state, "ls -", "--all");
+    // Translated/injected definitions merge on top of the embedded base
+    // layer: the injected flag appears, and the embedded ls flags survive.
     assert_suggests(&state, "ls -", "--injected-extra");
+    assert_suggests(&state, "ls -", "--all");
 }
 
 #[test]

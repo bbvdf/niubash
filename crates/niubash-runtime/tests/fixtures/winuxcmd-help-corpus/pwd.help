@@ -1,0 +1,20 @@
+Usage: pwd [OPTION]... [FILE]...
+
+Print the full filename of the current working directory.
+
+The -L option uses PWD from environment when it still names the current
+directory.
+The -P option avoids all symlinks.
+
+OPTIONS:
+  -L, --logical   use PWD from environment when it names the current directory
+  -P, --physical  avoid all symlinks
+      --help      display this help and exit
+  -V, --version   output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

@@ -1,0 +1,30 @@
+Usage: comm [OPTION]... FILE1 FILE2
+
+Compare sorted files line by line.
+
+With no options, produce three-column output. Column one contains
+lines unique to FILE1, column two contains lines unique to FILE2,
+and column three contains lines common to both files.
+
+Note: Input files must be sorted. This implementation does not
+automatically sort the input files.
+
+OPTIONS:
+  -1                            suppress column 1 (lines unique to FILE1)
+  -2                            suppress column 2 (lines unique to FILE2)
+  -3                            suppress column 3 (lines that appear in both
+                                files)
+      --check-order             check that the input is correctly sorted
+      --nocheck-order           do not check that the input is correctly sorted
+  -z, --zero-terminated         line delimiter is NUL, not newline
+      --output-delimiter[=ARG]  separate columns with STR
+      --total                   output a summary
+      --help                    display this help and exit
+  -V, --version                 output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

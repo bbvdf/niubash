@@ -1,0 +1,29 @@
+Usage: truncate OPTION... FILE...
+
+Shrink or extend the size of each FILE to the specified size.
+
+A FILE argument that does not exist is created.
+
+Mandatory arguments to long options are mandatory for short options too.
+
+SIZE is an integer and optional unit (example: 10M is 10*1024*1024).
+Units are K, M, G, T, P, E, Z, Y (powers of 1024) or KB, MB,... (powers of 1000).
+
+SIZE may also be prefixed with +, -, <, >, /, or % for GNU-style
+relative, clamp, and rounding adjustments. -o treats SIZE as file-system
+I/O blocks.
+
+OPTIONS:
+  -c, --no-create      do not create files
+  -o, --io-blocks      treat SIZE as number of IO blocks
+  -s, --size ARG       set or adjust the file size by SIZE bytes
+  -r, --reference ARG  base size on RFILE
+      --help           display this help and exit
+  -V, --version        output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

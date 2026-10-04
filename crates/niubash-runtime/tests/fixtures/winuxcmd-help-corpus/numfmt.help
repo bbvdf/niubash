@@ -1,0 +1,36 @@
+Usage: numfmt [OPTION]... [NUMBER]...
+
+Convert numbers from/to human-readable strings.
+Convert numbers to/from human-readable strings (e.g., 1K, 1M).
+If no number is specified, read from standard input.
+
+OPTIONS:
+  -d, --delimiter ARG       use X instead of whitespace for field delimiter
+      --from ARG            autoconvert from X
+      --to ARG              autoconvert to X
+      --round ARG           use METHOD for rounding
+      --padding NUM         pad numbers to width N
+      --pad NUM             pad numbers to width N
+      --suffix ARG          add STRING after formatted numbers
+      --field ARG           replace the numbers in these input fields
+  -f, --format ARG          use printf style floating-point FORMAT
+      --header[=NUM]        print the first N header lines unchanged
+      --grouping            group digits with locale thousands separator
+      --invalid ARG         set policy for invalid values: 'abort' (default),
+                            'warn', 'ignore'
+      --debug               print conversion diagnostics
+      --from-unit ARG       multiply input numbers by UNIT
+      --to-unit ARG         divide numbers by UNIT before formatting
+      --unit-separator ARG  use STRING between number and unit
+  -z, --zero-terminated     line delimiter is NUL, not newline
+  -M                        use IEC units (powers of 1024)
+  -l                        use locale grouping
+      --help                display this help and exit
+  -V, --version             output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

@@ -1,0 +1,40 @@
+Usage: split [OPTION]... [INPUT [PREFIX]]
+
+Output fixed-size pieces of INPUT to PREFIXaa, PREFIXab, ...
+
+By default, split puts 1000 lines of INPUT (or stdin) into each output file.
+
+Mandatory arguments to long options are mandatory for short options too.
+
+SIZE may have a multiplier suffix: b for 512, K for 1K, M for 1M, G for 1G, etc.
+
+Note: This implementation supports common GNU line, byte, line-byte, number, filter, separator, and suffix options.
+
+OPTIONS:
+  -b, --bytes ARG               put SIZE bytes per output file
+  -C, --line-bytes ARG          put at most SIZE bytes of complete lines per
+                                output file
+  -l, --lines ARG               put NUMBER lines per output file
+  -n, --number ARG              generate CHUNKS output files; see explanation
+                                below
+  -d, --numeric-suffixes[=ARG]  use numeric suffixes instead of alphabetic
+  -x, --hex-suffixes[=ARG]      use hexadecimal suffixes
+  -a, --suffix-length ARG       use suffixes of length N (default 2)
+      --additional-suffix ARG   append SUFFIX to output file names
+      --filter ARG              write to shell COMMAND; file name is $FILE
+  -e, --elide-empty-files       do not generate empty output files
+      --verbose                 print a diagnostic just before each output file
+                                is opened
+  -t, --separator ARG           use SEP instead of newline as the record
+                                separator; '\0' (zero) specifies the NUL
+                                character
+  -u, --unbuffered              immediately copy input to output with '-n r/...'
+      --help                    display this help and exit
+  -V, --version                 output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

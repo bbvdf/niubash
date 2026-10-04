@@ -1,0 +1,25 @@
+Usage: getconf [OPTION]... [VARIABLE_NAME]...
+getconf [OPTION]... PATH_VAR PATH
+
+Display configuration variable values.
+
+If no VARIABLE_NAME is specified, display system-dependent limit values.
+On Windows, this provides limited system configuration information.
+
+Options:
+  -a, --all  display all configuration variables
+  -v SPEC    give values for compilation environment SPEC
+
+OPTIONS:
+  -a, --all      display all configuration variables
+  -v ARG         give values for compilation environment SPEC
+                 get system configuration values
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

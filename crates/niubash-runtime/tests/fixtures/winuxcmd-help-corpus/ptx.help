@@ -1,0 +1,34 @@
+Usage: ptx [OPTION]... [FILE]...
+
+Produce a permuted index of file contents.
+
+OPTIONS:
+  -A, --auto-reference       output automatically generated references
+  -C, --copyright            display copyright and version
+  -G, --traditional          use traditional non-GNU word splitting
+  -F, --flag-truncation ARG  string used for line truncation
+  -M, --macro-name ARG       macro name for formatted output
+  -O                         generate output as roff directives [DIFFERS:
+                             --format=roff not supported]
+  -R, --right-side-refs      put references in right margin
+  -S, --sentence-regexp ARG  regexp for sentence ends
+  -T                         generate output as TeX directives [DIFFERS:
+                             --format=tex not supported]
+  -W, --word-regexp ARG      regexp for words
+  -b, --break-file ARG       file containing word break characters
+  -f, --ignore-case          fold lower case to upper case for sorting
+  -g, --gap-size NUM         gap size in columns between output fields
+  -i, --ignore-file ARG      ignore words from file
+  -o, --only-file ARG        only output words from file
+  -r, --references           first input field is reference
+  -t, --typeset-mode         output for troff or nroff
+  -w, --width NUM            output width in columns, reference excluded
+      --help                 display this help and exit
+  -V, --version              output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

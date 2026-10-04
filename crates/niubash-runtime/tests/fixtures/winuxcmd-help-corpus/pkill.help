@@ -1,0 +1,25 @@
+Usage: pkill [OPTION]... PATTERN
+
+Signal processes selected by name or command line.
+On Windows, TERM/KILL are mapped to Win32 termination.
+
+OPTIONS:
+  -f, --full         match against full command line
+  -i, --ignore-case  match case insensitively
+  -x, --exact        match the whole name or command line
+  -e, --echo         display what is killed
+  -0                 only check for matching processes
+  -9                 send SIGKILL; mapped to Win32 termination
+  -TERM              send SIGTERM; mapped to Win32 termination
+  -SIGTERM           send SIGTERM; mapped to Win32 termination
+  -KILL              send SIGKILL; mapped to Win32 termination
+  -SIGKILL           send SIGKILL; mapped to Win32 termination
+      --help         display this help and exit
+  -V, --version      output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

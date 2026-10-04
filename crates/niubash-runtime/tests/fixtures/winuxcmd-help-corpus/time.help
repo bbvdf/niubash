@@ -1,0 +1,20 @@
+Usage: time [OPTION]... COMMAND [ARG]...
+
+Run a command and report how long it took.
+
+The command is executed as a child process and the child exit status is
+returned unchanged. Timing data is written to standard error.
+
+With -p, print POSIX-compatible timing lines.
+
+OPTIONS:
+  -p, --posix    report timing in POSIX format
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

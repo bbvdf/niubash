@@ -1,0 +1,41 @@
+Winux Package Manager 0.4.0
+Usage: wpm <command> [args] [options]
+
+Commands:
+  links list|rebuild|remove             manage WinuxCmd hardlinks
+  clean [cache|staging|all]             remove transient downloads and staging
+  cache clean [cache|staging|all]       alias for clean
+  index status|update                   inspect or refresh local index
+  update-index                          alias for index update
+  source list|use|add|region|test       manage and test index sources
+  list                                  list indexed packages and install state
+  categories                            list package categories and counts
+  search <query>                        search names, commands, categories, licenses
+  info <package>                        show package metadata
+  install <package>...                  install one or more packages
+  installed                             list packages present in this root
+  export [--plain]                      print installed package names for profiles
+  restore <file>                        install packages from a plain list
+  outdated                              list installed packages with updates
+  uninstall|remove|erase <package>...   uninstall one or more packages
+  update|upgrade winuxcmd               update WinuxCmd from local index
+
+Options:
+  -r, --root <dir>                      manage a specific WinuxCmd root
+  -s, --source <name>                   use a specific index source
+  -a, --all                             show index-only packages in list output
+  -f, --force                           overwrite existing files when safe
+  -n, --dry-run                         show planned changes without writing
+  -v, --verbose                         print detailed progress
+  -y, --yes                             assume yes for interactive prompts
+      --category <name>                 filter list/search output by category
+      --json                            print machine-readable JSON
+      --plain                           print only package names for export
+      --proxy <url>                     use the given HTTP proxy for downloads (env: HTTP_PROXY,
+                                        HTTPS_PROXY, WPM_HTTP_PROXY, WPM_HTTPS_PROXY, NO_PROXY)
+      --from <manifest>                 install packages from a manifest file or URL
+                                        (TOML, JSON, or plain list)
+      --help                            display this help and exit
+  -V, --version                         output version information and exit
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

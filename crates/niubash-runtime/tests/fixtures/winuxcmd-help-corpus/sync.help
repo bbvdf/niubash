@@ -1,0 +1,23 @@
+Usage: sync [OPTION]... [FILE]...
+
+Synchronize cached writes to persistent storage.
+
+If one or more files are specified, sync only those files.
+  -d, --data         sync only file data, no unneeded metadata
+  -f, --file-system  sync the file systems that contain the files
+Otherwise, all file system buffers are synchronized.
+
+Note: On Windows, this uses FlushFileBuffers to flush file buffers.
+
+OPTIONS:
+  -d, --data         sync only file data, no unneeded metadata
+  -f, --file-system  sync the file systems that contain files
+      --help         display this help and exit
+  -V, --version      output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

@@ -1,0 +1,44 @@
+Usage: patch [OPTION]... [ORIGFILE [PATCHFILE]]
+
+Apply a diff file to an original.
+Apply a patch (unified diff) to one or more original files, following GNU patch semantics: multi-file patches, offset and fuzz search, reject files, and backup-if-mismatch behavior.
+
+OPTIONS:
+  -p, --strip NUM               strip NUM leading components from file names
+  -i, --input ARG               read patch from FILE
+  -z, --suffix ARG              set backup suffix
+  -R, --reverse                 assume patch was created with old and new files
+                                swapped
+  -N, --forward                 skip patches that seem reversed or already
+                                applied
+  -b, --backup                  back up the original file
+      --dry-run                 do not actually change any files
+  -d, --directory ARG           change to DIR first
+  -D, --ifdef ARG               use WORD to patch files
+      --remove-empty-files      remove empty output files
+  -f, --force                   force this patch, even if it seems reversed
+  -F, --fuzz NUM                set maximum fuzz factor
+  -o, --output ARG              output to FILE instead of the patched file
+      --backup-if-mismatch      backup if patch does not match exactly
+      --no-backup-if-mismatch   don't backup if patch matches
+  -r, --reject-file ARG         output rejects to FILE
+      --reject-format ARG       produce output in FORMAT
+  -s, --silent                  work silently unless an error occurs
+  -q, --quiet                   work silently unless an error occurs
+  -t, --batch                   same as --force, with diagnostics
+  -T, --set-time                set the patch's modification time
+      --set-utc                 set the patch's modification time to UTC
+  -u, --unified                 interpret the patch as unified diff
+  -v, --verbose                 print verbose output
+      --binary                  read and write in binary mode
+      --posix                   conform to POSIX standard
+      --strip-trailing-slashes  strip trailing slashes from file names
+      --help                    display this help and exit
+  -V, --version                 output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

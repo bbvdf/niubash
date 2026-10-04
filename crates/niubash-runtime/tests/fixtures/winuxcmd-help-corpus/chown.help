@@ -1,0 +1,32 @@
+Usage: chown [OPTION]... [FILE]...
+
+Change the owner and/or group of each FILE.
+
+Note: On Windows, changing ownership requires the
+SeTakeOwnership/SeRestore privileges, usually an elevated shell.
+Use -h to modify a symbolic link itself, including dangling links.
+
+OPTIONS:
+  -c, --changes           like verbose but report only when a change is made
+  -f, --silent            suppress most error messages
+      --quiet             suppress most error messages
+      --dereference       affect referent of each symbolic link
+  -h, --no-dereference    affect symbolic links instead of referenced files
+      --from ARG          change only from current owner/group
+  -H                      traverse command-line symlinks to directories
+  -L                      traverse every symlink to a directory
+  -P                      do not traverse any symbolic links
+  -R, --recursive         operate on files and directories recursively
+      --reference ARG     use RFILE's owner and group
+  -v, --verbose           output a diagnostic for every file processed
+      --preserve-root     fail to operate recursively on '/'
+      --no-preserve-root  do not treat '/' specially
+      --help              display this help and exit
+  -V, --version           output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

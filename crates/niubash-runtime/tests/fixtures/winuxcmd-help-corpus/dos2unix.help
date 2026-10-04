@@ -1,0 +1,21 @@
+Usage: dos2unix [OPTION]... [FILE]...
+
+Convert DOS line endings to Unix line endings.
+
+Replace CRLF (\r\n) with LF (\n) in each specified file.
+This is an alias for the d2u command.
+
+Options:
+  -v, --verbose  print a message for each file
+
+OPTIONS:
+  -v, --verbose  print a message for each file
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

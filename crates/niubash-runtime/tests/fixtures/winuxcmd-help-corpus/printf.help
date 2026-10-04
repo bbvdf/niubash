@@ -1,0 +1,32 @@
+Usage: printf FORMAT [ARGUMENT]...
+
+Format and print data.
+
+Print ARGUMENT(s) according to FORMAT.
+
+Supported format specifiers:
+  %%      Literal '%'
+  %c      Character
+  %s      String
+  %d, %i  Integer
+  %u      Unsigned integer
+  %x, %X  Hexadecimal (lowercase/uppercase)
+  %o      Octal
+  %f      Floating point
+  %e, %E  Scientific notation
+  %g, %G  %f or %e depending on value
+  %b      Interpret backslash escapes (like echo -e)
+
+
+OPTIONS:
+  -v ARG         assign the output to shell variable VAR
+                 format and print data
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

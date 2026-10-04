@@ -1,0 +1,21 @@
+Usage: stat [OPTION]... FILE...
+
+Display file or file system status.
+
+OPTIONS:
+  -L, --dereference  follow symbolic links
+  -f, --file-system  display file system status instead of file status
+  -c, --format ARG   use the specified FORMAT instead of the default
+  -t, --terse        print the information in terse form
+      --printf ARG   like --format, but interpret backslash escapes
+      --cached ARG   use cached attribute data WHEN (hint only; always fresh on
+                     Windows)
+      --help         display this help and exit
+  -V, --version      output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

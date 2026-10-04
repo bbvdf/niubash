@@ -1,0 +1,33 @@
+Usage: nl [OPTION]... [FILE]...
+
+Number lines of files.
+
+Write each FILE to standard output, with line numbers added.
+With no FILE, or when FILE is -, read standard input.
+
+Mandatory arguments to long options are mandatory for short options too.
+
+Supports GNU-compatible numbering formats, logical page delimiters,
+renumbering controls, and blank-line grouping.
+
+OPTIONS:
+  -b, --body-numbering ARG        use STYLE for numbering body lines
+  -d, --section-delimiter ARG     use CC for logical page delimiters
+  -f, --footer-numbering ARG      use STYLE for numbering footer lines
+  -h, --header-numbering ARG      use STYLE for numbering header lines
+  -i, --line-increment ARG        line number increment at each line
+  -l, --join-blank-lines ARG      group NUMBER empty lines as one numbered line
+  -n, --number-format ARG         use FORMAT for line numbers
+  -p, --no-renumber               do not reset line numbers at logical pages
+  -s, --number-separator ARG      add STRING after (possible) line number
+  -v, --starting-line-number ARG  first line number on each logical page
+  -w, --number-width ARG          width of line numbers
+      --help                      display this help and exit
+  -V, --version                   output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

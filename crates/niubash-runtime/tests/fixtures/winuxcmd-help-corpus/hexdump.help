@@ -1,0 +1,43 @@
+Usage: hexdump [OPTION]... [FILE]...
+
+Display file contents in hexadecimal, decimal, octal, or ascii.
+
+The hexdump utility is a filter which displays the specified files,
+or standard input, in a user-specified format.
+
+Mandatory arguments to long options are mandatory for short options too.
+
+  -b               one-byte octal display
+  -c               one-byte character display
+  -C               canonical hex+ASCII display
+  -d               two-byte decimal display
+  -e FORMAT        format string
+  -f FORMAT_FILE   format file
+  -n LENGTH        interpret only LENGTH bytes of input
+  -o               two-byte octal display
+  -s OFFSET        skip OFFSET bytes from the beginning
+  -v               display all input, no squeeze
+  -x               two-byte hex display
+
+OPTIONS:
+  -b             one-byte octal display
+  -c             one-byte character display
+  -C             canonical hex+ASCII display
+  -d             two-byte decimal display
+  -o             two-byte octal display
+  -x             two-byte hex display
+  -e ARG         format string
+  -f ARG         format file
+  -n ARG         interpret only LENGTH bytes of input
+  -s ARG         skip offset bytes from the beginning
+  -v             display all input, no squeeze
+  -L, --color    interpret color formatting specifiers
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

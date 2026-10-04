@@ -1,0 +1,18 @@
+Usage: unlink FILE
+
+Remove a specified file.
+
+Unlink the file named FILE. If FILE is a symbolic link, the symbolic link
+is removed, not the file it points to.
+
+OPTIONS:
+                 remove single file
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

@@ -1,0 +1,25 @@
+Usage: getopt <optstring> <parameters>
+
+Parse command options.
+The enhanced getopt(1) normalizes its parameter list and prints a shell-compatible argument list.
+Supports short options, long options, required ':' arguments, and optional '::' arguments.
+
+OPTIONS:
+  -o, --options ARG      short option specification
+  -l, --longoptions ARG  long options to be recognized
+  -n, --name ARG         name used in diagnostics
+  -q, --quiet            disable error reporting by getopt
+  -Q, --quiet-output     no normal output
+  -s, --shell ARG        set quoting conventions to those of <shell>
+  -T, --test             test for getopt(1) version
+  -u, --unquoted         do not quote the output
+  -a, --alternative      allow long options starting with single -
+      --help             display this help and exit
+  -V, --version          output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

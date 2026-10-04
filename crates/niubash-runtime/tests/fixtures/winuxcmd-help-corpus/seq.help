@@ -1,0 +1,20 @@
+Usage: seq [OPTION]... LAST
+seq [OPTION]... FIRST LAST
+seq [OPTION]... FIRST INCREMENT LAST
+
+Print numbers from FIRST to LAST, in steps of INCREMENT.
+
+OPTIONS:
+  -f, --format ARG      use printf style floating-point FORMAT
+  -s, --separator ARG   use STRING to separate numbers
+  -t, --terminator ARG  use STRING to terminate the output instead of newline
+  -w, --equal-width     equalize width by padding with leading zeroes
+      --help            display this help and exit
+  -V, --version         output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

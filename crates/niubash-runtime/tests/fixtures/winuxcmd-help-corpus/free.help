@@ -1,0 +1,37 @@
+Usage: free [OPTION]
+
+Display amount of free and used memory in the system.
+
+This is a Windows implementation of the Linux free command.
+The memory statistics are approximated from Windows APIs.
+
+OPTIONS:
+  -b, --bytes        display amount of memory in bytes
+  -k, --kibi         display amount of memory in kibibytes
+  -m, --mebi         display amount of memory in mebibytes
+  -g, --gibi         display amount of memory in gibibytes
+  -h, --human        show human-readable output
+  -l, --lohi         show detailed low and high memory statistics
+  -t, --total        display a line showing the totals
+  -s, --seconds NUM  continuously display memory statistics with delay
+  -c, --count NUM    repeat the display COUNT times
+  -w, --wide         wide output
+      --kilo         display amount of memory in kilobytes (SI)
+      --mega         display amount of memory in megabytes (SI)
+      --giga         display amount of memory in gigabytes (SI)
+      --tera         display amount of memory in terabytes (SI)
+      --peta         display amount of memory in petabytes (SI)
+      --tebi         display amount of memory in tebibytes
+      --pebi         display amount of memory in pebibytes
+      --si           use powers of 1000 not 1024
+  -L, --line         show output on a single line
+  -v, --committed    show committed memory and commit limit
+      --help         display this help and exit
+  -V, --version      output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

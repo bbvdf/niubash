@@ -1,0 +1,43 @@
+Usage: more [OPTION]... [FILE]...
+
+Display the contents of a file, one screenful at a time.
+
+The more command is a filter for paging through text one screen at a time.
+
+Start modifiers:
+  +NUM       display file beginning from line number
+  +/PATTERN  display file beginning from pattern match
+
+Interactive commands:
+  SPACE/z     display next screenful; z also sets screen size
+  ENTER       display next line
+  d/s/f/b     scroll, skip lines, skip screens, or go back
+  / and n     search and repeat search
+  :n/:p/:f    next file, previous file, or file status
+  .           repeat previous command
+  h or ?      show interactive help
+  q           quit
+
+Note: On Windows, more uses the console for interactive paging.
+
+OPTIONS:
+  -d, --silent       display help instead of ring bell
+  -f, --logical      count logical lines, not screen lines
+  -l, --no-pause     suppress pause after form feeds
+  -c, --print-over   clear line ends before each page
+  -p, --clean-print  do not scroll, clean screen and display text
+  -e, --exit-on-eof  exit on end-of-file
+  -s, --squeeze      squeeze multiple blank lines
+  -u, --plain        accepted placeholder; underlining and bold are already
+                     plain
+  -n, --lines NUM    number of lines per screenful
+  -NUM               same as -n NUM
+      --help         display this help and exit
+  -V, --version      output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

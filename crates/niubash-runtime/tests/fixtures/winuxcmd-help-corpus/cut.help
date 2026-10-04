@@ -1,0 +1,30 @@
+Usage: cut OPTION... [FILE]...
+
+Print selected parts of lines from each FILE to standard output.
+
+OPTIONS:
+  -b, --bytes ARG                   select only these bytes
+  -c, --characters ARG              select only these characters
+  -d, --delimiter ARG               use DELIM instead of TAB for field delimiter
+  -w, --whitespace-delimited[=ARG]  use runs of spaces/tabs as field delimiters
+                                    [=trimmed]
+  -f, --fields ARG                  select only these fields
+  -F ARG                            like -f, but also implies -w and -O ' '
+      --complement                  complement the set of selected bytes,
+                                    characters or fields
+  -n, --no-partial                  do not split multibyte characters in byte
+                                    mode [DIFFERS: GNU ignores -n]
+  -s, --only-delimited              do not print lines not containing delimiter
+  -O, --output-delimiter ARG        use STRING as the output delimiter
+  -z, --zero-terminated             line delimiter is NUL, not newline
+  -M                                compatibility option; not supported on
+                                    Windows
+      --help                        display this help and exit
+  -V, --version                     output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

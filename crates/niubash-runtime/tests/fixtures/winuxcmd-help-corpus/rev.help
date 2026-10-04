@@ -1,0 +1,17 @@
+Usage: rev [OPTION] [FILE]...
+
+Reverse lines characterwise.
+
+Print each specified record in reverse character order. Records are newline-terminated by default; -0, --zero uses NUL as the separator. If no FILE is specified, read from standard input. This follows util-linux rev's record model, including preserving unterminated final records.
+
+OPTIONS:
+  -0, --zero     use the NUL byte as line separator
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

@@ -1,0 +1,20 @@
+Usage: lsattr [-RVadl] [FILE]...
+
+List Windows file attributes in a stable flag string.
+Flags are RHSADCEITOPL for readonly, hidden, system, archive, directory, compressed, encrypted, not indexed, temporary, offline, sparse, and reparse point.
+[DIFFERS] Attribute flags differ from GNU lsattr (Linux ext4).
+
+OPTIONS:
+  -R, --recursive  recursively list attributes of directories
+  -d, --directory  list directories themselves, not contents
+  -a, --all        list all files including those starting with '.'
+  -V, --version    display program version
+  -l, --long       print options using long names instead of abbreviations
+      --help       display this help and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

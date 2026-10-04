@@ -1,0 +1,60 @@
+Usage: cp [OPTION]... [FILE]...
+
+Copy SOURCE to DEST, or multiple SOURCE(s) to DIRECTORY.
+
+In the first form, copy SOURCE to DEST.
+In the second form, copy each SOURCE to DIRECTORY.
+
+OPTIONS:
+      --keep-directory-symlink  follow existing symlink to directory
+  -a, --archive                 same as -dR --preserve=all
+  -b                            like --backup but does not accept an argument
+      --backup[=ARG]            make a backup of each existing destination file
+  -d                            same as --no-dereference --preserve=links
+  -f, --force                   if an existing destination file cannot be
+                                opened, remove it and try again
+  -i, --interactive             prompt before overwrite
+  -H                            follow command-line symbolic links in SOURCE
+  -l, --link                    hard link files instead of copying
+  -L, --dereference             always follow symbolic links in SOURCE
+  -n, --no-clobber              do not overwrite an existing file and do not
+                                fail
+  -P, --no-dereference          never follow symbolic links in SOURCE
+  -p                            same as --preserve=mode,ownership,timestamps
+  -R, --recursive               copy directories recursively
+  -r, --recursive               copy directories recursively
+  -s, --symbolic-link           make symbolic links instead of copying
+  -S, --suffix ARG              override the usual backup suffix
+  -t, --target-directory ARG    copy all SOURCE arguments into DIRECTORY
+  -T, --no-target-directory     treat DEST as a normal file
+      --strip-trailing-slashes  remove any trailing slashes from each SOURCE
+                                argument
+  -u, --update[=ARG]            equivalent to --update[=older]
+  -v, --verbose                 explain what is being done
+      --debug                   explain how a file is copied; implies --verbose
+  -g, --progress-bar            display a progress bar while copying
+  -x, --one-file-system         stay on this file system
+  -Z                            set SELinux security context of destination file
+                                to default type
+      --remove-destination      remove each existing destination file before
+                                attempting to open it
+      --attributes-only         don't copy the file data, just the attributes
+      --parents                 use full source file name under DIRECTORY
+      --parent                  use full source file name under DIRECTORY
+      --path                    use full source file name under DIRECTORY
+      --sparse ARG              control creation of sparse files
+      --reflink[=ARG]           control clone/CoW copies
+      --preserve ARG            preserve the specified attributes
+      --no-preserve ARG         don't preserve the specified attributes
+      --copy-contents           copy contents of special files when recursive
+  -c, --context                 set SELinux security context of destination file
+                                to default type
+      --help                    display this help and exit
+  -V, --version                 output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

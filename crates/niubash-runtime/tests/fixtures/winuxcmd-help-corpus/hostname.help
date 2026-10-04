@@ -1,0 +1,30 @@
+Usage: hostname [OPTION]...
+
+Print or set system name.
+
+Print the name of the current host.
+
+Note: This implementation only supports printing hostname.
+Setting hostname is not implemented on Windows.
+
+OPTIONS:
+  -b, --boot              set default hostname if none available
+  -i, --ip-address        addresses for the hostname
+  -I, --all-ip-addresses  all addresses for the hostname
+  -s, --short             short host name
+  -f, --fqdn              long host name (FQDN)
+  -a, --alias             host alias names (not supported on Windows)
+  -A, --all-fqdns         all FQDNs of the host (not supported on Windows)
+  -d, --domain            DNS domain name
+  -F, --file ARG          read host name or NIS domain name from FILE
+  -y, --yp                NIS/YP domain name (not supported on Windows)
+  -n, --node              network node hostname (not supported on Windows)
+      --help              display this help and exit
+  -V, --version           output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

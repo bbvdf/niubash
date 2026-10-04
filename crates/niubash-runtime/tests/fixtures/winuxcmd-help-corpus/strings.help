@@ -1,0 +1,55 @@
+Usage: strings [OPTION]... [FILE]...
+
+Print printable strings from FILE(s).
+
+For each FILE, write to standard output all printable character sequences
+that are at least MIN characters long. With no FILE, read standard input.
+
+Mandatory arguments to long options are mandatory for short options too.
+
+  -a, --all                scan each file in its entirety (default)
+  -n, --bytes=MIN          print sequences of at least MIN characters (default 4)
+  -t, --radix=RADIX        print offset before each string: o=octal, d=decimal, x=hex
+  -e, --encoding=ENCODING  select character encoding:
+                             s=7-bit-ascii (default), S=8-bit-UTF8,
+                             b=16-bit-big-endian, l=16-bit-little-endian,
+                             B=32-bit-big-endian, L=32-bit-little-endian
+  -o                       print offset before each string (alias for -t o)
+
+Exit status:
+  0  if any string was found
+  1  if no string was found or error occurred
+
+OPTIONS:
+  -a, --all                     scan each file in its entirety (default)
+  -d, --data                    scan only object data sections
+                                (placeholder/no-op: BFD section parsing is not
+                                linked in this Windows build)
+  -f, --print-file-name         print the file name before each string
+  -n, --bytes ARG               print sequences of at least MIN printable
+                                characters (default 4)
+  -NUM                          same as --bytes=MIN
+  -t, --radix ARG               print the offset within the file before each
+                                string
+  -w, --include-all-whitespace  include all whitespace as valid string
+                                characters
+  -e, --encoding ARG            select character encoding: s=7-bit-ascii,
+                                S=8-bit-UTF8, b=16-bit-big-endian,
+                                l=16-bit-little-endian, B=32-bit-big-endian,
+                                L=32-bit-little-endian
+  -o                            print offset before each string (alias for -t o)
+  -s, --output-separator ARG    string used to separate parsed strings in output
+  -T, --target ARG              specify binary file format (placeholder/no-op:
+                                BFD target selection is not linked in this
+                                Windows build)
+  -U, --unicode ARG             unicode display mode (placeholder/no-op except
+                                non-default modes select UTF-8 scanning)
+      --help                    display this help and exit
+  -V, --version                 output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

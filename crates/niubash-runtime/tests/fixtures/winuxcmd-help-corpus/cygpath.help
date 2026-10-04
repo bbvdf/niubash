@@ -1,0 +1,40 @@
+Usage: cygpath [OPTION] NAME...
+
+Convert path names between Windows and Unix formats.
+Convert path names between Windows and Unix/Cygwin formats.
+Default is to convert Windows paths to Unix paths.
+
+OPTIONS:
+  -u, --unix           print Unix form of NAME
+  -w, --windows        print Windows form of NAME
+  -m, --mixed          print Windows form, with regular slashes
+  -p, --path           NAME is a PATH list
+  -t, --type ARG       print TYPE form: dos, mixed, unix, or windows
+  -d, --dos            print DOS short form of NAMEs
+  -a, --absolute       output absolute path [accepted, partial lexical support]
+  -i, --ignore         ignore missing or empty arguments
+  -f, --file ARG       read input paths from FILE
+  -o, --option         read options from FILE as well [accepted, not
+                       implemented]
+  -l, --long-name      print Windows long form
+  -s, --short-name     print DOS short form
+  -U, --proc-cygdrive  emit /proc/cygdrive paths
+  -C, --codepage ARG   print Windows path in codepage CP
+  -M, --mode           report file text/binary mode
+  -A, --allusers       use All Users for special folders
+  -D, --desktop        output Desktop directory
+  -H, --homeroot       output Profiles directory
+  -O, --mydocs         output My Documents directory
+  -P, --smprograms     output Start Menu Programs directory
+  -S, --sysdir         output system directory
+  -W, --windir         output Windows directory
+  -F, --folder ARG     output special folder ID [not implemented]
+      --help           display this help and exit
+  -V, --version        output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

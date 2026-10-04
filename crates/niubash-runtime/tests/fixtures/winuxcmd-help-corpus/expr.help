@@ -1,0 +1,27 @@
+Usage: expr EXPRESSION
+
+Evaluate expressions.
+
+Print the value of EXPRESSION to standard output.
+
+Supported GNU-style operators and keywords:
+  ARG1 | ARG2, ARG1 & ARG2
+  ARG1 < ARG2, <=, =, ==, !=, >=, >
+  ARG1 + ARG2, ARG1 - ARG2, ARG1 * ARG2, ARG1 / ARG2, ARG1 % ARG2
+  STRING : REGEXP, match STRING REGEXP
+  substr STRING POS LENGTH, index STRING CHARS, length STRING
+  + TOKEN, ( EXPRESSION )
+
+Regex matching uses WinuxCmd's POSIX basic regex module and is anchored at the start of STRING. Numeric arithmetic uses arbitrary-precision integers like GNU expr.
+
+OPTIONS:
+                 evaluate expressions
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

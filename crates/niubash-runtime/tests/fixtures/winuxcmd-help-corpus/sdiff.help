@@ -1,0 +1,24 @@
+Usage: sdiff [OPTION] FILE1 FILE2
+
+Side-by-side merge of differences between FILE1 and FILE2.
+Display two files side by side, with differences marked.
+Common lines are shown normally. Differences are marked with |,<,>.
+
+OPTIONS:
+  -o ARG                       output file
+  -w ARG                       set output width
+  -l                           print only the left column when lines are common
+  -s, --suppress-common-lines  do not print common lines
+  -B                           ignore changes whose lines are all blank
+  -E                           ignore tab expansion
+  -b                           ignore changes in amount of white space
+  -W                           ignore all white space
+      --help                   display this help and exit
+  -V, --version                output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

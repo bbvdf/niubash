@@ -1,0 +1,38 @@
+Usage: locate [OPTION]... PATTERN...
+
+Search a database of file paths for matching names.
+Run 'updatedb' first to build the database.
+When a pattern contains any of *?[]\ it is matched as a
+shell glob against whole paths; otherwise a substring
+search is performed.  Database entries are plain path
+lines (a Windows platform deviation from LOCATE02).
+
+OPTIONS:
+  -0, --null          separate output entries with NUL, not newline
+  -A, --all           print all database entries
+  -b, --basename      match on filename, not full path
+  -c, --count         count matching entries
+  -d, --database ARG  use given database
+  -e, --existing      print only entries that exist on disk
+  -E, --non-existing  print only entries that do not exist on disk
+  -i, --ignore-case   ignore case in search
+  -l, --limit NUM     limit results to at most N entries
+  -L, --follow        accepted for GNU compatibility; the database stores plain
+                      paths and never follows links
+  -m, --mmap          accepted for GNU compatibility; ignored
+  -P, --nofollow      accepted for GNU compatibility; the database stores plain
+                      paths and never follows links
+  -p, --print         print matches (default)
+  -r, --regex         treat patterns as POSIX basic regular expressions
+  -S, --statistics    print database statistics
+  -s, --stdio         accepted for GNU compatibility; ignored
+  -w, --wholename     match patterns against the whole path (default)
+      --help          display this help and exit
+  -V, --version       output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

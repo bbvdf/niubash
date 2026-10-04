@@ -1,0 +1,28 @@
+Usage: timeout [OPTION] DURATION COMMAND [ARG]...
+
+Start COMMAND, and kill it if still running after DURATION.
+
+Mandatory arguments to long options are mandatory for short options too.
+
+DURATION is a floating point number with an optional suffix:
+'s' for seconds (default), 'm' for minutes, 'h' for hours or 'd' for days.
+
+The command is executed as a child process and terminated when the
+time limit expires.
+
+OPTIONS:
+  -s, --signal ARG       specify the signal to be sent on timeout
+  -k, --kill-after ARG   also send a KILL signal if COMMAND still running
+  -f, --foreground       when not running timeout directly from a shell prompt
+  -p, --preserve-status  exit with the same status as COMMAND
+  -v, --verbose          diagnose to stderr any signal sent on timeout
+  -l                     list supported signals
+      --help             display this help and exit
+  -V, --version          output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

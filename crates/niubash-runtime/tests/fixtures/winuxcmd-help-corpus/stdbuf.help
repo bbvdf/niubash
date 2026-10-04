@@ -1,0 +1,17 @@
+Usage: stdbuf [OPTION]... COMMAND [ARG]...
+
+Run COMMAND, with modified buffering operations for its standard streams.
+
+OPTIONS:
+  -i, --input ARG   adjust standard input stream buffering
+  -o, --output ARG  adjust standard output stream buffering
+  -e, --error ARG   adjust standard error stream buffering
+      --help        display this help and exit
+  -V, --version     output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

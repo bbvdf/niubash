@@ -1,0 +1,32 @@
+Usage: join [OPTION]... FILE1 FILE2
+
+For each pair of input lines with identical join fields, write a line to
+standard output. The default join field is the first, delimited by blanks.
+
+Supports GNU-compatible blank-delimited fields, custom output lists,
+unpairable-line output, and case-insensitive joins.
+
+OPTIONS:
+  -1 ARG                 join on this FIELD of file 1
+  -2 ARG                 join on this FIELD of file 2
+  -t ARG                 use CHAR as input and output field separator
+  -e, --empty ARG        replace missing input fields with EMPTY
+  -o, --output ARG       use specified output format
+  -j ARG                 equivalent to -1 FIELD -2 FIELD
+  -a ARG                 print unpairable lines from file 1 or 2
+  -v ARG                 print only unpairable lines from file 1 or 2
+  -i, --ignore-case      ignore differences in case
+      --check-order      check that the input is correctly sorted
+      --nocheck-order    do not check that the input is correctly sorted
+      --header           treat the first line in each file as headers
+  -z, --zero-terminated  line delimiter is NUL, not newline
+  -k, --key ARG          join on FIELD[.CHAR] of both files
+      --help             display this help and exit
+  -V, --version          output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

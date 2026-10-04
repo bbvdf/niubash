@@ -1,0 +1,21 @@
+Usage: pgrep [OPTION]... PATTERN
+
+Look up processes by name or command line.
+The current pgrep process is excluded from matches.
+
+OPTIONS:
+  -f, --full         match against full command line
+  -i, --ignore-case  match case insensitively
+  -l, --list-name    list PID and process name
+  -a, --list-full    list PID and full command line
+  -x, --exact        match the whole name or command line
+  -c, --count        print only a count of matching processes
+      --help         display this help and exit
+  -V, --version      output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

@@ -1,0 +1,15 @@
+Usage: regtool ACTION KEY [VALUE] [DATA]
+
+Small Windows-native registry tool.
+
+OPTIONS:
+                 operate on the Windows registry
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.
