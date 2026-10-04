@@ -32,6 +32,43 @@ sandbox and the real `~/.niubash` is never touched).
 | J5 daily battery | `ls \| wc -l`, `echo hi \| cat -n`, `cd ~ && pwd`, `[[ a != b ]] && echo ok` | each produces output, not errors; prompt still alive after each |
 | J6 trust + activate bash-completion | `niu plugin trust bash-completion` → `source ~/.niubashrc` → new terminal | trust reports success; ZERO syntax errors — bash_completion included |
 
+### The wave-1 persistence group (P3-S1…S4 + P8-S4, lane wt79/jw1-persistence)
+
+Landed after J5 / before J6 in the default run (the persistence
+assertions need the theme-bearing source still installed, and J6 then
+runs on the state P8-S4 restored). `--phase` selects the group: `full`
+(default), `gate` (legacy J1–J6), `persist` (J1–J5 + P3 + P8-S4), `P3`,
+`P8` — the P-phases compose after the same J-prefix (their aged state IS
+the wizard's sandbox, journey-spec §3).
+
+| Step | The user's move | The gate asserts |
+| --- | --- | --- |
+| P3-S1 reopen sandbox session | fresh terminal after J5; write a marker file through the shell | prompt renders; the wizard's theme line still in the rc; spec still declares oh-my-bash + the theme; the marker round-trips through the shell (previous-session state detection) |
+| P3-S2 rc byte-stability + theme identity (niu#168) | `source ~/.niubashrc` in a live session; two fresh terminals; byte snapshots after every open | (a) rc bytes identical after every source/terminal; (b) the picked theme's variable unchanged, same framework; (c) `selection materialized` never printed during an unchanged-spec source/startup; (d) terminal 2's prompt block equals terminal 1's modulo clock digits |
+| P3-S3 first-key integrity (niu#167 anti-masking) | idle the themed prompt ≥1.2 s (≥1 clock repaint), then `echo NIU167KEY` with the Ctrl-U wake DISABLED, no retry | the full word executes (bare marker output); never `cho: command not found`. On a pass the run FLIPS `WAKE_ENABLED` off — every later send goes wake-free (the gate stops masking) |
+| P3-S4 aged state (F5) | seed between sessions: rename `oh-my-bash.sh` inside the trusted tree, hand-declare a missing origin + seed its `bootstrap-failures.toml` memo | prompt ≤10 s; exactly one `deferred` row + the documented awaiting-trust lines; guarded loader no-ops (no error storm); explicit `niu plugin sync` retries the missing origin readably; `niu plugin restore` rebuilds the tree; after healing the spec, the next terminal is silent |
+| P8-S4 remove the source with the ACTIVE theme (F4) | `niu plugin source remove oh-my-bash` while its theme is applied, then re-add + trust + re-enable | spec declaration, registry record and tree drop; no resurrection at the fresh terminal (no re-clone); floor prompt, zero syntax-error storm; re-add restores the theme; exactly one oh-my-bash managed block at steady state (no orphan blocks) |
+
+Driver capabilities this lane landed (journey-steps.json `driver_capabilities`,
+owner W1): **wake-flag** — `send_line(..., wake=False)` (no sacrificial
+Ctrl-U, no retry: a retry would mask the first-key behavior the probe
+exists to observe) plus the previous-session marker file; **seed** — the
+`SandboxSeed` helper (rc byte snapshots, spec stanza add/drop, the
+product-format F5 ledger write, tree-file damage), all under the sandbox
+home between sessions.
+
+Observed verdicts (first landing runs, 2026-10-04, release 1.3.3):
+P3-S2 went **green** — the #168 rebound does not fire for the
+oh-my-bash/`powerline-multiline` wizard shape (rc bytes byte-stable
+across every open; the `wt73-168-theme-rebound` registration stays and
+labels any future red of this class). P3-S3 passed and the run continued
+wake-free. One product observation recorded, not yet a ticket: after
+`niu plugin source remove` + a fresh terminal the removed source's
+managed rc block REMAINS (inert — its guarded loader no-ops on the
+missing tree; `remove_source` also will not delete a tree whose layout
+no longer fingerprints); the block is only replaced once the source is
+re-added. F4-adjacent orphan-block sweep is a candidate follow-up.
+
 Exit code `0` only if every assertion holds. The run writes:
 
 - `verdict.json` / `verdict.txt` — the per-step, per-assertion verdict;
