@@ -1,7 +1,7 @@
 # niubash plugin collection: full
 schema = "niubash:plugin-collection@1"
 name = "full"
-description = "both frameworks + hooks: omb, bash-it, completions, bash-preexec; fzf & starship are suggested package-manager installs (niu downloads nothing)"
+description = "both frameworks + hooks + curated independent recipes (bash-preexec, complete-alias, fzf-git.sh, bash-sensible, git-flow-completion); fzf & starship are not entries — install them with your package manager (niu downloads nothing)"
 
 [[entry]]
 recipe = "oh-my-bash"
@@ -19,7 +19,13 @@ recipe = "bash-completion"
 recipe = "bash-preexec"
 
 [[entry]]
-recipe = "fzf"
+recipe = "complete-alias"
 
 [[entry]]
-recipe = "starship"
+recipe = "fzf-git.sh"
+
+[[entry]]
+recipe = "bash-sensible"
+
+[[entry]]
+recipe = "git-flow-completion"

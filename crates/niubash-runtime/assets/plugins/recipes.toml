@@ -4957,6 +4957,62 @@ entry = "bpkg.sh"
 origin = "https://github.com/bpkg/bpkg.git"
 
 [[recipe]]
+id = "complete-alias"
+category = "completion"
+summary = "automagical alias completion: completes what your aliases expand to (needs bash-completion)"
+license = "GPL-3.0-only"
+url = "https://github.com/cykerway/complete-alias"
+driver = "git"
+kind = "generic"
+# Upstream root ships `complete_alias` (audited 2026-10-02 via the GitHub
+# contents API, wt61 pattern); the tree's tests/*.sh make it a sourceable
+# file source. Keep in sync with scripts/gen-plugin-recipes.py STANDALONE.
+entry = "complete_alias"
+origin = "https://github.com/cykerway/complete-alias.git"
+
+[[recipe]]
+id = "fzf-git.sh"
+category = "plugin"
+summary = "fzf key bindings for git objects (files, branches, commits); script only — needs the fzf binary (package-manager install)"
+license = "MIT"
+url = "https://github.com/junegunn/fzf-git.sh"
+driver = "git"
+kind = "generic"
+# Upstream root ships `fzf-git.sh` (audited 2026-10-02 via the GitHub
+# contents API, wt61 pattern). Keep in sync with
+# scripts/gen-plugin-recipes.py STANDALONE.
+entry = "fzf-git.sh"
+origin = "https://github.com/junegunn/fzf-git.sh.git"
+
+[[recipe]]
+id = "bash-sensible"
+category = "plugin"
+summary = "sane bash defaults in one sourceable file (vim-sensible for bash)"
+license = "MIT"
+url = "https://github.com/mrzool/bash-sensible"
+driver = "git"
+kind = "generic"
+# Upstream root ships `sensible.bash` (audited 2026-10-02 via the GitHub
+# contents API, wt61 pattern). Keep in sync with
+# scripts/gen-plugin-recipes.py STANDALONE.
+entry = "sensible.bash"
+origin = "https://github.com/mrzool/bash-sensible.git"
+
+[[recipe]]
+id = "git-flow-completion"
+category = "completion"
+summary = "bash completion for git-flow (feature/hotfix/release/support commands)"
+license = "MIT"
+url = "https://github.com/bobthecow/git-flow-completion"
+driver = "git"
+kind = "generic"
+# Upstream root ships `git-flow-completion.bash` (audited 2026-10-02 via
+# the GitHub contents API, wt61 pattern). Keep in sync with
+# scripts/gen-plugin-recipes.py STANDALONE.
+entry = "git-flow-completion.bash"
+origin = "https://github.com/bobthecow/git-flow-completion.git"
+
+[[recipe]]
 id = "basher"
 category = "manager"
 summary = "package manager with per-package bins (PATH + `basher init` model; info-only in niu)"
