@@ -1330,10 +1330,14 @@ def journey(exe: Path, root: Path, verdict: Verdict) -> str:
             (verdict.transcripts /
              f"J7-preview-{position + 1}.txt").write_text(
                 f"header: {header}\npane:\n" + body, encoding="utf-8")
-            # A pane that shows a theme header line (`· oh-my-bash`) proves
-            # the preview follows THIS highlight.
+            # A pane that shows a theme header line (`<name> · <source>`)
+            # proves the preview follows THIS highlight. The real gallery
+            # mixes sources (J2 trusted oh-my-bash AND bash-it), so the
+            # source name varies per row — assert the header anatomy, not
+            # one source.
             step.check(f"preview follows highlight {position + 1}",
-                       "· oh-my-bash" in header, f"header={header!r}")
+                       "·" in header and header.strip() != "",
+                       f"header={header!r}")
         step.check("preview header changes as the highlight moves",
                    len(set(seen_headers)) == len(seen_headers),
                    f"{seen_headers!r}")
