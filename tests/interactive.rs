@@ -1021,3 +1021,100 @@ fn cd_with_cdpath_prints_directory_like_gnu() {
     s.send_line("echo cdpath-ok");
     s.expect("cdpath-ok");
 }
+
+// ---------------------------------------------------------------------------
+// Matrix 7: multi-line theme cursor placement (niubash#169)
+// ---------------------------------------------------------------------------
+
+/// PS1 of the oh-my-bash/bash-it powerline-multiline family: the right-aligned
+/// segment is produced by RAW cursor surgery inside PS1 — a jump to the right
+/// margin (`\e[500C`, clamping at the terminal edge) plus a back-move
+/// (`\e[6D`), then the segment text, all unmarked by `\[ \]`. The line editor
+/// walks the prompt as a linear text run with ANSI stripped, so unmarked
+/// surgery detaches its last-line visible-width accounting from the real
+/// render and the editing cursor lands away from the input line. The prompt
+/// channel now splits the idiom (prompt_right_align::split_right_align): the
+/// tail renders through the editor's right-prompt placement (escape-excluded
+/// width math), the jump/back bytes never reach the terminal, and typing
+/// lands at the input line's end.
+#[test]
+fn multiline_right_align_theme_renders_tail_without_cursor_surgery() {
+    if !require_pty_or_skip("multiline_right_align_theme_renders_tail_without_cursor_surgery") {
+        return;
+    }
+    let rc = concat!(
+        r"PS1='\[\e[34;1m\]left-seg \[\e[0m\]\e[500C\e[6D\[\e[33;1m\] RIGHT \[\e[0m\]\ni7> '",
+        "\nPS2='P2> '\nNIU_DISABLE_DEFAULT_PLUGINS=1\n",
+    );
+    // 80 columns: ` RIGHT ` is 7 visible columns, so the editor's right
+    // prompt is placed at column 73 (0-based).
+    let mut s = NiuSession::spawn_custom("i169-right-align", rc, &[], (80, 24), DEFAULT_TIMEOUT);
+    s.expect("Niubash");
+    // Both halves render: the left segment inline, the aligned tail through
+    // the editor's right prompt.
+    s.expect("left-seg");
+    s.expect("RIGHT");
+    let transcript = s.transcript();
+    assert!(
+        !transcript.contains("<ESC>[500C"),
+        "the raw right-align jump must be split out of the painted prompt"
+    );
+    // ConPTY re-renders the editor's absolute placement as relative ops:
+    // from the left segment's column 9, a 64-column forward reaches column
+    // 73 = 80 - 7 (` RIGHT ` escape-excluded), then the tail. The final
+    // `ESC[3;5H` parks the cursor after `i7> ` on the input line — the #169
+    // contract.
+    assert!(
+        transcript.contains("<ESC>[64C RIGHT"),
+        "the tail must be placed at the escape-excluded margin column \
+         (73 of 80); transcript: {transcript:?}"
+    );
+    assert!(
+        transcript.contains("<ESC>[3;5H"),
+        "the cursor must land after `i7> ` on the input line; transcript: {transcript:?}"
+    );
+    // The editor's cursor model survives typing at the input line.
+    s.send_line("echo i169-ok");
+    s.expect("i169-ok");
+    s.expect("i7>");
+}
+
+/// Same shape with a WIDE-CJK tail: the editor's placement must count the
+/// CJK glyphs as 2 columns each (` 项目 ` = 6 columns), so the MoveTo lands
+/// one column further left than the ASCII tail — the visible-width rule the
+/// fix exists for.
+#[test]
+fn multiline_right_align_theme_cjk_tail_width_matches_editor_columns() {
+    if !require_pty_or_skip("multiline_right_align_theme_cjk_tail_width_matches_editor_columns") {
+        return;
+    }
+    let rc = concat!(
+        r"PS1='\[\e[34;1m\]left-seg \[\e[0m\]\e[500C\e[6D\[\e[33;1m\] 项目 \[\e[0m\]\ni7> '",
+        "\nPS2='P2> '\nNIU_DISABLE_DEFAULT_PLUGINS=1\n",
+    );
+    let mut s =
+        NiuSession::spawn_custom("i169-right-align-cjk", rc, &[], (80, 24), DEFAULT_TIMEOUT);
+    s.expect("Niubash");
+    s.expect("left-seg");
+    s.expect("项目");
+    let transcript = s.transcript();
+    assert!(
+        !transcript.contains("<ESC>[500C"),
+        "the raw right-align jump must be split out of the painted prompt"
+    );
+    // 6 visible columns (space + two wide glyphs + space): from column 9 the
+    // forward lands on column 74 — one further than the ASCII tail, which is
+    // the 2-columns-per-glyph width rule end to end. Cursor after `i7> `.
+    assert!(
+        transcript.contains("<ESC>[65C 项目"),
+        "the CJK tail must be placed by visible width (2 columns per glyph); \
+         transcript: {transcript:?}"
+    );
+    assert!(
+        transcript.contains("<ESC>[3;5H"),
+        "the cursor must land after `i7> ` on the input line; transcript: {transcript:?}"
+    );
+    s.send_line("echo i169-cjk-ok");
+    s.expect("i169-cjk-ok");
+    s.expect("i7>");
+}

@@ -75,6 +75,7 @@ pub mod panic_restore;
 pub(crate) mod path_utils;
 pub mod plugins;
 pub mod prompt;
+pub mod prompt_right_align;
 pub mod prompt_segments;
 pub mod repl;
 pub mod setup_wizard;
