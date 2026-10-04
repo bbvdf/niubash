@@ -60,6 +60,7 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -159,8 +160,16 @@ PROMPTISH_LAST_ROW = re.compile(
 
 COLS, ROWS = 120, 36
 
-# Network clones are the real thing; give them real time.
-CLONE_TIMEOUT = 900
+# Network clones are the real thing; give them real time. The budget is
+# sized for the `full` collection's SEQUENTIAL apply: since niubash#171 it
+# clones eight sources (oh-my-bash, bash-it, bash-completion, bash-preexec,
+# complete-alias, fzf-git.sh, bash-sensible, git-flow-completion) — on a
+# slow link (~100-300 KiB/s, several MiB) that legitimately exceeds the old
+# 900s budget sized for four clones (observed 2026-10-04: the trust wait
+# expired mid-apply with the last clone still receiving). It is a cap, not
+# a sleep — a healthy network returns as soon as the question appears, and
+# a real apply failure still aborts on the tour/REPL marker.
+CLONE_TIMEOUT = 1800
 STARTUP_TIMEOUT = 120
 
 # Registered known-fails. A match keeps the gate RED (the gate must tell
@@ -1082,12 +1091,33 @@ def journey(exe: Path, root: Path, verdict: Verdict) -> str:
             nag_lines = [line for line in body.splitlines()
                          if "awaiting-trust" in line]
             # The documented nag: one line per still-untrusted declared
-            # source ('full' leaves bash-completion and bash-preexec
-            # untrusted until their own `niu plugin trust`).
+            # source. Since niubash#171 the `full` collection lands EIGHT
+            # sources and only oh-my-bash is trusted by the theme pick, so
+            # the bound derives from the sandbox registry (the same state
+            # sync --bootstrap reads) instead of a literal that every
+            # entry-set change would stale: every notice must name a real
+            # still-untrusted source, and the unique set may not exceed it
+            # (the screen render and the raw stream can each hold a copy).
+            untrusted_ids = set()
+            registry_path = home / ".niubash" / "sources" / "registry.toml"
+            if registry_path.is_file():
+                registry = tomllib.loads(
+                    registry_path.read_text(encoding="utf-8"))
+                for record in registry.get("sources", []):
+                    if not record.get("trusted", False):
+                        untrusted_ids.add(record.get("id", ""))
+                untrusted_ids.discard("")
+            noticed = {m.group(1) for line in nag_lines
+                       for m in [re.search(r"awaiting-trust\s+(\S+)", line)]
+                       if m}
+            unexpected = noticed - untrusted_ids
             step.check(f"terminal #{i}: awaiting-trust notices stay "
                        "documented (one per untrusted source)",
-                       len(nag_lines) <= 4,
-                       f"{len(nag_lines)} line(s)"
+                       not unexpected and len(noticed) <= len(untrusted_ids),
+                       f"{len(nag_lines)} line(s), {len(noticed)} unique vs "
+                       f"{len(untrusted_ids)} untrusted sources"
+                       + (f"; unexpected: {sorted(unexpected)}"
+                          if unexpected else "")
                        + (f", first: {nag_lines[0].strip()[:100]}"
                           if nag_lines else ""))
             verdict.capture(f"J4-terminal-{i}", s)
