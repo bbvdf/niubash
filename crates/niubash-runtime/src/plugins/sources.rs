@@ -759,6 +759,32 @@ pub fn add_source(request: SourceInstallRequest) -> anyhow::Result<SourceRecord>
     Ok(record)
 }
 
+/// A pinned checksum must never be silently ignored (wt83 #173): when the
+/// request pins one and the install identity is already registered, verify
+/// the pin against the recorded tree checksum — no fetch needed. The fetch
+/// path enforces the same rule in `fetch_source_to_staging`.
+fn verify_pin_on_adopt(
+    record: &SourceRecord,
+    request: &SourceInstallRequest,
+) -> anyhow::Result<()> {
+    if let Some(expected) = request
+        .expected_checksum
+        .as_deref()
+        .map(str::trim)
+        .filter(|expected| !expected.is_empty())
+    {
+        if !record.checksum_sha256.eq_ignore_ascii_case(expected) {
+            anyhow::bail!(
+                "checksum mismatch for source '{}': expected {}, got {}",
+                record.id,
+                expected,
+                record.checksum_sha256
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Install a source, or **adopt** the existing install when its identity is
 /// already registered — the declarative path's answer to "already
 /// registered" (§14.6.3): `niu plugin add <target>` on an installed source
@@ -779,6 +805,7 @@ pub fn install_or_adopt(request: SourceInstallRequest) -> anyhow::Result<(Source
                 request.id.as_deref(),
             ) {
                 if let Some(record) = registered_by_id(&id) {
+                    verify_pin_on_adopt(&record, &request)?;
                     return Ok((record, true));
                 }
             }
@@ -788,14 +815,20 @@ pub fn install_or_adopt(request: SourceInstallRequest) -> anyhow::Result<(Source
         .into_iter()
         .find(|record| record.url.trim() == request.origin.trim())
     {
+        verify_pin_on_adopt(&record, &request)?;
         return Ok((record, true));
     }
 
     let fetched = fetch_source_to_staging(&request)?;
     let id = fetched.id.clone();
     // The fetch detected/derived an identity that is already registered:
-    // drop the staging tree and adopt the existing install.
+    // drop the staging tree and adopt the existing install. The fetched
+    // tree passed the pin; the registered tree did not come from this
+    // fetch, so the pin is checked against its recorded checksum too —
+    // adopting a different tree under a matching pin would be the same
+    // silent-ignore lie.
     if let Some(record) = registered_by_id(&id) {
+        verify_pin_on_adopt(&record, &request)?;
         let _ = remove_tree_if_present(&fetched.staging);
         return Ok((record, true));
     }
@@ -1694,6 +1727,42 @@ mod tests {
                 .any(|n| n.to_string_lossy().starts_with(".staging-")),
             "staging must be removed on failure: {leftovers:?}"
         );
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    /// A pinned checksum must gate the ADOPTION path too (wt83 #173): an
+    /// already-registered identity is only adopted when its recorded tree
+    /// checksum matches the pin — otherwise the pin would be silently
+    /// ignored exactly like the `plugin add` bug this closes.
+    #[test]
+    fn install_or_adopt_verifies_a_pinned_checksum_against_the_registered_tree() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp = unique_temp_dir("adopt-pin");
+        let origin = temp.join("origin");
+        let root = temp.join("sources");
+        write_omb_fixture(&origin, "v1");
+        let _guard = EnvVarGuard::set("NIU_PLUGIN_SOURCES_ROOT", &root);
+        let record = add_source(local_request(&origin)).unwrap();
+
+        // The matching pin adopts without a fetch.
+        let (adopted, was_adopted) = install_or_adopt(SourceInstallRequest {
+            expected_checksum: Some(record.checksum_sha256.clone()),
+            ..local_request(&origin)
+        })
+        .expect("matching pin must adopt");
+        assert!(was_adopted);
+        assert_eq!(adopted.id, record.id);
+        assert_eq!(read_source_registry().len(), 1);
+
+        // A wrong pin is refused — nothing registered, nothing fetched.
+        let err = install_or_adopt(SourceInstallRequest {
+            expected_checksum: Some("deadbeef".to_string()),
+            ..local_request(&origin)
+        })
+        .expect_err("wrong pin must be refused on adopt");
+        assert!(err.to_string().contains("checksum mismatch"), "{err}");
+        assert_eq!(read_source_registry().len(), 1);
+
         let _ = fs::remove_dir_all(&temp);
     }
 

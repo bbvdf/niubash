@@ -545,3 +545,182 @@ fn plugin_add_on_an_installed_source_declares_it() {
 
     let _ = fs::remove_dir_all(sandbox.home.parent().unwrap());
 }
+
+/// The `niu plugin add --checksum` pin is honored, not just echoed (wt83
+/// #173): a mismatched tree is refused with nothing registered and no spec
+/// entry left behind, and the tree's real checksum installs — the same
+/// honesty `niu plugin source add --checksum` always had.
+#[test]
+fn plugin_add_honors_the_checksum_pin_and_rolls_back_on_failure() {
+    let sandbox = Sandbox::new("add-checksum-pin");
+    let origin = fixture("oh-my-bash");
+    let origin_s = origin.to_string_lossy().into_owned();
+
+    // A wrong checksum is refused: rc != 0, the reason names the mismatch,
+    // the rolled-back declaration is admitted, and nothing is registered.
+    let wrong = run_niu_with_env(
+        &[
+            "plugin",
+            "add",
+            "oh-my-bash",
+            "--path",
+            &origin_s,
+            "--checksum",
+            "deadbeef",
+        ],
+        &sandbox.envs,
+    );
+    assert!(!wrong.status.success(), "wrong pin must fail the add");
+    let wrong_out = format!("{}{}", stdout_text(&wrong), stderr_text(&wrong));
+    assert!(wrong_out.contains("checksum mismatch"), "{wrong_out}");
+    assert!(
+        wrong_out.contains("spec declaration rolled back"),
+        "{wrong_out}"
+    );
+    assert!(
+        !sandbox.spec().contains("target ="),
+        "no stranded spec entry: {}",
+        sandbox.spec()
+    );
+    let listed = run_niu_with_env(&["plugin", "source", "list"], &sandbox.envs);
+    assert!(
+        stdout_text(&listed).contains("no sources installed"),
+        "{}",
+        stdout_text(&listed)
+    );
+
+    // Learn the fixture's real checksum from an unpinned install, remove
+    // it, then re-add pinned: the correct checksum installs.
+    let plain = run_niu_with_env(
+        &["plugin", "add", "oh-my-bash", "--path", &origin_s],
+        &sandbox.envs,
+    );
+    assert_success(&plain, "unpinned add");
+    let out = stdout_text(&plain);
+    let sha = out
+        .split("tree sha256 ")
+        .nth(1)
+        .map(|rest| rest.split_whitespace().next().unwrap_or("").to_string())
+        .unwrap_or_default();
+    assert_eq!(sha.len(), 64, "expected a sha256 in the receipt: {out}");
+
+    let remove = run_niu_with_env(&["plugin", "source", "remove", "oh-my-bash"], &sandbox.envs);
+    assert_success(&remove, "remove the unpinned install");
+
+    let pinned = run_niu_with_env(
+        &[
+            "plugin",
+            "add",
+            "oh-my-bash",
+            "--path",
+            &origin_s,
+            "--checksum",
+            &sha,
+        ],
+        &sandbox.envs,
+    );
+    assert_success(&pinned, "the correct checksum must install");
+    assert!(
+        stdout_text(&pinned).contains("Installed source 'oh-my-bash'"),
+        "{}",
+        stdout_text(&pinned)
+    );
+
+    let _ = fs::remove_dir_all(sandbox.home.parent().unwrap());
+}
+
+/// A failed `niu plugin add` leaves NOTHING behind (wt83 #174): the spec
+/// declaration is rolled back, the startup form has nothing to defer, and
+/// a legacy stranded entry (declared, never installed, startup-failed) is
+/// removed by `niu plugin sync --prune` with a printed line.
+#[test]
+fn failed_add_rolls_back_and_prune_removes_legacy_strands() {
+    let sandbox = Sandbox::new("add-rollback");
+    // A tree with no manager layout and no sourceable shell file: the
+    // fetch fails honestly (the audit's a14 shape, offline).
+    let empty = fixture("no-sourceable");
+
+    let bad = run_niu_with_env(
+        &[
+            "plugin",
+            "add",
+            "oh-my-bash",
+            "--path",
+            &empty.to_string_lossy(),
+        ],
+        &sandbox.envs,
+    );
+    assert!(!bad.status.success(), "no-asset tree must fail the add");
+    let bad_out = format!("{}{}", stdout_text(&bad), stderr_text(&bad));
+    assert!(bad_out.contains("could not install"), "{bad_out}");
+    assert!(
+        bad_out.contains("spec declaration rolled back"),
+        "{bad_out}"
+    );
+    // Spec, registry, and tree: all clean.
+    assert!(
+        !sandbox.spec().contains("target ="),
+        "no stranded spec entry: {}",
+        sandbox.spec()
+    );
+    assert!(
+        !sandbox.sources_root.join("registry.toml").exists(),
+        "no registry record"
+    );
+    assert!(!sandbox.sources_root.join("oh-my-bash").exists());
+
+    // The startup form has nothing to defer or nag about.
+    let boot = run_niu_with_env(&["plugin", "sync", "--bootstrap"], &sandbox.envs);
+    assert!(
+        !stderr_text(&boot).contains("deferred"),
+        "startup must be silent after a rolled-back add: {}",
+        stderr_text(&boot)
+    );
+
+    // A LEGACY strand (declared by an old add, never installed): the
+    // startup memo makes every startup print the deferred line; --prune is
+    // the one-time removal, with a printed row.
+    let missing = sandbox.home.parent().unwrap().join("missing-tree");
+    fs::write(
+        sandbox.spec_path(),
+        format!(
+            "schema = \"niubash:plugin-spec@0.1.0\"\n\n[[sources]]\ntarget = '{}'\nid = 'stranded'\n",
+            missing.to_string_lossy().replace('\\', "/")
+        ),
+    )
+    .unwrap();
+
+    let boot1 = run_niu_with_env(&["plugin", "sync", "--bootstrap"], &sandbox.envs);
+    assert!(
+        stderr_text(&boot1).contains("failed stranded"),
+        "{}",
+        stderr_text(&boot1)
+    );
+    let boot2 = run_niu_with_env(&["plugin", "sync", "--bootstrap"], &sandbox.envs);
+    assert!(
+        stderr_text(&boot2).contains("deferred stranded"),
+        "{}",
+        stderr_text(&boot2)
+    );
+
+    let prune = run_niu_with_env(&["plugin", "sync", "--prune"], &sandbox.envs);
+    assert_success(&prune, "prune runs");
+    assert!(
+        stdout_text(&prune).contains("stranded declaration pruned"),
+        "{}",
+        stdout_text(&prune)
+    );
+    assert!(
+        !sandbox.spec().contains("missing-tree"),
+        "the strand is gone: {}",
+        sandbox.spec()
+    );
+    let boot3 = run_niu_with_env(&["plugin", "sync", "--bootstrap"], &sandbox.envs);
+    assert!(
+        stderr_text(&boot3).trim().is_empty(),
+        "startup is silent again: {}",
+        stderr_text(&boot3)
+    );
+
+    let _ = fs::remove_dir_all(sandbox.home.parent().unwrap());
+}
