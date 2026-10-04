@@ -1,0 +1,1907 @@
+{
+  "meta": {
+    "generated": "2026-10-05",
+    "lane": "wt93/abbr (scope-rewritten: full-capability gap analysis)",
+    "branch": "wt93/abbr",
+    "base": "b4b87f1",
+    "our_side": {
+      "rubash": "D:/repo/rubash/src @ 804d680f (niubash 1.3.4 chain)",
+      "niubash": "crates/niubash-runtime @ b4b87f1",
+      "reedline_vendored": "0.50"
+    },
+    "references": {
+      "fish": "snapshot D:/repo/_rtstudy_refs/fish-shell-master (master, Cargo 4.9.3 dev)",
+      "zsh": "snapshot D:/repo/_rtstudy_refs/zsh-master (5.9.999.3-test, 2026-05-27; see doc provenance caveats)",
+      "nushell": "release tarball 0.108.0 at D:/repo/_rtstudy_refs/nushell-0.108.0",
+      "reedline": "snapshot 0.52.0 (niubash vendors 0.50)"
+    },
+    "source_doc": "docs/audit/shell-gap-matrix.md",
+    "note": "impact counts gaps only; rows with impact \"—\" are ahead/equivalent/paradigm rows"
+  },
+  "dimensions": [
+    {
+      "id": "D01",
+      "title": "Interactive line editor core"
+    },
+    {
+      "id": "D02",
+      "title": "Abbreviations (fish-only reference; our #187 fold-in)"
+    },
+    {
+      "id": "D03",
+      "title": "Syntax highlighting (type-time)"
+    },
+    {
+      "id": "D04",
+      "title": "Autosuggestions and hints"
+    },
+    {
+      "id": "D05",
+      "title": "History (search UX + internals)"
+    },
+    {
+      "id": "D06",
+      "title": "Menus and pager UX"
+    },
+    {
+      "id": "D07",
+      "title": "Completion system"
+    },
+    {
+      "id": "D08",
+      "title": "Key binding configuration surface"
+    },
+    {
+      "id": "D09",
+      "title": "Scripting language core"
+    },
+    {
+      "id": "D10",
+      "title": "Builtins inventory (what exists vs what we lack entirely)"
+    },
+    {
+      "id": "D11",
+      "title": "Structured data / pipeline model (nu-only; paradigm note)"
+    },
+    {
+      "id": "D12",
+      "title": "Jobs and process control"
+    },
+    {
+      "id": "D13",
+      "title": "Prompt and theme system"
+    },
+    {
+      "id": "D14",
+      "title": "Plugin / extension ecosystem"
+    },
+    {
+      "id": "D15",
+      "title": "Variables, scopes, types"
+    },
+    {
+      "id": "D16",
+      "title": "Event hooks"
+    },
+    {
+      "id": "D17",
+      "title": "Startup and configuration surface"
+    },
+    {
+      "id": "D18",
+      "title": "Errors and diagnostics"
+    },
+    {
+      "id": "D19",
+      "title": "Performance-relevant architecture"
+    },
+    {
+      "id": "D20",
+      "title": "Platform and OS integration"
+    },
+    {
+      "id": "D21",
+      "title": "Testing and self-quality infrastructure"
+    }
+  ],
+  "rows": [
+    {
+      "id": "D01-01",
+      "dimension": "D01",
+      "capability": "vi insert/normal editing modes",
+      "fish": "fish_vi_key_bindings + fish_mode_prompt (share/functions/fish_vi_key_bindings.fish, fish_mode_prompt.fish)",
+      "zsh": "Src/Zle/zle_vi.c (vi widget set) + zle_keymap.c keymaps",
+      "nushell": "reedline EditMode::Vi wired by nu-cli",
+      "ours": "equivalent (repl.rs:135-150 build_edit_mode Emacs+Vi; EditorMode config.rs:44)",
+      "impact": "—",
+      "fix_path": "(equivalent) keep"
+    },
+    {
+      "id": "D01-02",
+      "dimension": "D01",
+      "capability": "emacs binding baseline",
+      "fish": "fish_default_key_bindings",
+      "zsh": "Src/Zle/zle_bindings.c",
+      "nushell": "reedline Emacs",
+      "ours": "equivalent (reedline 0.50 via repl.rs:143)",
+      "impact": "—",
+      "fix_path": "(equivalent) keep"
+    },
+    {
+      "id": "D01-03",
+      "dimension": "D01",
+      "capability": "user-defined editor widgets written in shell code",
+      "fish": "bind + fish_user_key_bindings + commandline builtin (src/builtins/commandline.rs)",
+      "zsh": "zle -N widgets; params BUFFER/CURSOR/PENDING/POSTDISPLAY/LASTWIDGET/WIDGET (Src/Zle/zle_params.c:142-173)",
+      "nushell": "keybindings map to reedline events only; `keybindings listen` for introspection (nu-cli/src/commands/keybindings_listen.rs)",
+      "ours": "partial (repl.rs:51-69 parse_user_bindkeys + shell-function widgets via run_widget_function, shell.rs tests:3527; native widget set is a closed name mapping)",
+      "impact": "high",
+      "fix_path": "expose WidgetOutcome with buffer read/write so a shell function can rewrite the line (extends shell.rs:49)"
+    },
+    {
+      "id": "D01-04",
+      "dimension": "D01",
+      "capability": "live line-buffer access from widget (READLINE_LINE equivalent)",
+      "fish": "commandline -b/-C/-f builtin",
+      "zsh": "Src/Zle/zle_params.c:142 BUFFER, :147 CURSOR, :164 POSTDISPLAY",
+      "nushell": "reedline gives host nothing mid-edit (engine.rs); nu cannot mutate buffer from user code",
+      "ours": "partial (WidgetOutcome passes line+cursor in/out at submit boundary, shell.rs:49; no live mutation, no POSTDISPLAY)",
+      "impact": "high",
+      "fix_path": "same as D01-03; add pending-buffer + cursor-write to the widget contract"
+    },
+    {
+      "id": "D01-05",
+      "dimension": "D01",
+      "capability": "Vim-style text objects (ciw, daw...)",
+      "fish": "— (word motions: src/reader/word_motion.rs)",
+      "zsh": "Src/Zle/textobjects.c:2 (\"ZLE widgets implementing Vim style text objects\")",
+      "nushell": "—",
+      "ours": "missing (reedline word motions only, core_editor/word.rs)",
+      "impact": "low",
+      "fix_path": "post-1.4 editor work; needs widget DSL first (D01-03)"
+    },
+    {
+      "id": "D01-06",
+      "dimension": "D01",
+      "capability": "undo/redo with transient-edit collapsing",
+      "fish": "reader.rs:670-672 transient edits merged in undo history",
+      "zsh": "iwidgets.list:121 \"undo\"",
+      "nushell": "reedline EditCommand Undo/Redo (enums.rs:588-591)",
+      "ours": "equivalent (reedline undo bound in default edit mode; depth unverified — shallow)",
+      "impact": "low",
+      "fix_path": "verify undo spans for expansions when D02 lands"
+    },
+    {
+      "id": "D01-07",
+      "dimension": "D01",
+      "capability": "multi-line editing + submit validation",
+      "fish": "reader validates completeness before accept",
+      "zsh": "zle accept-line + parse check",
+      "nushell": "Validator trait (nu-cli/src/validation.rs)",
+      "ours": "equivalent (ReplValidator repl.rs:601-603 over rubash continuation)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D01-08",
+      "dimension": "D01",
+      "capability": "bracketed paste mode",
+      "fish": "src/input/decode.rs",
+      "zsh": "ZLE bracketed-paste widget",
+      "nushell": "reedline supports",
+      "ours": "equivalent (reedline 0.50; shallow — not hand-verified this pass)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D01-09",
+      "dimension": "D01",
+      "capability": "suffix widgets (auto-suffix-remove/retain)",
+      "fish": "—",
+      "zsh": "iwidgets.list:16-17 auto-suffix-*",
+      "nushell": "—",
+      "ours": "missing",
+      "impact": "low",
+      "fix_path": "niche; only after widget DSL"
+    },
+    {
+      "id": "D01-10",
+      "dimension": "D01",
+      "capability": "key-code reader tool",
+      "fish": "fish_key_reader builtin (src/builtins/fish_key_reader.rs)",
+      "zsh": "zkbd helper (Completion + Functions)",
+      "nushell": "—",
+      "ours": "missing",
+      "impact": "low-med",
+      "fix_path": "ship `niu key-reader` on the product layer using crossterm"
+    },
+    {
+      "id": "D01-11",
+      "dimension": "D01",
+      "capability": "system clipboard keybindings",
+      "fish": "fish_clipboard_copy/paste functions",
+      "zsh": "—",
+      "nushell": "reedline system_clipboard feature",
+      "ours": "ahead (feature enabled, crates/niubash-runtime/Cargo.toml:11; add_system_clipboard_keybindings repl.rs:353)",
+      "impact": "—",
+      "fix_path": "(ahead) keep"
+    },
+    {
+      "id": "D01-12",
+      "dimension": "D01",
+      "capability": "transient prompt (slim prompt for past lines)",
+      "fish": "reader.rs:478 field, :833 fish_transient_prompt var, :1127 toggle",
+      "zsh": "— (p10k plugin territory)",
+      "nushell": "reedline engine.rs:161,775 with_transient_prompt; nu wires TRANSIENT_PROMPT (nu-cli/src/reedline_config.rs)",
+      "ours": "missing (reedline 0.50 ships the hook; repl.rs never calls with_transient_prompt — grep shows no transient use)",
+      "impact": "med-high",
+      "fix_path": "wrap current prompt in a compact one-line transient Prompt and pass to with_transient_prompt in repl.rs:135 builder"
+    },
+    {
+      "id": "D02-01",
+      "dimension": "D02",
+      "capability": "abbreviation storage + token match (name, regex key, per-command scoping, command vs anywhere position)",
+      "fish": "src/abbrs.rs:11 static set; :25-28 Position::{Command,Anywhere}; :36-44 regex + commands scoping; :47-48 replacement functions",
+      "zsh": "—",
+      "nushell": "—",
+      "ours": "missing",
+      "impact": "high",
+      "fix_path": "native editor-layer abbr (sketch below); table in config + `abbr` builtin"
+    },
+    {
+      "id": "D02-02",
+      "dimension": "D02",
+      "capability": "expand at separators (space/enter) before execution",
+      "fish": "src/reader/reader.rs:4338 expand_abbreviation_at_cursor(1) on separator; :4572-4593 expand before execute (even when incomplete)",
+      "zsh": "—",
+      "nushell": "—",
+      "ours": "missing",
+      "impact": "high",
+      "fix_path": "hook expansion into the REPL submit path (repl.rs Signal::Submit) + separator key handling"
+    },
+    {
+      "id": "D02-03",
+      "dimension": "D02",
+      "capability": "cursor placement inside expansion (set-cursor marker)",
+      "fish": "src/builtins/abbr.rs:38 set_cursor_marker",
+      "zsh": "—",
+      "nushell": "—",
+      "ours": "missing",
+      "impact": "med",
+      "fix_path": "part of abbr builtin surface"
+    },
+    {
+      "id": "D02-04",
+      "dimension": "D02",
+      "capability": "function expanders (replacement is a function run at expansion time)",
+      "fish": "src/abbrs.rs:47-48 replacement_is_function; reader.rs:6018-6030 expand replacer",
+      "zsh": "—",
+      "nushell": "—",
+      "ours": "missing",
+      "impact": "med",
+      "fix_path": "call widget-function machinery (shell.rs run_widget_function) for function abbrs"
+    },
+    {
+      "id": "D02-05",
+      "dimension": "D02",
+      "capability": "management builtin: add/rename/show/list/erase/query",
+      "fish": "src/builtins/abbr.rs:29-64 cmds + flags",
+      "zsh": "— (zsh-abbr is a third-party plugin)",
+      "nushell": "—",
+      "ours": "missing",
+      "impact": "med",
+      "fix_path": "implement `abbr` builtin in niubash-runtime over the config table"
+    },
+    {
+      "id": "D02-06",
+      "dimension": "D02",
+      "capability": "persistence across sessions",
+      "fish": "universal var fish_user_abbreviations (src/env_universal_common.rs:644 UVARS_VERSION_3_0 file format)",
+      "zsh": "—",
+      "nushell": "—",
+      "ours": "missing",
+      "impact": "med",
+      "fix_path": "persist in niu config (FullConfig config.rs:384) instead of a universal-var file"
+    },
+    {
+      "id": "D02-07",
+      "dimension": "D02",
+      "capability": "history records the EXPANDED command line",
+      "fish": "expansion replaces the buffer before execution (reader.rs:4572-4593), history receives expanded form",
+      "zsh": "—",
+      "nushell": "—",
+      "ours": "n/a (follows once D02-02 lands)",
+      "impact": "med",
+      "fix_path": "expansion must mutate the submitted line, not just the display"
+    },
+    {
+      "id": "D02-08",
+      "dimension": "D02",
+      "capability": "design decision recorded",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "—",
+      "ours": "missing — **recommendation: native editor-layer abbr.** Sketch: store abbrs in FullConfig + runtime table; in repl.rs, on SPACE/ENTER key events, if the token left of the cursor matches, run the expansion as a ReedlineEvent sequence (send EditCommands replacing the token) so undo collapses it (reedline enums.rs:588), then let execute see the expanded line (acceptance: fish D02-01/02/07 semantics). Engine `bind` (#185) is NOT required for this; the product-layer REPL owns the keys.",
+      "impact": "high",
+      "fix_path": "separate lane wt??/abbr-native"
+    },
+    {
+      "id": "D03-01",
+      "dimension": "D03",
+      "capability": "token-class highlighting while typing",
+      "fish": "src/highlight/highlight.rs:1327 HighlightRole enum",
+      "zsh": "— core (zle_highlight covers regions only, Src/Zle/zle_refresh.c:207-211)",
+      "nushell": "nu-cli/src/syntax_highlight.rs + nu-color-config",
+      "ours": "partial (17 SyntaxKind classes, syntax_highlighting.rs:16-36; style keys nushell-compatible names)",
+      "impact": "low-med",
+      "fix_path": "add error/keyword-argument/glob classes toward fish's role set"
+    },
+    {
+      "id": "D03-02",
+      "dimension": "D03",
+      "capability": "unknown/invalid command colored as error at type time",
+      "fish": "highlight.rs command-not-found check via parser + completions",
+      "zsh": "—",
+      "nushell": "nu validator/highlighter marks errors",
+      "ours": "partial (UnknownToken kind exists, syntax_highlighting.rs:19; whether it distinguishes \"will not resolve\" is unverified — shallow)",
+      "impact": "med",
+      "fix_path": "validate token against builtin_names() + PATH at highlight time"
+    },
+    {
+      "id": "D03-03",
+      "dimension": "D03",
+      "capability": "autosuggestion validity re-check (don't suggest dead commands)",
+      "fish": "reader.rs:49 autosuggest_validate_from_history",
+      "zsh": "—",
+      "nushell": "—",
+      "ours": "missing (hinter returns raw history, autosuggest.rs:40)",
+      "impact": "low",
+      "fix_path": "validate hint head before display"
+    },
+    {
+      "id": "D03-04",
+      "dimension": "D03",
+      "capability": "live parse-error marking",
+      "fish": "fish highlights syntax errors live",
+      "zsh": "—",
+      "nushell": "Validator returns error message position",
+      "ours": "partial (ReplValidator blocks submit only, repl.rs:601; no error span rendering)",
+      "impact": "low",
+      "fix_path": "reuse rubash parser error offsets in the highlighter"
+    },
+    {
+      "id": "D03-05",
+      "dimension": "D03",
+      "capability": "user-configurable highlight styles",
+      "fish": "fish_color_* universal vars (src/env_dispatch.rs dispatch)",
+      "zsh": "zle_highlight",
+      "nushell": "nu color_config block",
+      "ours": "equivalent (SyntaxHighlightConfig config.rs:303)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D04-01",
+      "dimension": "D04",
+      "capability": "history-prefix autosuggestion inline",
+      "fish": "reader.rs:474-475 autosuggest_ok, :635 autosuggestion field",
+      "zsh": "— core (zsh-autosuggestions is a plugin)",
+      "nushell": "reedline Hinter (nu HistoryAutosuggestHinter equivalents in nu-cli)",
+      "ours": "partial (HistoryAutosuggestHinter autosuggest.rs:11-46: latest prefix match only)",
+      "impact": "med",
+      "fix_path": "rank candidates (freq/recency), respect multi-line entries"
+    },
+    {
+      "id": "D04-02",
+      "dimension": "D04",
+      "capability": "fuzzy/subsequence history suggestion",
+      "fish": "src/complete.rs:33 StringFuzzyMatch used by history search paths",
+      "zsh": "—",
+      "nushell": "reedline search supports substring/fuzzy via SearchQuery",
+      "ours": "missing (prefix-only, autosuggest.rs:40)",
+      "impact": "med",
+      "fix_path": "switch to reedline fuzzy SearchQuery + dedupe"
+    },
+    {
+      "id": "D04-03",
+      "dimension": "D04",
+      "capability": "word-wise accept of suggestion (shift-right)",
+      "fish": "fish accept-one-word binding",
+      "zsh": "plugin",
+      "nushell": "reedline CompleteHistoryWord event",
+      "ours": "partial (present in reedline 0.50; binding surfaced in product — shallow, unverified)",
+      "impact": "low",
+      "fix_path": "verify + add default keybinding if missing"
+    },
+    {
+      "id": "D04-04",
+      "dimension": "D04",
+      "capability": "multiple hint sources chainable",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "single Hinter trait (reedline hinter/mod)",
+      "ours": "partial (single hinter wired, repl.rs:151)",
+      "impact": "low",
+      "fix_path": "composable hinter list when second source exists"
+    },
+    {
+      "id": "D04-05",
+      "dimension": "D04",
+      "capability": "type-ahead protection during slow renders",
+      "fish": "fish input queue handling (src/input/input.rs)",
+      "zsh": "ZLE handles pending input",
+      "nushell": "reedline input buffering",
+      "ours": "ahead (typeahead_guard.rs dedicated module)",
+      "impact": "—",
+      "fix_path": "(ahead) keep"
+    },
+    {
+      "id": "D05-01",
+      "dimension": "D05",
+      "capability": "incremental type-to-narrow search (Ctrl+R)",
+      "fish": "src/reader/history_search.rs (SearchMode + smartcase_flags :21)",
+      "zsh": "Src/Zle/zle_hist.c incremental (incl. pattern) search",
+      "nushell": "reedline Search menu",
+      "ours": "partial (history ListMenu repl.rs:129 — menu browsing, not buffer-driven incremental search; shallow on UX details)",
+      "impact": "med",
+      "fix_path": "bind reedline Search event with SearchHistory corpus to Ctrl+R"
+    },
+    {
+      "id": "D05-02",
+      "dimension": "D05",
+      "capability": "full-screen history pager UI",
+      "fish": "reader.rs:710 history_pager (fish 4.0 GUI pager)",
+      "zsh": "—",
+      "nushell": "nu history explorer via menus",
+      "ours": "missing",
+      "impact": "med",
+      "fix_path": "product-layer pager over LiveFileBackedHistory"
+    },
+    {
+      "id": "D05-03",
+      "dimension": "D05",
+      "capability": "smartcase / pattern matching in search",
+      "fish": "history_search.rs:21 smartcase_flags",
+      "zsh": "zle pattern search widgets",
+      "nushell": "reedline SearchQuery options",
+      "ours": "missing",
+      "impact": "low-med",
+      "fix_path": "pass SearchQuery case-insensitive + regex variants"
+    },
+    {
+      "id": "D05-04",
+      "dimension": "D05",
+      "capability": "multi-session shared, live-merged history",
+      "fish": "src/history/ merges all sessions on read (file.rs + history.rs)",
+      "zsh": "SHARE_HISTORY + cross-process fcntl lock (Src/hist.c:2877-2903)",
+      "nushell": "SqliteBackedHistory shared db with session ids (nu-cli/src/repl.rs:37-38)",
+      "ours": "equivalent-partial (LiveFileBackedHistory modes shared/session/private, history.rs:62-84 + config.rs:62-84; live re-read on search)",
+      "impact": "low",
+      "fix_path": "keep; document semantics"
+    },
+    {
+      "id": "D05-05",
+      "dimension": "D05",
+      "capability": "per-entry timestamps",
+      "fish": "src/history/history.rs:163-195 Timestamps + last_added_timestamp :251",
+      "zsh": "EXTENDED_HISTORY (Src/hist.c readhistfile :2676)",
+      "nushell": "sqlite row timestamps",
+      "ours": "missing (no timestamp stored — grep shows none in history.rs)",
+      "impact": "med",
+      "fix_path": "extend entry format (versioned) with ts; surface in `history` output"
+    },
+    {
+      "id": "D05-06",
+      "dimension": "D05",
+      "capability": "cwd annotation + path restore on replay",
+      "fish": "history.rs:165 required_paths",
+      "zsh": "—",
+      "nushell": "sqlite stores cwd (nu history sqlite schema)",
+      "ours": "missing",
+      "impact": "med-low",
+      "fix_path": "store cwd alongside entry (fuels `history --cwd` filters)"
+    },
+    {
+      "id": "D05-07",
+      "dimension": "D05",
+      "capability": "dedup strategies",
+      "fish": "history/mod.rs:7 dedupe + sort by timestamp",
+      "zsh": "HIST_IGNORE_*_DUPS option family",
+      "nushell": "sqlite PRIMARY KEY dedup",
+      "ours": "partial (file append model; dedup behavior unverified — shallow)",
+      "impact": "low",
+      "fix_path": "define dedup at load/write"
+    },
+    {
+      "id": "D05-08",
+      "dimension": "D05",
+      "capability": "history management commands (search/save/show/merge/delete/import/export)",
+      "fish": "src/builtins/history.rs subcommands",
+      "zsh": "fc/histcb + widgets",
+      "nushell": "nu-cli/src/commands/history/ (history_, import, session)",
+      "ours": "partial (rubash bash-parity history builtin, src/builtins/history.rs; no search/show subcommands)",
+      "impact": "low-med",
+      "fix_path": "extend builtin with list/search/show on the product layer"
+    },
+    {
+      "id": "D05-09",
+      "dimension": "D05",
+      "capability": "session identity in entries",
+      "fish": "HistoryItemId/HistorySessionId in reedline-based fish (src/history/history.rs ids)",
+      "zsh": "—",
+      "nushell": "HistorySessionId in sqlite rows",
+      "ours": "partial (reedline HistorySessionId used, history.rs:24-30 imports)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D05-10",
+      "dimension": "D05",
+      "capability": "leading-space / exclusion prefix support",
+      "fish": "fish: space-prefix not recorded",
+      "zsh": "HIST_IGNORE_SPACE",
+      "nushell": "reedline history_exclusion_prefix",
+      "ours": "equivalent (history_exclusion_prefix wired repl.rs:138)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D06-01",
+      "dimension": "D06",
+      "capability": "columnar completion menu with column memory",
+      "fish": "src/pager.rs:147-148 (\"column memory\")",
+      "zsh": "Src/Zle/complist.c list interface",
+      "nushell": "reedline ColumnarMenu",
+      "ours": "partial (ColumnarMenu with width bounds repl.rs:190-195; no column memory noted)",
+      "impact": "low",
+      "fix_path": "upstream column memory or accept"
+    },
+    {
+      "id": "D06-02",
+      "dimension": "D06",
+      "capability": "description pane",
+      "fish": "src/pager.rs descriptions",
+      "zsh": "complist descriptions via zstyle",
+      "nushell": "DescriptionMenu + IdeMenu (reedline 0.52 menu/)",
+      "ours": "equivalent (DescriptionMode::PreferRight repl.rs:195)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D06-03",
+      "dimension": "D06",
+      "capability": "search-as-you-type inside menu",
+      "fish": "src/pager.rs:34-35 search_field + editable line",
+      "zsh": "menu-select accepts typed prefix",
+      "nushell": "menus filter on input",
+      "ours": "partial (reedline menu filtering unverified — shallow)",
+      "impact": "med",
+      "fix_path": "verify; if absent, feed typed chars into completer filter"
+    },
+    {
+      "id": "D06-04",
+      "dimension": "D06",
+      "capability": "interactive menu-select traversal mode",
+      "fish": "pager selection + accept",
+      "zsh": "complist.c:157-159 menu-select widget (ZLE_MENUCMP)",
+      "nushell": "reedline menu events",
+      "ours": "equivalent (reedline menus accept via Enter/Right; shallow)",
+      "impact": "low",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D06-05",
+      "dimension": "D06",
+      "capability": "three-pane IDE menu",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "reedline 0.52 IdeMenu (menu/ide_menu.rs)",
+      "ours": "missing (reedline 0.50 lacks it)",
+      "impact": "low",
+      "fix_path": "reedline 0.52+ upgrade path"
+    },
+    {
+      "id": "D06-06",
+      "dimension": "D06",
+      "capability": "bounded pager for large candidate sets",
+      "fish": "pager.rs:75 max columns logic",
+      "zsh": "complist paging",
+      "nushell": "page_size config",
+      "ours": "equivalent (page_size + completion_page_size repl.rs:177,193)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D07-01",
+      "dimension": "D07",
+      "capability": "candidate descriptions",
+      "fish": "src/complete.rs:49-66 description strings",
+      "zsh": "_describe + zstyle descriptions",
+      "nushell": "Signature/extra descriptions",
+      "ours": "equivalent (descriptions flow completer.rs:450-455, 516-529)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D07-02",
+      "dimension": "D07",
+      "capability": "user-authorable per-command completions in shell code",
+      "fish": "complete -c X -a '...' (src/builtins/complete.rs) + completion functions",
+      "zsh": "compdef functions + compinit autoload (Completion/compinit:72+)",
+      "nushell": "custom completer closures + external_completer (nu-cli/src/completions/custom_completions.rs)",
+      "ours": "partial (NIU_COMPDEFS cmd->function bridge shell.rs:116-118, load_user_compdefs repl.rs:1189; contract narrower: no per-word-position dispatch options)",
+      "impact": "med-high",
+      "fix_path": "document + extend compdef contract (word/previous-word/leading options) over the existing bridge"
+    },
+    {
+      "id": "D07-03",
+      "dimension": "D07",
+      "capability": "curated ecosystem corpus",
+      "fish": "1095 completion files (share/completions/)",
+      "zsh": "391 command files (Completion/Unix/Command/) + 53 self (Completion/Zsh/Command/)",
+      "nushell": "signatures built into commands",
+      "ours": "ahead-ish (winuxcmd_assets.rs + external.rs asset-driven completion data; scale unmeasured — shallow)",
+      "impact": "low",
+      "fix_path": "grow asset corpus with completion data per tool"
+    },
+    {
+      "id": "D07-04",
+      "dimension": "D07",
+      "capability": "import foreign completion scripts",
+      "fish": "—",
+      "zsh": "— (native ecosystem)",
+      "nushell": "—",
+      "ours": "ahead (completion/bash_import.rs imports bash-completion scripts)",
+      "impact": "—",
+      "fix_path": "(ahead) keep investing; it is a moat vs fish/nu"
+    },
+    {
+      "id": "D07-05",
+      "dimension": "D07",
+      "capability": "--help scraping / dynamic option completion",
+      "fish": "— (static files)",
+      "zsh": "—",
+      "nushell": "—",
+      "ours": "ahead-ish (cmd -h scrape + 3-level cache, per docs/planning/niubash-zsh-gap-analysis.md pillar table)",
+      "impact": "—",
+      "fix_path": "(ahead) verify cache invalidation"
+    },
+    {
+      "id": "D07-06",
+      "dimension": "D07",
+      "capability": "self-completion of the shell's own commands/options",
+      "fish": "share/completions includes fish's own",
+      "zsh": "53 files Completion/Zsh/Command",
+      "nushell": "signature-derived automatic",
+      "ours": "partial (host completion reads builtin_names(), rubash src/executor/builtin_names.rs:101; option-level self-completion shallow)",
+      "impact": "low-med",
+      "fix_path": "generate option tables from builtin help_texts.rs"
+    },
+    {
+      "id": "D07-07",
+      "dimension": "D07",
+      "capability": "path completions with escaping correctness",
+      "fish": "src/complete.rs file completion",
+      "zsh": "_files",
+      "nushell": "directory completions (nu-cli/src/completions/directory_completions.rs)",
+      "ours": "equivalent (CwdPathCandidate completer.rs:304-340; escaped-word test completer.rs:647)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D07-08",
+      "dimension": "D07",
+      "capability": "fuzzy candidate matching",
+      "fish": "src/complete.rs:33 StringFuzzyMatch",
+      "zsh": "matcher zstyle (compmatch.c)",
+      "nushell": "completion_options fuzzy flag",
+      "ours": "missing (prefix filter only, completer.rs:481)",
+      "impact": "med",
+      "fix_path": "add subsequence matcher with score, config-gated"
+    },
+    {
+      "id": "D07-09",
+      "dimension": "D07",
+      "capability": "completion result caching",
+      "fish": "in-memory per-token cache",
+      "zsh": "per-call",
+      "nushell": "—",
+      "ours": "ahead (3-level cache per zsh-gap doc)",
+      "impact": "—",
+      "fix_path": "(ahead) keep"
+    },
+    {
+      "id": "D07-10",
+      "dimension": "D07",
+      "capability": "bash programmable completion builtins",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "—",
+      "ours": "ahead (compgen/complete/compopt port: rubash src/complete/pcomplete.rs, pcomplib.rs, builtins/complete.rs)",
+      "impact": "—",
+      "fix_path": "(ahead) unique compatibility moat"
+    },
+    {
+      "id": "D07-11",
+      "dimension": "D07",
+      "capability": "completion config surface (case, filtering, ordering)",
+      "fish": "fish_complete_ envs; pager options",
+      "zsh": "zstyle styles ( dozens of :completion:* keys)",
+      "nushell": "completion_options (nu)",
+      "ours": "partial (MenuConfig config.rs:154; no case-sensitivity/matcher styles)",
+      "impact": "med",
+      "fix_path": "expose case/fuzzy/sort knobs in FullConfig"
+    },
+    {
+      "id": "D08-01",
+      "dimension": "D08",
+      "capability": "bind/bindkey builtin to set keyseq->function at runtime",
+      "fish": "src/builtins/bind.rs (bind, -K presets, fish_user_key_bindings)",
+      "zsh": "Src/Zle/zle_keymap.c:212+ keymap management",
+      "nushell": "keybindings config table + `keybindings` commands (nu-cli/src/commands/keybindings*.rs)",
+      "ours": "partial (engine bind is a stub: validates options, prints defaults on -p, rubash src/builtins/bind.rs:24-93; product NIU_BINDKEYS env parse repl.rs:56-69)",
+      "impact": "high (#185)",
+      "fix_path": "implement NIU_BINDKEYS as first-class config + real bind dispatch in product layer; keep engine bind bash-compatible in output only"
+    },
+    {
+      "id": "D08-02",
+      "dimension": "D08",
+      "capability": "keymap switching / named keymaps",
+      "fish": "fish_default_key_bindings / fish_vi_key_bindings switch functions",
+      "zsh": "keymaps emacs/vicmd/main aliasing (zle_keymap.c:74-76)",
+      "nushell": "EditMode switch config",
+      "ours": "partial (EditorMode Emacs/Vi config.rs:44; no runtime switch command)",
+      "impact": "low-med",
+      "fix_path": "`niu mode vi/emacs` verb or Ctrl-bound toggle"
+    },
+    {
+      "id": "D08-03",
+      "dimension": "D08",
+      "capability": "list/introspect bindings",
+      "fish": "bind -L/-K/-P",
+      "zsh": "bindkey -l/-L/-D",
+      "nushell": "keybindings_list.rs",
+      "ours": "partial (bind -p prints the 10 default arrows only, bind.rs:11-22,33-38; no real listing)",
+      "impact": "low-med",
+      "fix_path": "list actual effective keybindings from reedline Keybindings"
+    },
+    {
+      "id": "D08-04",
+      "dimension": "D08",
+      "capability": "bind arbitrary keyseq strings (\"\\e[1;5C\" style)",
+      "fish": "yes (key syntax in bind builtin)",
+      "zsh": "yes",
+      "nushell": "yes (reedline KeyEvent tables)",
+      "ours": "partial (parse_user_bindkeys accepts `keyspec:widget` fixed syntax repl.rs:51-69; no raw keyseq grammar)",
+      "impact": "med",
+      "fix_path": "adopt reedline KeyEvent parser for arbitrary specs"
+    },
+    {
+      "id": "D09-01",
+      "dimension": "D09",
+      "capability": "POSIX/bash core semantics (functions, loops, case, test, [[ ]], arithmetic, arrays, traps)",
+      "fish": "different language entirely (no POSIX; functions/args/`set` model)",
+      "zsh": "superset, mostly bash-compatible",
+      "nushell": "different language (structured pipeline)",
+      "ours": "equivalent (rubash parser/executor suites; 86/86 GNU upstream tests claim per docs/planning/niubash-zsh-gap-analysis.md)",
+      "impact": "—",
+      "fix_path": "keep at parity; this is the product"
+    },
+    {
+      "id": "D09-02",
+      "dimension": "D09",
+      "capability": "parameter expansion flags (P/j/f/z/S/D/A)",
+      "fish": "—",
+      "zsh": "Src/subst.c:2163-2440 case arms",
+      "nushell": "—",
+      "ours": "missing (deliberate; bash ${var...} forms covered instead)",
+      "impact": "low",
+      "fix_path": "none (non-goal)"
+    },
+    {
+      "id": "D09-03",
+      "dimension": "D09",
+      "capability": "glob qualifiers (*(.) for dirs, e.g. m-7)",
+      "fish": "—",
+      "zsh": "Src/glob.c:1390+ qualflags dispatch",
+      "nushell": "—",
+      "ours": "missing (deliberate)",
+      "impact": "low",
+      "fix_path": "none (non-goal); consider `find`/fd wrappers"
+    },
+    {
+      "id": "D09-04",
+      "dimension": "D09",
+      "capability": "history modifiers :h/:t/:r/:e on params and events",
+      "fish": "—",
+      "zsh": "Src/subst.c modifiers",
+      "nushell": "—",
+      "ours": "missing (bash ${var%…}/#… cover most; event-designator modifiers partial)",
+      "impact": "low",
+      "fix_path": "maybe :t/:h as product-layer helper only"
+    },
+    {
+      "id": "D09-05",
+      "dimension": "D09",
+      "capability": "try/always block",
+      "fish": "—",
+      "zsh": "Src/parse.c:1610-1625 always block",
+      "nushell": "try/catch with error records (nu-protocol errors)",
+      "ours": "missing (bash trap ERR partial coverage)",
+      "impact": "low",
+      "fix_path": "non-goal; document trap ERR idiom"
+    },
+    {
+      "id": "D09-06",
+      "dimension": "D09",
+      "capability": "event designators + fc re-execution",
+      "fish": "! events behind feature flag; fc builtin",
+      "zsh": "full",
+      "nushell": "—",
+      "ours": "equivalent (rubash src/history_expand.rs, src/builtins/fc.rs)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D09-07",
+      "dimension": "D09",
+      "capability": "${var@…} transforms (Q/A/a/K/k/L/U/P)",
+      "fish": "—",
+      "zsh": "different mechanism",
+      "nushell": "—",
+      "ours": "equivalent (rubash src/executor/parameter_transforms.rs:11,204,342 incl. array transforms)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D09-08",
+      "dimension": "D09",
+      "capability": "scoping: local/dynamic scope, export -n, namerefs",
+      "fish": "set -l/-g/-U scopes",
+      "zsh": "local + typeset + private params (Modules/param_private)",
+      "nushell": "let/mut/const scopes",
+      "ours": "equivalent (declare_local.rs, local_helpers.rs, arrayref.rs)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D09-09",
+      "dimension": "D09",
+      "capability": "arithmetic language (ternary, bases, assignment ops)",
+      "fish": "math builtin (separate, with scales/bases)",
+      "zsh": "arithmetic + mathfunc functions in (( ))",
+      "nushell": "typed expressions with units",
+      "ours": "partial-equivalent (executor/arithmetic; no mathfunc functions — see D11)",
+      "impact": "low",
+      "fix_path": "mathfunc is a winuxcmd/external concern"
+    },
+    {
+      "id": "D09-10",
+      "dimension": "D09",
+      "capability": "select/case/coproc/process substitution",
+      "fish": "select-like loops via read; psub for procsub",
+      "zsh": "all present",
+      "nushell": "different model",
+      "ours": "equivalent (parser/select_command.rs, coproc_command.rs, process_substitution.rs)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D09-11",
+      "dimension": "D09",
+      "capability": "extglob + globstar",
+      "fish": "different wildcard model (src/wildcard.rs, fuzzy glob)",
+      "zsh": "kshglob + recursive **",
+      "nushell": "glob command (nu-glob crate)",
+      "ours": "equivalent (conditional/extglob.rs, parser/extglob_pattern.rs; globstar glob.rs:149-161)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D09-12",
+      "dimension": "D09",
+      "capability": "functions as first-class (function command, autoload)",
+      "fish": "function builtin + autoload (src/autoload.rs)",
+      "zsh": "functions + autoload -Xz",
+      "nushell": "closures + module exports",
+      "ours": "partial (bash functions + autoload via FPATH/source; no lazy autoload index)",
+      "impact": "low",
+      "fix_path": "lazy function index when startup cost demands it"
+    },
+    {
+      "id": "D10-01",
+      "dimension": "D10",
+      "capability": "bash-61 builtin floor",
+      "fish": "partial (fish has a different set)",
+      "zsh": "superset",
+      "nushell": "—",
+      "ours": "equivalent (builtin_names.rs:110-168 BASH_61 doc-sync test)",
+      "impact": "—",
+      "fix_path": "keep; this test is the guardrail"
+    },
+    {
+      "id": "D10-02",
+      "dimension": "D10",
+      "capability": "abbreviation builtin",
+      "fish": "src/builtins/abbr.rs",
+      "zsh": "—",
+      "nushell": "—",
+      "ours": "missing",
+      "impact": "high",
+      "fix_path": "D02"
+    },
+    {
+      "id": "D10-03",
+      "dimension": "D10",
+      "capability": "string manipulation family (join/split/match/replace/escape/sub/trim/pad/repeat/shorten/collect/length)",
+      "fish": "src/builtins/string/ (15 files)",
+      "zsh": "via subst flags + external tools",
+      "nushell": "str-* commands (nu-command/src/strings)",
+      "ours": "missing (winuxcmd sed/awk externals)",
+      "impact": "med",
+      "fix_path": "product-layer `str` builtin delegating to a Rust string engine; beats sed.exe robustness on Windows"
+    },
+    {
+      "id": "D10-04",
+      "dimension": "D10",
+      "capability": "math command (scales, bases, bit ops, abs/max/min...)",
+      "fish": "src/builtins/math.rs",
+      "zsh": "Modules/mathfunc.mdd",
+      "nushell": "math-* commands",
+      "ours": "missing (bash $(( )) + external bc)",
+      "impact": "med",
+      "fix_path": "`math` builtin backed by the existing arithmetic evaluator"
+    },
+    {
+      "id": "D10-05",
+      "dimension": "D10",
+      "capability": "path manipulation builtin (resolve/basename/dirname/filter/normalize)",
+      "fish": "src/builtins/path.rs",
+      "zsh": "via :h/:t modifiers",
+      "nushell": "path-* commands",
+      "ours": "missing (winuxcmd dirname/basename)",
+      "impact": "med",
+      "fix_path": "Windows-first `path` builtin; native paths are a differentiator"
+    },
+    {
+      "id": "D10-06",
+      "dimension": "D10",
+      "capability": "date/time builtins",
+      "fish": "via date external",
+      "zsh": "Modules/datetime.c strftime/strconv (:42-99)",
+      "nushell": "date-* commands with typed dates",
+      "ours": "partial (printf %()T bash-parity; no strftime builtin)",
+      "impact": "low-med",
+      "fix_path": "`date` builtin wrapping chrono"
+    },
+    {
+      "id": "D10-07",
+      "dimension": "D10",
+      "capability": "random",
+      "fish": "src/builtins/random.rs",
+      "zsh": "Modules/random.mdd",
+      "nushell": "random commands",
+      "ours": "missing (external)",
+      "impact": "low",
+      "fix_path": "trivial builtin"
+    },
+    {
+      "id": "D10-08",
+      "dimension": "D10",
+      "capability": "argparse (option parser for functions)",
+      "fish": "src/builtins/argparse.rs",
+      "zsh": "zparseopts (Modules/zutil)",
+      "nushell": "signatures + rest params",
+      "ours": "missing (getopts only, bash parity)",
+      "impact": "med",
+      "fix_path": "needed once function-based completions/widgets grow (D07-02, D01-03)"
+    },
+    {
+      "id": "D10-09",
+      "dimension": "D10",
+      "capability": "commandline (query/mutate editor buffer from shell code)",
+      "fish": "src/builtins/commandline.rs",
+      "zsh": "ZLE params zle_params.c:142-173",
+      "nushell": "—",
+      "ours": "missing (WidgetOutcome partial, D01-04)",
+      "impact": "high",
+      "fix_path": "same fix as D01-03/04"
+    },
+    {
+      "id": "D10-10",
+      "dimension": "D10",
+      "capability": "emit / custom events",
+      "fish": "src/builtins/emit.rs + event.rs fire",
+      "zsh": "zsh/zselect + zshaddhistory hacks",
+      "nushell": "hooks",
+      "ours": "missing",
+      "impact": "low-med",
+      "fix_path": "pair with D17-07"
+    },
+    {
+      "id": "D10-11",
+      "dimension": "D10",
+      "capability": "status (job summary, features, login, variables)",
+      "fish": "src/builtins/status.rs:175 print_features",
+      "zsh": "—",
+      "nushell": "version/commands verbs",
+      "ours": "partial (`niu doctor` + `niu --version` cover setup health, not shell state query)",
+      "impact": "low",
+      "fix_path": "`niu status` verb"
+    },
+    {
+      "id": "D10-12",
+      "dimension": "D10",
+      "capability": "zpty / job-in-pty control",
+      "fish": "—",
+      "zsh": "Modules/zpty.mdd",
+      "nushell": "—",
+      "ours": "missing",
+      "impact": "low",
+      "fix_path": "Windows ConPTY could actually do this well"
+    },
+    {
+      "id": "D10-13",
+      "dimension": "D10",
+      "capability": "networking builtins (zftp, ztcp/socket, http)",
+      "fish": "—",
+      "zsh": "Modules/zftp.mdd, tcp.mdd, socket.mdd",
+      "nushell": "http get/post etc. (nu-command/src/network)",
+      "ours": "missing (WinHttp used internally by self_update only, Cargo.toml windows-sys features)",
+      "impact": "med",
+      "fix_path": "`http` builtin via WinHttp — zero new deps"
+    },
+    {
+      "id": "D10-14",
+      "dimension": "D10",
+      "capability": "TUI builtins (zcurses, zle, complist)",
+      "fish": "—",
+      "zsh": "Modules/curses.mdd; Zle modules",
+      "nushell": "nu-explore TUI",
+      "ours": "partial (interactive_menu.rs crossterm menus, plugins/ui.rs — product verbs, not user-scriptable TUI)",
+      "impact": "low-med",
+      "fix_path": "expose menu toolkit to widgets post-D01-03"
+    },
+    {
+      "id": "D10-15",
+      "dimension": "D10",
+      "capability": "misc modules (db_gdbm, pcre, stat, mapfile(zsh), watch, termcap/terminfo, langinfo, prof, clone, cap)",
+      "fish": "—",
+      "zsh": "Src/Modules/*.mdd (31 modules)",
+      "nushell": "—",
+      "ours": "missing (deliberate; platform-specific)",
+      "impact": "low",
+      "fix_path": "none; case-by-case if requested"
+    },
+    {
+      "id": "D11-01",
+      "dimension": "D11",
+      "capability": "typed values through the pipeline (tables/records/lists)",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "Value enum: Bool/Int/Float/Filesize/Duration/Date/Range/Record/List/Closure/Binary (nu-protocol/src/value/mod.rs:52+, value/duration.rs, filesize.rs)",
+      "ours": "missing (deliberate: bash text streams)",
+      "impact": "low (paradigm)",
+      "fix_path": "none in core; consider `table`-style pretty-printer wrapper over winuxcmd output"
+    },
+    {
+      "id": "D11-02",
+      "dimension": "D11",
+      "capability": "cell-path access into structured data",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "cell_path_completions.rs + Value record access",
+      "ours": "missing (deliberate)",
+      "impact": "low",
+      "fix_path": "none"
+    },
+    {
+      "id": "D11-03",
+      "dimension": "D11",
+      "capability": "interactive data explorer",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "crates/nu-explore (src/pager, views)",
+      "ours": "missing",
+      "impact": "low-med",
+      "fix_path": "`niu explore` over json/csv via asset data"
+    },
+    {
+      "id": "D11-04",
+      "dimension": "D11",
+      "capability": "dataframe engine",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "nu_plugin_polars",
+      "ours": "missing (deliberate)",
+      "impact": "low",
+      "fix_path": "none"
+    },
+    {
+      "id": "D11-05",
+      "dimension": "D11",
+      "capability": "database access",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "nu-command/src/database",
+      "ours": "missing",
+      "impact": "low",
+      "fix_path": "none"
+    },
+    {
+      "id": "D12-01",
+      "dimension": "D12",
+      "capability": "jobs/fg/bg/disown/wait core",
+      "fish": "src/builtins/jobs.rs, fg.rs, disown.rs, wait.rs",
+      "zsh": "Src/jobs.c",
+      "nushell": "job list/send/recv/unfreeze/freeze (nu-command/src/experimental/job_*.rs)",
+      "ours": "equivalent (rubash src/jobs/ table.rs+signals.rs; builtins jobs.rs, fg_bg.rs, disown.rs, wait.rs)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D12-02",
+      "dimension": "D12",
+      "capability": "job lifecycle notifications",
+      "fish": "job_exit/process_exit events (src/event.rs:231-242)",
+      "zsh": "NOTIFY option; job notify messages",
+      "nushell": "—",
+      "ours": "partial (BackgroundJobs prompt segment count only, prompt_segments.rs:24; no async notify)",
+      "impact": "med-low",
+      "fix_path": "fire postcmd-style hook or toast on job completion"
+    },
+    {
+      "id": "D12-03",
+      "dimension": "D12",
+      "capability": "terminal ownership/grouping",
+      "fish": "JobGroup with wants_terminal (src/job_group.rs:49-94)",
+      "zsh": "MONITOR + tcsetpgrp dance",
+      "nushell": "—",
+      "ours": "partial (Windows has no pgrp semantics; ConPTY constraints documented in docs/windows-signal-compatibility.md)",
+      "impact": "—",
+      "fix_path": "platform noise; document"
+    },
+    {
+      "id": "D12-04",
+      "dimension": "D12",
+      "capability": "signal handling + trap",
+      "fish": "src/signal.rs + traps",
+      "zsh": "full POSIX",
+      "nushell": "kill + limited traps",
+      "ours": "partial (trap.rs DEBUG/ERR/RETURN wired, trap_exec.rs:675-758; Windows signal delivery limits known)",
+      "impact": "med",
+      "fix_path": "keep closing Windows signal gaps (existing docs)"
+    },
+    {
+      "id": "D12-05",
+      "dimension": "D12",
+      "capability": "wait -n (next job)",
+      "fish": "wait builtin",
+      "zsh": "wait -n",
+      "nushell": "job recv",
+      "ours": "partial (wait.rs — -n support unverified, shallow)",
+      "impact": "low",
+      "fix_path": "verify + implement"
+    },
+    {
+      "id": "D12-06",
+      "dimension": "D12",
+      "capability": "process substitution",
+      "fish": "psub temp-file approach (share/functions/psub.fish)",
+      "zsh": "=(...) form",
+      "nushell": "different (nu closures over externals)",
+      "ours": "equivalent (parser/process_substitution.rs, real fd-based)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D13-01",
+      "dimension": "D13",
+      "capability": "prompt as user code",
+      "fish": "fish_prompt function (share/functions/fish_prompt.fish)",
+      "zsh": "PROMPT + PROMPT_SUBST (promptexpand Src/prompt.c:182, % sequences :809)",
+      "nushell": "PROMPT_COMMAND closure (nu-cli/src/prompt.rs)",
+      "ours": "partial (template + segment catalog config.rs:12-29; Custom(String) segment is static text, prompt_segments.rs:24-35)",
+      "impact": "med-high",
+      "fix_path": "let a segment be a niu function name evaluated per draw (needs cheap function-call path)"
+    },
+    {
+      "id": "D13-02",
+      "dimension": "D13",
+      "capability": "right prompt",
+      "fish": "fish_right_prompt function",
+      "zsh": "RPROMPT/RPS1",
+      "nushell": "PROMPT_COMMAND_RIGHT (reedline_config.rs)",
+      "ours": "partial (right_prompt_format template + right_prompt_elements, config.rs:18,26; static)",
+      "impact": "med",
+      "fix_path": "same function-segment mechanism as D13-01"
+    },
+    {
+      "id": "D13-03",
+      "dimension": "D13",
+      "capability": "async prompt execution",
+      "fish": "prompt runs on background threads (src/threads.rs, src/reader/iothreads.rs)",
+      "zsh": "— (sync; themes hack via precmd caching)",
+      "nushell": "— (sync)",
+      "ours": "missing (segments computed synchronously in the draw path)",
+      "impact": "med-high",
+      "fix_path": "thread pool + timeout + cached segment values; prerequisite for a git segment"
+    },
+    {
+      "id": "D13-04",
+      "dimension": "D13",
+      "capability": "vi-mode prompt indicator",
+      "fish": "fish_mode_prompt function",
+      "zsh": "—",
+      "nushell": "render_prompt_indicator(PromptEditMode)",
+      "ours": "partial (repl.rs:674 ignores the mode parameter — `_prompt_mode`; one static indicator)",
+      "impact": "med",
+      "fix_path": "render per-mode chars for Insert/Normal/Replace"
+    },
+    {
+      "id": "D13-05",
+      "dimension": "D13",
+      "capability": "git/VCS segment",
+      "fish": "fish_git_prompt/fish_vcs_prompt (share/functions/fish_git_prompt.fish:9+)",
+      "zsh": "Functions/VCS_Info (24 files: VCS_INFO_adjust, bydir_detect, formats, hook, get_cmd...)",
+      "nushell": "nu_plugin_gstat plugin",
+      "ours": "missing (no git SegmentId, prompt_segments.rs:24-35)",
+      "impact": "high",
+      "fix_path": "add Git segment once D13-03 lands (git status --porcelain=v2 -b, cached)"
+    },
+    {
+      "id": "D13-06",
+      "dimension": "D13",
+      "capability": "p10k-style presets",
+      "fish": "— (external themes)",
+      "zsh": "— (external themes)",
+      "nushell": "— (external)",
+      "ours": "ahead (presets lean/classic/rainbow/pure/robbyrussell, prompt_segments.rs:80+; \"Built-in segment prompt presets mirroring p10k themes\")",
+      "impact": "—",
+      "fix_path": "(ahead) keep"
+    },
+    {
+      "id": "D13-07",
+      "dimension": "D13",
+      "capability": "execution-time segment",
+      "fish": "CMD_DURATION var feeding themes",
+      "zsh": "themes compute manually",
+      "nushell": "—",
+      "ours": "ahead (CommandExecutionTime segment built-in, prompt_segments.rs:24)",
+      "impact": "—",
+      "fix_path": "(ahead) keep"
+    },
+    {
+      "id": "D13-08",
+      "dimension": "D13",
+      "capability": "prompt colors/themes config",
+      "fish": "fish_color_* universal vars",
+      "zsh": "%F/%K escapes + theme scripts",
+      "nushell": "color_config",
+      "ours": "partial (segment fg/bg per preset, prompt_segments.rs:112-157; no user color table)",
+      "impact": "low-med",
+      "fix_path": "extend FullConfig with per-segment color overrides"
+    },
+    {
+      "id": "D13-09",
+      "dimension": "D13",
+      "capability": "terminal title",
+      "fish": "fish_title function",
+      "zsh": "precmd sets title via %?",
+      "nushell": "shell_integration config (nu-protocol/src/config/shell_integration.rs)",
+      "ours": "partial (title hook in HookConfig config.rs:32-39)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D14-01",
+      "dimension": "D14",
+      "capability": "built-in manager + catalog",
+      "fish": "— (fisher/omf are third-party)",
+      "zsh": "— (oh-my-zsh/zinit third-party)",
+      "nushell": "plugin add/use + registry file (nu-cmd-plugin/src/util.rs:43-63)",
+      "ours": "ahead (catalog.rs + recipes.rs + ui.rs + trust.rs + sync.rs + mirrors.rs — curated manager with TUI)",
+      "impact": "—",
+      "fix_path": "(ahead) keep"
+    },
+    {
+      "id": "D14-02",
+      "dimension": "D14",
+      "capability": "third-party binary plugin protocol",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "nu-plugin-protocol/nu-plugin-engine crates; plugin signatures feed completions/docs",
+      "ours": "missing (only the command-not-found provider ABI draft, docs/planning/plugin-command-not-found-provider-abi.md:1-10)",
+      "impact": "med-high",
+      "fix_path": "generalize the provider ABI to {command, completions, prompt, hooks} contracts over JSON frames"
+    },
+    {
+      "id": "D14-03",
+      "dimension": "D14",
+      "capability": "run foreign ecosystem plugins",
+      "fish": "n/a",
+      "zsh": "n/a",
+      "nushell": "n/a",
+      "ours": "partial (bash compat means most bash plugins source OK; `bind` calls tolerated by the stub — bind.rs:40-47 comment says exactly this)",
+      "impact": "med",
+      "fix_path": "fix the missing 20% (D01-03/D08-01) and the oh-my-* compat story mostly closes itself"
+    },
+    {
+      "id": "D14-04",
+      "dimension": "D14",
+      "capability": "plugin provides completions/prompt/hooks",
+      "fish": "functions+events",
+      "zsh": "any sourced script",
+      "nushell": "signatures + plugin commands",
+      "ours": "partial (NIU_COMPDEFS + HookConfig + widget functions are separate surfaces, not unified under one pack format)",
+      "impact": "med",
+      "fix_path": "unify into a pack manifest (plugins/spec.rs exists — extend)"
+    },
+    {
+      "id": "D14-05",
+      "dimension": "D14",
+      "capability": "trust/verification model",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "— (unsigned registry)",
+      "ours": "ahead-ish (plugins/trust.rs + registry-derived trust bound per wt87/gatecal)",
+      "impact": "—",
+      "fix_path": "(ahead) keep"
+    },
+    {
+      "id": "D15-01",
+      "dimension": "D15",
+      "capability": "arrays/lists with element semantics",
+      "fish": "real lists (no word splitting)",
+      "zsh": "arrays + associative + tied",
+      "nushell": "typed lists",
+      "ours": "equivalent-bash (executor/arrays/storage.rs, dynamic_arrays.rs; shell/arrays/)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D15-02",
+      "dimension": "D15",
+      "capability": "persistent cross-session variables (universal vars)",
+      "fish": "env_universal_common.rs:301-318 binary v3.0 format, :644 SETUVAR records",
+      "zsh": "—",
+      "nushell": "— (config only)",
+      "ours": "missing",
+      "impact": "med-low",
+      "fix_path": "niu config env table applied at startup (simpler than uvar file)"
+    },
+    {
+      "id": "D15-03",
+      "dimension": "D15",
+      "capability": "typed variable attributes",
+      "fish": "— (all strings)",
+      "zsh": "typeset -E/-F/-L/-R/-Z/-U/-T/-H (Src/builtin.c:5380+ case arms)",
+      "nushell": "typed Values",
+      "ours": "partial (bash declare -i/-x/-r/-a/-A/-n; declare.rs)",
+      "impact": "low",
+      "fix_path": "non-goal beyond bash"
+    },
+    {
+      "id": "D15-04",
+      "dimension": "D15",
+      "capability": "PATH as a list (auto split/join)",
+      "fish": "PATH is a list",
+      "zsh": "typeset -T path PATH tie",
+      "nushell": "PATH is a list",
+      "ours": "missing (colon-string, bash semantics)",
+      "impact": "low-med",
+      "fix_path": "product helper (`path add`) before any engine change"
+    },
+    {
+      "id": "D15-05",
+      "dimension": "D15",
+      "capability": "pipestatus arrays",
+      "fish": "$pipestatus",
+      "zsh": "pipestatus",
+      "nushell": "exit codes in sqlite history",
+      "ours": "equivalent ($PIPESTATUS bash parity, executor)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D15-06",
+      "dimension": "D15",
+      "capability": "special params completeness (@ * # ? - $ ! 0)",
+      "fish": "different set ($status etc.)",
+      "zsh": "superset",
+      "nushell": "—",
+      "ours": "equivalent (parameter_core.rs)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D15-07",
+      "dimension": "D15",
+      "capability": "private/module-scoped params",
+      "fish": "function-local scope",
+      "zsh": "Modules/param_private (private params)",
+      "nushell": "module exports + hide",
+      "ours": "partial (bash local + function_env.rs)",
+      "impact": "low",
+      "fix_path": "non-goal"
+    },
+    {
+      "id": "D16-01",
+      "dimension": "D16",
+      "capability": "precmd/preexec",
+      "fish": "fish_preexec/fish_postexec events (src/reader/reader.rs:872-888)",
+      "zsh": "callhookfunc preexec (Src/init.c:192-213)",
+      "nushell": "pre_prompt/pre_execution (nu-protocol/src/config/hooks.rs:8-9)",
+      "ours": "equivalent (HookConfig precmd/preexec config.rs:32-39)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D16-02",
+      "dimension": "D16",
+      "capability": "postcmd (after each command)",
+      "fish": "fish_postexec event",
+      "zsh": "— core",
+      "nushell": "—",
+      "ours": "ahead (postcmd hook config.rs:35)",
+      "impact": "—",
+      "fix_path": "(ahead) keep"
+    },
+    {
+      "id": "D16-03",
+      "dimension": "D16",
+      "capability": "chpwd (directory change)",
+      "fish": "--on-variable PWD convention",
+      "zsh": "chpwd hook (zsh core)",
+      "nushell": "env_change on PWD (hooks.rs:10)",
+      "ours": "equivalent (chpwd hook config.rs:34)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D16-04",
+      "dimension": "D16",
+      "capability": "zshaddhistory / zshexit",
+      "fish": "fish_postexec covers history-ish",
+      "zsh": "zshaddhistory/zshexit hooks",
+      "nushell": "—",
+      "ours": "ahead (zshaddhistory + zshexit hooks config.rs:36-38)",
+      "impact": "—",
+      "fix_path": "(ahead) keep"
+    },
+    {
+      "id": "D16-05",
+      "dimension": "D16",
+      "capability": "variable watchers",
+      "fish": "--on-variable events (src/event.rs:217-224 EventDescription::Variable)",
+      "zsh": "—",
+      "nushell": "env_change per-variable hooks (hooks.rs:10)",
+      "ours": "missing (no variable hooks in HookConfig)",
+      "impact": "med",
+      "fix_path": "add on_variable hook list; watch a fixed set first (PWD, VIRTUAL_ENV, PATH)"
+    },
+    {
+      "id": "D16-06",
+      "dimension": "D16",
+      "capability": "job/process exit hooks",
+      "fish": "process_exit/job_exit events (event.rs:231-242)",
+      "zsh": "—",
+      "nushell": "—",
+      "ours": "missing",
+      "impact": "med-low",
+      "fix_path": "pair with D12-02"
+    },
+    {
+      "id": "D16-07",
+      "dimension": "D16",
+      "capability": "custom named events + emit builtin",
+      "fish": "emit builtin + fire_generic (reader.rs:888)",
+      "zsh": "—",
+      "nushell": "—",
+      "ours": "missing",
+      "impact": "low-med",
+      "fix_path": "D10-10"
+    },
+    {
+      "id": "D16-08",
+      "dimension": "D16",
+      "capability": "periodic timer hook",
+      "fish": "—",
+      "zsh": "callhookfunc \"periodic\" + PERIOD (Src/utils.c:1530-1585)",
+      "nushell": "—",
+      "ours": "missing",
+      "impact": "low",
+      "fix_path": "trivial against precmd path + monotonic clock"
+    },
+    {
+      "id": "D16-09",
+      "dimension": "D16",
+      "capability": "command-not-found handler",
+      "fish": "command_not_found_handler function",
+      "zsh": "command_not_found_handler",
+      "nushell": "error hooks",
+      "ours": "partial (host builtin diagnostics + provider ABI runtime per docs/planning/plugin-command-not-found-provider-abi.md:5-10)",
+      "impact": "med",
+      "fix_path": "ship the provider contract (same lane as D14-02)"
+    },
+    {
+      "id": "D16-10",
+      "dimension": "D16",
+      "capability": "greeting hook",
+      "fish": "fish_greeting function",
+      "zsh": "—",
+      "nushell": "banner in config",
+      "ours": "ahead (greeting hook config.rs:37)",
+      "impact": "—",
+      "fix_path": "(ahead) keep"
+    },
+    {
+      "id": "D17-01",
+      "dimension": "D17",
+      "capability": "rc file chain",
+      "fish": "config.fish + conf.d/*.fish",
+      "zsh": "zshenv/zprofile/zshrc/zlogin (global + user)",
+      "nushell": "env.nu + config.nu",
+      "ours": "partial (NIU_ENV file with BASH_ENV fallback, shell.rs:904-917 + tests :3370-3434; single file by design)",
+      "impact": "low-med",
+      "fix_path": "optional conf.d-style drop-in dir alongside niu.env"
+    },
+    {
+      "id": "D17-02",
+      "dimension": "D17",
+      "capability": "per-feature feature flags",
+      "fish": "status features + fish_features (src/builtins/status.rs:175)",
+      "zsh": "219 setopt names (Src/options.c optns :79)",
+      "nushell": "experimental flags",
+      "ours": "partial (bash set/shopt + setopt alias, zsh_options.rs; no niu-specific feature flags)",
+      "impact": "low",
+      "fix_path": "niu feature flags only when a behavioral fork needs one"
+    },
+    {
+      "id": "D17-03",
+      "dimension": "D17",
+      "capability": "compiled/cached startup artifacts",
+      "fish": "—",
+      "zsh": "zcompile wordcode (Src/builtin.c:136)",
+      "nushell": "plugin cache msgpackz + const-eval of config",
+      "ours": "missing (the 1.3.4 \"6s source\" fix addresses a symptom; no cache)",
+      "impact": "med",
+      "fix_path": "cache parsed config + completion assets with mtime validation"
+    },
+    {
+      "id": "D17-04",
+      "dimension": "D17",
+      "capability": "lazy autoload of functions",
+      "fish": "src/autoload.rs (functions load on first call)",
+      "zsh": "zmodload on demand; autoload -Xz",
+      "nushell": "—",
+      "ours": "partial (source-time function defs; no lazy index)",
+      "impact": "low",
+      "fix_path": "lazy function index if startup regressions demand"
+    },
+    {
+      "id": "D17-05",
+      "dimension": "D17",
+      "capability": "startup timing visibility",
+      "fish": "--profile (fish)",
+      "zsh": "zprof module",
+      "nushell": "nu --log-level timing",
+      "ours": "ahead (startup_trace.rs dedicated module)",
+      "impact": "—",
+      "fix_path": "(ahead) keep"
+    },
+    {
+      "id": "D17-06",
+      "dimension": "D17",
+      "capability": "instant prompt",
+      "fish": "—",
+      "zsh": "p10k instant prompt (plugin)",
+      "nushell": "—",
+      "ours": "missing",
+      "impact": "low",
+      "fix_path": "far-term; needs D13-03 first"
+    },
+    {
+      "id": "D17-07",
+      "dimension": "D17",
+      "capability": "first-run onboarding + health check",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "—",
+      "ours": "ahead (setup_wizard.rs 3209 lines + doctor.rs probes with fix hints)",
+      "impact": "—",
+      "fix_path": "(ahead) keep; nothing in fish/zsh/nu has an equivalent"
+    },
+    {
+      "id": "D17-08",
+      "dimension": "D17",
+      "capability": "agent/AI env file contract",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "—",
+      "ours": "ahead (NIU_ENV sourcing incl. agent-init file, shell.rs:3352-3461 tests)",
+      "impact": "—",
+      "fix_path": "(ahead) unique AI-native surface"
+    },
+    {
+      "id": "D18-01",
+      "dimension": "D18",
+      "capability": "span-annotated, labeled errors",
+      "fish": "plain text with caret for parse errors",
+      "zsh": "text",
+      "nushell": "miette-backed labeled errors (nu-protocol/src/errors/{labeled_error,report_error}.rs)",
+      "ours": "partial (bash-format text diagnostics, src/posix_errors.rs; stderr ordering caveat per rubash AGENTS.md)",
+      "impact": "low-med",
+      "fix_path": "keep bash text parity (compat contract); add rich rendering only behind a niu-specific flag"
+    },
+    {
+      "id": "D18-02",
+      "dimension": "D18",
+      "capability": "did-you-mean suggestions",
+      "fish": "set.rs:950 \"Did you mean `set %s %s`?\"",
+      "zsh": "spell correction hooks for commands",
+      "nushell": "did-you-mean in parse errors",
+      "ours": "missing",
+      "impact": "med",
+      "fix_path": "Levenshtein over builtin_names() + PATH heads for command-not-found and `set`-style usage errors"
+    },
+    {
+      "id": "D18-03",
+      "dimension": "D18",
+      "capability": "cross-shell migration hints (\"Unsupported use of '=', use 'set'\")",
+      "fish": "src/parse_constants.rs:539",
+      "zsh": "—",
+      "nushell": "—",
+      "ours": "n/a (we are the bash side of that hint; potentially emit zsh-to-bash hints for zsh refugees — opportunity, not gap)",
+      "impact": "low",
+      "fix_path": "optional migration hints for zsh syntax (`$(...)` differences, `[[` vs `(`)"
+    },
+    {
+      "id": "D18-04",
+      "dimension": "D18",
+      "capability": "warnings channel distinct from errors",
+      "fish": "—",
+      "zsh": "warn_*",
+      "nushell": "shell_warning.rs",
+      "ours": "missing",
+      "impact": "low",
+      "fix_path": "pair with D18-01 work"
+    },
+    {
+      "id": "D18-05",
+      "dimension": "D18",
+      "capability": "chained error causes",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "chained_error.rs",
+      "ours": "missing",
+      "impact": "low",
+      "fix_path": "non-goal for bash parity"
+    },
+    {
+      "id": "D18-06",
+      "dimension": "D18",
+      "capability": "installation health diagnostics",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "—",
+      "ours": "ahead (doctor.rs: winuxcmd discovery, command links, nerd font probes with fix hints)",
+      "impact": "—",
+      "fix_path": "(ahead) keep"
+    },
+    {
+      "id": "D19-01",
+      "dimension": "D19",
+      "capability": "async/threads for prompt+IO",
+      "fish": "src/threads.rs + src/reader/iothreads.rs",
+      "zsh": "single-threaded ZLE",
+      "nushell": "engine is single-threaded per eval; plugins are separate processes",
+      "ours": "missing (synchronous draw path; see D13-03)",
+      "impact": "med-high",
+      "fix_path": "same fix as D13-03"
+    },
+    {
+      "id": "D19-02",
+      "dimension": "D19",
+      "capability": "incremental lexer/parse reuse",
+      "fish": "fish AST reparse + caching (src/ast.rs)",
+      "zsh": "ZLE in C, no reparse of history",
+      "nushell": "IR compile of blocks (nu-engine)",
+      "ours": "partial (lexer brace_scan_cache.rs caches brace scans; no whole-line incremental parse)",
+      "impact": "low",
+      "fix_path": "extend cache family only on profiler evidence"
+    },
+    {
+      "id": "D19-03",
+      "dimension": "D19",
+      "capability": "persistent helper processes",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "plugins are persistent processes with GC (nu-protocol/src/config/plugin_gc.rs)",
+      "ours": "missing",
+      "impact": "low-med",
+      "fix_path": "not until D14-02 protocol exists"
+    },
+    {
+      "id": "D19-04",
+      "dimension": "D19",
+      "capability": "precompiled wordcode/bytecode",
+      "fish": "—",
+      "zsh": "zcompile",
+      "nushell": "nu-engine IR",
+      "ours": "missing",
+      "impact": "low",
+      "fix_path": "non-goal while cold start is fast"
+    },
+    {
+      "id": "D19-05",
+      "dimension": "D19",
+      "capability": "cold-start time on Windows",
+      "fish": "n/a (no Windows build)",
+      "zsh": "n/a (MSYS layer)",
+      "nushell": "native",
+      "ours": "ahead (170 ms cold start claim, docs/planning/niubash-zsh-gap-analysis.md pillar table; rubash docs/PERF-BASELINE.md tracks engine perf)",
+      "impact": "—",
+      "fix_path": "(ahead) keep measuring per release"
+    },
+    {
+      "id": "D19-06",
+      "dimension": "D19",
+      "capability": "history search performance structures",
+      "fish": "history cache nodes + timestamp merge (src/history/history.rs:144-149)",
+      "zsh": "in-memory HISTSIZE list",
+      "nushell": "sqlite indexes",
+      "ours": "partial (prefix search over loaded entries; perf unmeasured — shallow)",
+      "impact": "low",
+      "fix_path": "measure before optimizing"
+    },
+    {
+      "id": "D20-01",
+      "dimension": "D20",
+      "capability": "native Windows without WSL",
+      "fish": "missing (Unix targets)",
+      "zsh": "missing (MSYS2/Cygwin layer)",
+      "nushell": "equivalent (native)",
+      "ours": "ahead (ConPTY-native, ConPTY test harness per rubash Cargo.toml:16-19 comment)",
+      "impact": "—",
+      "fix_path": "(ahead) this is the moat"
+    },
+    {
+      "id": "D20-02",
+      "dimension": "D20",
+      "capability": "terminal profile installation",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "—",
+      "ours": "ahead (windows_terminal.rs:6 NIU_PROFILE_GUID profile install)",
+      "impact": "—",
+      "fix_path": "(ahead) keep"
+    },
+    {
+      "id": "D20-03",
+      "dimension": "D20",
+      "capability": "font management (nerd fonts)",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "—",
+      "ours": "ahead (fonts.rs)",
+      "impact": "—",
+      "fix_path": "(ahead) keep"
+    },
+    {
+      "id": "D20-04",
+      "dimension": "D20",
+      "capability": "self-update channel",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "nupm/nu — not shell-update",
+      "ours": "ahead (src/self_update.rs; WinHttp dependency in Cargo.toml)",
+      "impact": "—",
+      "fix_path": "(ahead) keep"
+    },
+    {
+      "id": "D20-05",
+      "dimension": "D20",
+      "capability": "elevation builtin",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "—",
+      "ours": "ahead (Windows sudo builtin, builtin_names.rs windows-conditional + winuxcmd sudo)",
+      "impact": "—",
+      "fix_path": "(ahead) keep"
+    },
+    {
+      "id": "D20-06",
+      "dimension": "D20",
+      "capability": "GNU coreutils injection",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "—",
+      "ours": "ahead (winuxcmd.rs:1-8 PATH injection of GNU-compatible toolchain)",
+      "impact": "—",
+      "fix_path": "(ahead) keep"
+    },
+    {
+      "id": "D20-07",
+      "dimension": "D20",
+      "capability": "LSP server",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "nu-lsp crate",
+      "ours": "missing",
+      "impact": "low-med",
+      "fix_path": "strategic: our completion data (D07-03/05) could back a bash LSP"
+    },
+    {
+      "id": "D20-08",
+      "dimension": "D20",
+      "capability": "MCP server surface",
+      "fish": "—",
+      "zsh": "—",
+      "nushell": "nu-mcp crate",
+      "ours": "missing",
+      "impact": "med (strategic)",
+      "fix_path": "natural fit for AI-native positioning; expose execution + completion over MCP"
+    },
+    {
+      "id": "D20-09",
+      "dimension": "D20",
+      "capability": "i18n message translation",
+      "fish": "po/ + src/localization/gettext.rs",
+      "zsh": "—",
+      "nushell": "—",
+      "ours": "partial (locale.rs + zh-CN default docs; no translated message catalog)",
+      "impact": "low",
+      "fix_path": "extract user-facing strings when market demands"
+    },
+    {
+      "id": "D21-01",
+      "dimension": "D21",
+      "capability": "PTY-driven interactive tests",
+      "fish": "tests/pexpects/*.py (pexpect byte-stream asserts; per docs/interactive-test-methodology.md)",
+      "zsh": "C test suite (util + zle tests)",
+      "nushell": "nu has command-level tests",
+      "ours": "equivalent (tests/interactive.rs portable-pty driver; journey gates scripts/journey/golden-journey.py)",
+      "impact": "—",
+      "fix_path": "keep"
+    },
+    {
+      "id": "D21-02",
+      "dimension": "D21",
+      "capability": "upstream conformance corpus",
+      "fish": "own spec",
+      "zsh": "own spec",
+      "nushell": "own spec",
+      "ours": "ahead (GNU bash upstream test suites + COMPATIBILITY-STATUS.md ledger — the only shell here whose spec is literally GNU bash)",
+      "impact": "—",
+      "fix_path": "(ahead) keep"
+    },
+    {
+      "id": "D21-03",
+      "dimension": "D21",
+      "capability": "editor behavior references study",
+      "fish": "docs/interactive-test-methodology.md documents fish two-tier approach (pexpect + tmux screens)",
+      "zsh": "—",
+      "nushell": "reedline snapshot testing",
+      "ours": "partial (methodology doc adopted wt74; adoption of fish two-tier testing not complete)",
+      "impact": "low",
+      "fix_path": "port pexpect-style byte-stream asserts for abbr/widgets work"
+    }
+  ],
+  "counts": {
+    "total_rows": 162,
+    "by_ours_status": {
+      "equivalent": 27,
+      "partial": 49,
+      "missing": 58,
+      "ahead": 26,
+      "n/a": 2
+    },
+    "by_impact": {
+      "—": 81,
+      "high": 9,
+      "low": 42,
+      "med": 30
+    }
+  }
+}
