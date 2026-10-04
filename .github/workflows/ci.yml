@@ -1,6 +1,10 @@
 name: Niubash CI
 
 on:
+  schedule:
+    # nightly trend run (perfbudget-trend) — 03:23 UTC, off the busy hours
+    - cron: "23 3 * * *"
+  workflow_dispatch:
   push:
     branches:
       - master
@@ -86,3 +90,73 @@ jobs:
         continue-on-error: true
         run: cargo test --workspace --lib --locked
 
+
+  # Per-asset timing budget trend (owner directive 2026-10-04): nightly run
+  # of the same gate the release enforces (scripts/perf/asset-timing.py over
+  # every theme/plugin asset of the pinned trusted sources). Records the
+  # full per-asset JSON as a trend artifact and enforces the budgets so a
+  # regression is caught by the nightly, not at the next release tag.
+  perfbudget-trend:
+    name: per-asset timing trend (nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-2025
+    timeout-minutes: 75
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - name: Checkout rubash path dependency
+        run: git clone --depth 1 https://github.com/unixwin/rubash.git ../rubash
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1.11
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: cargo build
+        run: cargo build --locked --release
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install perfbudget dependencies
+        run: pip install pywinpty pyte
+
+      # Same pinned revisions as the release gate and the committed baseline
+      # (scripts/perf/baselines/asset-timing-baseline.json) — bumping a pin
+      # requires re-recording the baseline in the same change.
+      - name: Checkout pinned asset sources
+        shell: pwsh
+        run: |
+          git init ..\oh-my-bash
+          git -C ..\oh-my-bash remote add origin https://github.com/ohmybash/oh-my-bash
+          git -C ..\oh-my-bash fetch --depth 1 origin abf8461
+          git -C ..\oh-my-bash checkout --quiet FETCH_HEAD
+          git init ..\bash-it
+          git -C ..\bash-it remote add origin https://github.com/Bash-it/bash-it
+          git -C ..\bash-it fetch --depth 1 origin 4725d29
+          git -C ..\bash-it checkout --quiet FETCH_HEAD
+
+      - name: Run the per-asset timing budget gate
+        shell: pwsh
+        run: |
+          python scripts/perf/asset-timing.py `
+            --niu (Resolve-Path target/release/niu.exe) `
+            --omb (Resolve-Path ..\oh-my-bash) `
+            --bash-it (Resolve-Path ..\bash-it) `
+            --run-dir "$env:RUNNER_TEMP\perfbudget-run" `
+            --compare-baseline scripts/perf/baselines/asset-timing-baseline.json `
+            --out perfbudget-trend/asset-timing.json
+
+      - name: Upload perfbudget trend record
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: perfbudget-trend
+          path: perfbudget-trend
+          if-no-files-found: error
+          retention-days: 90
