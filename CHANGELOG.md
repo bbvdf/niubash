@@ -6,6 +6,22 @@ All notable changes to Niubash are documented in this file.
 
 ### Added
 
+- AI agent skill bundle with `niu skill install` / `niu skill status`
+  (niubash#188): the shell ships its own agent-facing guide
+  (`skills/niubash/SKILL.md` — identity, capability surface, pitfalls,
+  niu-vs-cmd-vs-powershell decision guidance) and installs it into agent
+  skill dirs — `--target claude|zcode|cursor|all|<dir>`, default claude;
+  `status` compares installed bytes against the embedded bundle and prints
+  a sha256 digest; `niu doctor` gained an advisory `agent skill` row. The
+  command tables inside the bundle are generated, not hand-written:
+  `scripts/generate-skill.py` renders the builtin table (from a captured
+  `help -s '*'` transcript), the launcher/plugin verb surface (captured
+  `niu --help`), and the 178-applet winuxcmd inventory (from the completion
+  assets) into GENERATED-marked regions of `SKILL.md` and
+  `references/quickref.md`; `scripts/test-skill-bundle.py` golden-checks
+  both the regions and the include_str! manifest (in CI and in the release
+  pipeline). Releases now attach `niubash-skill-v*.zip` with the
+  WinuxCmd-skill layout (one top-level `niubash/` directory).
 - WinuxCmd applet completions are compiled into the shell (niubash#172 L1):
   `grep --col<Tab>` offers `--color`/`--colour` with descriptions, `ls --color`
   offers `always`/`auto`/`never`, `wpm <Tab>` lists its 20 subcommands, and

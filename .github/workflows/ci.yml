@@ -51,6 +51,18 @@ jobs:
       - name: cargo test (workspace)
         run: cargo test --workspace --locked
 
+      # Skill bundle golden check (niubash#188): the generated regions in
+      # skills/niubash/ must match the corpus transcripts + applet inventory,
+      # and the launcher must embed the whole committed bundle. The
+      # install/status verbs themselves are covered by tests/skill_bundle.rs
+      # inside `cargo test` above.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: skill bundle golden check
+        run: python scripts/test-skill-bundle.py
+
   # Cross-platform gating gate (ledger N9): the host layer must compile
   # clean off Windows. `cargo check` is the hard acceptance line for the
   # cfg-gating work; the lib test suite is informational until the unix

@@ -20,3 +20,12 @@ scripts/**/*.sh text eol=lf
 # diffed across agents/shells; keep it LF like scripts/*.sh (shared-tree
 # hygiene: a CRLF working copy must never silently change the gate).
 scripts/journey/*.py text eol=lf
+
+# Skill bundle (niubash#188): the corpus transcripts are byte-diffed by
+# scripts/generate-skill.py, and the bundle files are embedded via
+# include_str! — a CRLF working copy would flip both the golden check and
+# the shipped bytes.
+crates/niubash-runtime/tests/fixtures/skill-corpus/** text eol=lf
+skills/niubash/** text eol=lf
+scripts/generate-skill.py text eol=lf
+scripts/test-skill-bundle.py text eol=lf

@@ -14,7 +14,12 @@ const INFO: &str = "\x1b[1;96mℹ️\x1b[0m";
 
 /// Run all checks and print the report. Colors are dropped when stdout is
 /// not a terminal so piped output stays plain.
-pub fn run_doctor() -> anyhow::Result<()> {
+///
+/// `skill_files` is the launcher-embedded agent skill bundle (empty in
+/// builds that embed nothing): the doctor reports install state per named
+/// agent skill dir (niubash#188), advisory only — a missing skill install
+/// never fails the run.
+pub fn run_doctor(skill_files: &[crate::skill::SkillFile]) -> anyhow::Result<()> {
     let color = crate::terminal::stdout_is_terminal();
     let (ok, warn, info) = if color {
         (OK, WARN, INFO)
@@ -277,6 +282,54 @@ pub fn run_doctor() -> anyhow::Result<()> {
             out,
             "  {info} language            zh (wizard follows it; override with NIU_LANG)"
         )?;
+    }
+
+    // ── Advisory: agent skill bundle (niubash#188) ────────────────────────
+    // AI hosts (Claude/ZCode/Cursor) only know niubash's capability surface
+    // if the bundle is installed into their skill dirs. Report per named
+    // target; the generic `--target <dir>` installs are visible via
+    // `niu skill status --target <dir>`.
+    if !skill_files.is_empty() {
+        let mut any_installed = false;
+        let mut any_outdated = false;
+        let mut installed_count = 0usize;
+        let mut resolvable = 0usize;
+        for (_, skills_root) in crate::skill::NAMED_TARGETS {
+            let Some(dir) = crate::path_utils::shell_home_dir()
+                .map(|home| home.join(skills_root).join(crate::skill::SKILL_DIR_NAME))
+            else {
+                continue;
+            };
+            resolvable += 1;
+            let status = crate::skill::check_target(skill_files, &dir);
+            if !status.installed {
+                continue;
+            }
+            any_installed = true;
+            installed_count += 1;
+            if !status.up_to_date {
+                any_outdated = true;
+            }
+        }
+        if !any_installed {
+            writeln!(
+                out,
+                "  {info} agent skill         not installed — `niu skill install` \
+                 teaches AI hosts this shell's capability surface"
+            )?;
+        } else if any_outdated {
+            writeln!(
+                out,
+                "  {warn} agent skill         outdated in an installed target — \
+                 refresh with `niu skill install` (details: `niu skill status`)"
+            )?;
+        } else {
+            writeln!(
+                out,
+                "  {ok} agent skill         current at {installed_count}/{resolvable} \
+                 named targets (`niu skill status` for paths)"
+            )?;
+        }
     }
 
     writeln!(out)?;

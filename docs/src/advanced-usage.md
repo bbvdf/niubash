@@ -128,6 +128,37 @@ key) matches the applet name replaces the built-in definition entirely, so
 trimming or extending an applet's flags is a plain file drop, not a fight
 with the defaults.
 
+## AI Agent Skill Bundle
+
+For AI hosts (Claude, ZCode, Cursor, ...) that drive your shell, niubash
+ships a skill bundle describing its capability surface and dialect
+contract: `skills/niubash/SKILL.md` plus `references/`. Install it without
+hunting for the zip:
+
+```bash
+niu skill install                       # default: ~/.claude/skills/niubash/
+niu skill install --target all          # claude + zcode + cursor
+niu skill install --target C:/agents/skills   # generic: <dir>/niubash/
+niu skill status                        # current / outdated per target (byte compare + sha256)
+```
+
+`niu doctor` reports an advisory `agent skill` row. The released
+`niubash-skill-v*.zip` contains the same tree (WinuxCmd-skill layout), so
+unpacking the zip into an agent skills directory is equivalent.
+
+The command tables inside the bundle are generated — hand-written lists
+rot. `scripts/generate-skill.py` fills the GENERATED-marked regions of
+`SKILL.md` and `references/quickref.md` from the engine's own surfaces:
+a captured `help -s '*'` transcript (builtin table), a captured
+`niu --help` transcript (launcher/plugin verbs), and the applet completion
+inventory (178 winuxcmd applets). After changing the launcher help or the
+builtin table, refresh and re-check:
+
+```bash
+cargo build && python scripts/generate-skill.py --capture --niu target/debug/niu.exe
+python scripts/test-skill-bundle.py   # golden check: regions + embed manifest
+```
+
 ## Prompt And Themes
 
 Defaults are a floor, not an identity. The built-in prompt (a reedline
