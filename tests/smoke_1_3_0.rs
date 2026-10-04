@@ -696,7 +696,10 @@ fn d2_wizard_one_run_theme_journey() {
         .to_path_buf();
 
     // The offline GitHub mirror: repo layout matches the canonical origins
-    // the recipes declare (ohmybash/oh-my-bash.git, scop/bash-completion.git).
+    // the recipes declare (ohmybash/oh-my-bash.git, scop/bash-completion.git,
+    // plus the independent recipes niubash#171 added to `recommended`:
+    // rcaloras/bash-preexec.git, cykerway/complete-alias.git,
+    // junegunn/fzf-git.sh.git).
     let root = temp_dir("d2-journey");
     let home = root.join("home");
     let sources = root.join("sources");
@@ -712,6 +715,21 @@ fn d2_wizard_one_run_theme_journey() {
         &git,
         &fixture("bash-completion"),
         &mirror.join("scop").join("bash-completion.git"),
+    );
+    seed_mirror_repo(
+        &git,
+        &fixture("bash-preexec"),
+        &mirror.join("rcaloras").join("bash-preexec.git"),
+    );
+    seed_mirror_repo(
+        &git,
+        &fixture("complete-alias"),
+        &mirror.join("cykerway").join("complete-alias.git"),
+    );
+    seed_mirror_repo(
+        &git,
+        &fixture("fzf-git.sh"),
+        &mirror.join("junegunn").join("fzf-git.sh.git"),
     );
     let mirror_base = format!(
         "file:///{}",
@@ -817,6 +835,20 @@ fn d2_wizard_one_run_theme_journey() {
     assert!(
         spec.contains("https://github.com/scop/bash-completion.git"),
         "bash-completion declared: {spec}"
+    );
+    // niubash#171: the recommended collection's independent recipe
+    // entries are declared too — canonical origins, mirror transport-only.
+    assert!(
+        spec.contains("https://github.com/rcaloras/bash-preexec.git"),
+        "bash-preexec declared: {spec}"
+    );
+    assert!(
+        spec.contains("https://github.com/cykerway/complete-alias.git"),
+        "complete-alias declared: {spec}"
+    );
+    assert!(
+        spec.contains("https://github.com/junegunn/fzf-git.sh.git"),
+        "fzf-git.sh declared: {spec}"
     );
     assert!(spec.contains("theme = 'agnoster'"), "{spec}");
 

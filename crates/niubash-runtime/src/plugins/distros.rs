@@ -632,6 +632,409 @@ mod tests {
         assert!(err.contains("built in"), "{err}");
     }
 
+    /// Stage `src` (a tests/fixtures/sources tree) as a real git repository
+    /// at `dest` — the offline mirror `git clone` resolves to (the d2
+    /// smoke-journey pattern: `NIU_MIRRORS` insteadOf, the documented §14.8
+    /// transport layer).
+    fn seed_mirror_repo(src: &Path, dest: &Path) {
+        fn copy_dir(from: &Path, to: &Path) {
+            fs::create_dir_all(to).unwrap();
+            for entry in fs::read_dir(from).unwrap() {
+                let entry = entry.unwrap();
+                let target = to.join(entry.file_name());
+                if entry.path().is_dir() {
+                    copy_dir(&entry.path(), &target);
+                } else {
+                    fs::copy(entry.path(), target).unwrap();
+                }
+            }
+        }
+        copy_dir(src, dest);
+        for args in [
+            vec!["init".to_string(), "-q".to_string()],
+            vec![
+                "-c".into(),
+                "user.email=distros-test@niu".into(),
+                "-c".into(),
+                "user.name=niu-distros-test".into(),
+                "add".into(),
+                "-A".into(),
+            ],
+            vec![
+                "-c".into(),
+                "user.email=distros-test@niu".into(),
+                "-c".into(),
+                "user.name=niu-distros-test".into(),
+                "commit".into(),
+                "-qm".into(),
+                "seed".into(),
+            ],
+        ] {
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(dest)
+                .args(&args)
+                .status()
+                .expect("git mirror seed command");
+            assert!(status.success(), "git {args:?} failed seeding {dest:?}");
+        }
+    }
+
+    /// Sandbox root for the offline apply tests: isolated sources/distros/
+    /// mirrors plus a local `git` probe (skip loudly-env-free, like the d2
+    /// smoke journey's `which git` guard).
+    struct OfflineApply {
+        root: PathBuf,
+    }
+
+    impl OfflineApply {
+        fn new(tag: &str) -> Option<Self> {
+            if Command::new("git")
+                .arg("--version")
+                .status()
+                .map(|status| !status.success())
+                .unwrap_or(true)
+            {
+                eprintln!("skipping {tag}: git not usable on PATH");
+                return None;
+            }
+            let root = std::env::temp_dir().join(format!(
+                "niu-distros-{tag}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(root.join("home")).unwrap();
+            fs::create_dir_all(root.join("sources")).unwrap();
+            fs::create_dir_all(root.join("distros")).unwrap();
+            Some(Self { root })
+        }
+
+        fn env_guards(&self) -> Vec<(&'static str, String)> {
+            let mirror_base = format!(
+                "file:///{}/",
+                self.root
+                    .join("mirror")
+                    .display()
+                    .to_string()
+                    .replace('\\', "/")
+            );
+            fs::write(
+                self.root.join("mirrors.toml"),
+                format!(
+                    "# offline apply test: rewrite GitHub fetches to the seeded local mirror\n\
+                     schema = \"niubash:mirrors@0.1.0\"\n\
+                     active = \"custom\"\n\n\
+                     [github]\n\
+                     git_instead_of = \"{mirror_base}\"\n"
+                ),
+            )
+            .unwrap();
+            vec![
+                (
+                    "NIU_PLUGIN_SOURCES_ROOT",
+                    self.root.join("sources").to_string_lossy().into_owned(),
+                ),
+                (
+                    "NIU_PLUGIN_DISTROS_ROOT",
+                    self.root.join("distros").to_string_lossy().into_owned(),
+                ),
+                (
+                    "NIU_MIRRORS",
+                    self.root
+                        .join("mirrors.toml")
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                (
+                    "HOME",
+                    self.root.join("home").to_string_lossy().into_owned(),
+                ),
+                (
+                    "USERPROFILE",
+                    self.root.join("home").to_string_lossy().into_owned(),
+                ),
+            ]
+        }
+    }
+
+    impl Drop for OfflineApply {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// Import a local collection manifest carrying exactly `recipes` and
+    /// apply it. Returns the outcome.
+    fn import_and_apply(tag: &str, sandbox: &OfflineApply, recipes: &[&str]) -> CollectionApply {
+        let source = sandbox.root.join("collection-src").join(tag);
+        fs::create_dir_all(&source).unwrap();
+        let mut manifest = format!(
+            "schema = \"{COLLECTION_SCHEMA}\"\nname = \"{tag}\"\ndescription = \"offline independent-recipe apply\"\n\n"
+        );
+        for recipe in recipes {
+            manifest.push_str(&format!("[[entry]]\nrecipe = \"{recipe}\"\n\n"));
+        }
+        fs::write(source.join(COLLECTION_MANIFEST), manifest).unwrap();
+        import(source.to_string_lossy().as_ref()).expect("import offline collection");
+        apply(tag).expect("apply collects failures, never throws")
+    }
+
+    /// niubash#171: an independent recipe entry (a completion-script repo,
+    /// not a framework and not an executable tool) installs through the
+    /// collection apply via the plugin driver's own git install — clone,
+    /// file-source detection, recipe-entry validation, untrusted landing.
+    /// Fully offline: the recipe's canonical GitHub origin resolves through
+    /// the seeded local mirror, and the registry keeps the canonical URL
+    /// (the mirror is transport-only).
+    #[test]
+    fn apply_installs_an_independent_recipe_entry_offline() {
+        let _guard = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(sandbox) = OfflineApply::new("independent") else {
+            return;
+        };
+        let _envs: Vec<_> = sandbox
+            .env_guards()
+            .into_iter()
+            .map(|(name, value)| EnvGuard::set(name, &value))
+            .collect();
+        let fixtures =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/sources");
+        seed_mirror_repo(
+            &fixtures.join("complete-alias"),
+            &sandbox.root.join("mirror/cykerway/complete-alias.git"),
+        );
+        seed_mirror_repo(
+            &fixtures.join("git-flow-completion"),
+            &sandbox
+                .root
+                .join("mirror/bobthecow/git-flow-completion.git"),
+        );
+
+        let outcome = import_and_apply(
+            "test-independent",
+            &sandbox,
+            &["complete-alias", "git-flow-completion"],
+        );
+        // Every entry installed: honest report, no failures.
+        assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+        let ids: Vec<&str> = outcome
+            .reports
+            .iter()
+            .map(|report| report.recipe_id.as_str())
+            .collect();
+        assert_eq!(ids, ["complete-alias", "git-flow-completion"], "{ids:?}");
+        for report in &outcome.reports {
+            assert!(
+                report.summary.contains("untrusted"),
+                "the trust gate must hold: {}",
+                report.summary
+            );
+        }
+        // The recipe's own review + enable verbs, spelled out.
+        assert_eq!(
+            outcome.reports[0].next,
+            vec![
+                "niu plugin trust complete-alias",
+                "niu plugin enable complete-alias/complete_alias",
+            ],
+            "{:?}",
+            outcome.reports[0].next
+        );
+        // The journal's source list names exactly what this apply landed
+        // (it feeds the finish screen's undo receipts).
+        assert_eq!(
+            outcome.installed_sources,
+            ["complete-alias", "git-flow-completion"],
+            "{:?}",
+            outcome.installed_sources
+        );
+        // Canonical origins in the registry — the mirror never leaks into
+        // provenance (§14.8 transport-only iron invariant).
+        for id in ["complete-alias", "git-flow-completion"] {
+            let record = crate::plugins::sources::read_source_registry()
+                .into_iter()
+                .find(|record| record.id == id)
+                .unwrap_or_else(|| panic!("{id} must be registered"));
+            assert!(!record.trusted, "{id} must land untrusted");
+            assert!(
+                record.url.starts_with("https://github.com/"),
+                "canonical origin, not the mirror: {}",
+                record.url
+            );
+        }
+    }
+
+    /// The golden journey's J2 bar, made deterministic and offline: the
+    /// **built-in full collection** applies with every entry installed —
+    /// themes, frameworks, and (niubash#171) the independent recipe
+    /// entries alike, each through its real clone → detect → entry
+    /// validation path via the seeded mirror. Every entry's repo must be
+    /// seeded here and its entry file present in the fixture: adding a
+    /// collection entry means adding its fixture + seed (the same audit
+    /// the recipes.rs upstream-root table enforces).
+    #[test]
+    fn apply_full_collection_installs_every_entry_offline() {
+        let _guard = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(sandbox) = OfflineApply::new("full") else {
+            return;
+        };
+        let _envs: Vec<_> = sandbox
+            .env_guards()
+            .into_iter()
+            .map(|(name, value)| EnvGuard::set(name, &value))
+            .collect();
+        let fixtures =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/sources");
+        let mirror = sandbox.root.join("mirror");
+        for (fixture, owner_repo) in [
+            ("oh-my-bash", "ohmybash/oh-my-bash.git"),
+            ("bash-it", "Bash-it/bash-it.git"),
+            ("bash-completion", "scop/bash-completion.git"),
+            ("bash-preexec", "rcaloras/bash-preexec.git"),
+            ("complete-alias", "cykerway/complete-alias.git"),
+            ("fzf-git.sh", "junegunn/fzf-git.sh.git"),
+            ("git-flow-completion", "bobthecow/git-flow-completion.git"),
+        ] {
+            seed_mirror_repo(&fixtures.join(fixture), &mirror.join(owner_repo));
+        }
+        // bash-sensible's entry file lives at its fixture root and its
+        // repo root has no other *.sh/*.bash — same shape as upstream.
+        seed_mirror_repo(
+            &fixtures.join("bash-sensible"),
+            &mirror.join("mrzool/bash-sensible.git"),
+        );
+
+        let full = collection("full").expect("built-in full collection");
+        let entries: Vec<&str> = full
+            .collection
+            .entry
+            .iter()
+            .map(|entry| entry.recipe.as_str())
+            .collect();
+        assert_eq!(
+            entries,
+            [
+                "oh-my-bash",
+                "omb-theme-robbyrussell",
+                "bash-it",
+                "bash-completion",
+                "bash-preexec",
+                "complete-alias",
+                "fzf-git.sh",
+                "bash-sensible",
+                "git-flow-completion",
+            ],
+            "the full manifest drifted: update this test's seeds"
+        );
+
+        let outcome = apply("full").expect("apply collects failures, never throws");
+        assert!(
+            outcome.failures.is_empty(),
+            "every collection entry must install: {:?}",
+            outcome.failures
+        );
+        assert_eq!(
+            outcome.reports.len(),
+            entries.len(),
+            "{:?}",
+            outcome.reports
+        );
+        // Nine reports, eight landed sources (the theme rides the
+        // oh-my-bash manager source), all untrusted.
+        let mut landed = outcome.installed_sources.clone();
+        landed.sort();
+        assert_eq!(
+            landed,
+            [
+                "bash-completion",
+                "bash-it",
+                "bash-preexec",
+                "bash-sensible",
+                "complete-alias",
+                "fzf-git.sh",
+                "git-flow-completion",
+                "oh-my-bash",
+            ],
+            "{:?}",
+            outcome.installed_sources
+        );
+    }
+
+    /// wt61 G3 discipline, niubash#171 edition: an entry whose upstream
+    /// drifted away from the audited entry file fails *honestly* — named
+    /// in the apply failures with the real reason — while the healthy
+    /// entries still install.
+    #[test]
+    fn apply_names_a_drifted_entry_and_installs_the_rest() {
+        let _guard = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(sandbox) = OfflineApply::new("drifted") else {
+            return;
+        };
+        let _envs: Vec<_> = sandbox
+            .env_guards()
+            .into_iter()
+            .map(|(name, value)| EnvGuard::set(name, &value))
+            .collect();
+        // The drifted origin: the fixture tree WITHOUT the audited entry
+        // file — what upstream renaming `complete_alias` would look like.
+        let fixtures =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/sources");
+        let drifted = sandbox.root.join("drifted-src/complete-alias");
+        seed_mirror_repo(&fixtures.join("complete-alias"), &drifted);
+        fs::remove_file(drifted.join("complete_alias")).unwrap();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(&drifted)
+            .args([
+                "-c",
+                "user.email=distros-test@niu",
+                "-c",
+                "user.name=niu-distros-test",
+            ])
+            .args(["commit", "-qam", "drift: entry file moved away"])
+            .status()
+            .expect("drift commit");
+        seed_mirror_repo(
+            &fixtures.join("git-flow-completion"),
+            &sandbox
+                .root
+                .join("mirror/bobthecow/git-flow-completion.git"),
+        );
+        // complete-alias's recipe origin rewrites through the same mirror
+        // root — re-home the drifted tree onto the canonical path layout.
+        let canonical = sandbox.root.join("mirror/cykerway/complete-alias.git");
+        fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+        fs::rename(&drifted, &canonical).unwrap();
+
+        let outcome = import_and_apply(
+            "test-drifted",
+            &sandbox,
+            &["complete-alias", "git-flow-completion"],
+        );
+        // The drifted entry is named, with the honest reason.
+        assert_eq!(outcome.failures.len(), 1, "{:?}", outcome.failures);
+        assert_eq!(outcome.failures[0].0, "complete-alias");
+        assert!(
+            outcome.failures[0]
+                .1
+                .contains("entry file 'complete_alias' not found"),
+            "{:?}",
+            outcome.failures[0]
+        );
+        // The healthy entry still installed, and only it counts as landed.
+        assert_eq!(outcome.reports.len(), 1, "{:?}", outcome.reports);
+        assert_eq!(outcome.reports[0].recipe_id, "git-flow-completion");
+        assert_eq!(
+            outcome.installed_sources,
+            ["git-flow-completion"],
+            "{:?}",
+            outcome.installed_sources
+        );
+    }
+
     /// Journey run-13 observation (G3): a collection apply with a failed
     /// entry must report it, and `installed_sources` must name only what
     /// actually landed. Offline and deterministic: the manager comes from
