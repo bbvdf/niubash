@@ -46,9 +46,9 @@ what it removes). The wt79 vocabulary survives as `--phases` aliases:
 | Step | The user's move | The gate asserts |
 | --- | --- | --- |
 | P3-S1 reopen sandbox session | fresh terminal after J5; write a marker file through the shell | prompt renders; the wizard's theme line still in the rc; spec still declares oh-my-bash + the theme; the marker round-trips through the shell (previous-session state detection) |
-| P3-S2 rc byte-stability + theme identity (niu#168) | `source ~/.niubashrc` in a live session; two fresh terminals; byte snapshots after every open | (a) rc bytes identical after every source/terminal; (b) the picked theme's variable unchanged, same framework; (c) `selection materialized` never printed during an unchanged-spec source/startup; (d) terminal 2's prompt block equals terminal 1's modulo clock digits |
+| P3-S2 theme-block byte-stability + theme identity (niu#168) | `source ~/.niubashrc` in a live session; two fresh terminals; byte snapshots after every open | (a) the THEME block bytes (the oh-my-bash managed guard region) identical after every source/terminal, present exactly once, no activated/deactivated flip of the theme source — the whole-rc comparison stays informational (a spec-declared block may legally materialize once trusted, see the wt87 calibration below); (b) the picked theme's variable unchanged, same framework; (c) `selection materialized` never printed during an unchanged-spec source/startup; (d) terminal 2's prompt block equals terminal 1's modulo clock digits |
 | P3-S3 first-key integrity (niu#167 anti-masking) | idle the themed prompt ≥1.2 s (≥1 clock repaint), then `echo NIU167KEY` with the Ctrl-U wake DISABLED, no retry | the full word executes (bare marker output); never `cho: command not found`. On a pass the run FLIPS `WAKE_ENABLED` off — every later send goes wake-free (the gate stops masking) |
-| P3-S4 aged state (F5) | seed between sessions: rename `oh-my-bash.sh` inside the trusted tree, hand-declare a missing origin + seed its `bootstrap-failures.toml` memo | prompt ≤10 s; exactly one `deferred` row + the documented awaiting-trust lines; guarded loader no-ops (no error storm); explicit `niu plugin sync` retries the missing origin readably; `niu plugin restore` rebuilds the tree; after healing the spec, the next terminal is silent |
+| P3-S4 aged state (F5) | seed between sessions: rename `oh-my-bash.sh` inside the trusted tree, hand-declare a missing origin + seed its `bootstrap-failures.toml` memo | prompt ≤10 s; exactly one `deferred` row + the documented awaiting-trust lines — one per still-untrusted source, the bound derived from the sandbox registry (wt87 calibration; a literal cap went stale when wt78 expanded `full`); guarded loader no-ops (no error storm); explicit `niu plugin sync` retries the missing origin readably; `niu plugin restore` rebuilds the tree; after healing the spec, the next terminal is silent |
 | P8-S4 remove the source with the ACTIVE theme (F4) | `niu plugin source remove oh-my-bash` while its theme is applied, then re-add + trust + re-enable | spec declaration, registry record and tree drop; no resurrection at the fresh terminal (no re-clone); floor prompt, zero syntax-error storm; re-add restores the theme; exactly one oh-my-bash managed block at steady state (no orphan blocks) |
 
 Driver capabilities this lane landed (journey-steps.json `driver_capabilities`,
@@ -61,15 +61,95 @@ home between sessions.
 
 Observed verdicts (first landing runs, 2026-10-04, release 1.3.3):
 P3-S2 went **green** — the #168 rebound does not fire for the
-oh-my-bash/`powerline-multiline` wizard shape (rc bytes byte-stable
-across every open; the `wt73-168-theme-rebound` registration stays and
-labels any future red of this class). P3-S3 passed and the run continued
-wake-free. One product observation recorded, not yet a ticket: after
-`niu plugin source remove` + a fresh terminal the removed source's
+oh-my-bash/`powerline-multiline` wizard shape. P3-S3 passed and the run
+continued wake-free. One product observation recorded, not yet a ticket:
+after `niu plugin source remove` + a fresh terminal the removed source's
 managed rc block REMAINS (inert — its guarded loader no-ops on the
 missing tree; `remove_source` also will not delete a tree whose layout
 no longer fingerprints); the block is only replaced once the source is
 re-added. F4-adjacent orphan-block sweep is a candidate follow-up.
+
+### Gate calibration to the product (wt87/gatecal, post-1.3.4)
+
+Release run 37218948432 (v1.3.4) failed its two newest gates. Both were
+written against the pre-1.3.4 product; the product legitimately changed,
+so the gates recalibrate to it — the gate calibrates to the product, the
+product does not calibrate to the gate. Every change below names the
+legitimate product behavior the old form mislabeled.
+
+**F1 — P3-S2 whole-rc byte equality → theme-block byte equality.**
+The old (a) asserted the WHOLE rc byte-identical across sessions. The
+diff the run shows is the `# >>> niu source bash-completion …` managed
+block materializing legally: J6 trusts bash-completion, the spec
+declares it, and a later session's sync materializes its source block —
+that is the spec being truth and materialization being sync's job, not
+a stability break. What P3-S2 actually guards (the #168 class) is the
+THEME state: the oh-my-bash managed guard region (where
+`OSH_THEME='powerline-multiline'` lives) must stay byte-identical
+across every open and present exactly once, no
+`activated`/`deactivated` flip of the theme source in any P3 session
+stream, plus the kept (b) theme-variable identity (verified holding —
+wt72/themeback landed) and (c) rewrite-tell checks. The whole-rc
+comparison remains as an informational note. The
+`wt73-168-theme-rebound` KNOWN-FAIL registration is retired: wt72
+landed in 1.3.4, and keeping the label would relabel a future #168
+regression as expected-red. A P3-S2 red is now a plain regression red.
+
+**F2 — P3-S4 awaiting-trust bound: literal ≤2 → registry-derived.**
+The old bound "≤2 awaiting-trust notices" predates wt78 expanding the
+`full` collection to nine entries — after J6 trusts bash-completion,
+five still-untrusted sources legitimately name themselves
+(`bash-preexec`, `bash-sensible`, `complete-alias`, `fzf-git.sh`,
+`git-flow-completion`), and each honest release run will show exactly
+that. Both P3-S4 assertions now derive the bound the way J4 has since
+jw2's lane: every noticed id must be a real still-untrusted source in
+the sandbox `registry.toml`, and the unique count may not exceed the
+registry's untrusted count. A product regression (a nag for a trusted
+source, a failed/degraded row dressed as awaiting-trust) still fails.
+
+**P8-S4's two unlabeled reds in the same run — adjudicated, NOT
+recalibrated here (assertions untouched; follow-up gate work, not
+product bugs):**
+
+- `precondition: oh-my-bash installed with the picked theme active —
+  theme line present: False` — the precondition demands the J2 pick
+  (`powerline-multiline`) still be active in the rc, but the journey's
+  own P4 phase deliberately re-picks themes (P4-S4 picks
+  `powerbash10k` for dual-framework routing, and P7/P8 run on that
+  state), and the wt80 known-fail left P4-S3's undo half-applied. The
+  product is provably correct at every hop (P4-S2/P4-S4/P7 all green).
+  The precondition's assumption is stale gate sequencing: the step
+  should establish or re-derive "the currently-active theme's source"
+  instead of pinning the J2 pick.
+- `the themed prompt renders again — row now: 'completion` …'` — the
+  themed prompt DID render: the terminal snapshot
+  (`transcripts/P8-S4-restored-terminal.txt` in the run artifacts)
+  carries the themed rows (` ~ ` clock row + `❯`), the rc carries the
+  active theme line, exactly one managed block, spec declares, zero
+  syntax errors. The red is a fingerprint artifact:
+  `await_first_prompt_row` compares the last 4 non-empty viewport rows,
+  and with wt78's nine-entry collection the awaiting-trust notices wrap
+  (`… then `niu plugin trust git-flow-` / `completion``), so a wrapped
+  fragment lands inside the compared block and the fingerprints differ.
+  A follow-up should compare the prompt-shaped rows only.
+
+**P4-S3's reds stay KNOWN-FAIL `wt80-undo-receipt-ambiguous-theme`:**
+that is a real, still-open product issue (the wizard's undo receipt
+`niu plugin disable <theme>` fails when the theme name exists in more
+than one installed source) owned by lane wt80/jw2-wizardspec — labeled,
+never waived.
+
+Local validation (wt87, fresh `cargo build --release` + full-journey
+runs): P3-S2 went **PASS** — the whole-rc notes recorded exactly the
+release run's diff (`# >>> niu source bash-completion …` materializing)
+as informational while all theme-block/identity/tell/prompt assertions
+held; P3-S4's recalibrated assertions read `5 source(s) vs 5 untrusted
+in the registry` — the same five sources that red'd the release run,
+now derived instead of capped. Remaining local reds were the
+`schannel` TLS-reset family on the network-bound restore/re-add legs
+(environment, the documented five-TLS-burned-release-runs class; retry
+in a clean window) plus P8-S4's two adjudicated gate reds above, which
+reproduced exactly as predicted.
 
 Exit code `0` only if every assertion holds. The run writes:
 
@@ -97,6 +177,14 @@ Currently registered:
   bash-preexec recipe names entry `bash-preexec`, but upstream
   rcaloras/bash-preexec ships `bash-preexec.sh`, so the apply reports
   `1 entries failed`.
+- `wt80-undo-receipt-ambiguous-theme` (lane wt80/jw2-wizardspec) — the
+  wizard's undo receipt `niu plugin disable <theme>` fails when the
+  theme name exists in more than one installed source (observed at
+  P4-S3 in the 1.3.4 release run; `full` creates exactly that
+  dual-framework state). Still open; labeled, never waived.
+
+(The `wt73-168-theme-rebound` registration was retired with the
+wt72/themeback fix in 1.3.4 — see the wt87 calibration section above.)
 
 Unregistered failures stay plain RED. A red gate blocks the release
 until each red is either fixed or registered — registering is labeling,
@@ -245,8 +333,8 @@ everything unless a subset is asked for. A base-gate failure blocks the
 phases (nothing to walk on), exactly like it blocks J2–J7 today. Phase
 verdicts appear in the same
 `verdict.{json,txt}` as steps; expected-red phase steps carry their
-registered KNOWN-FAIL labels (e.g. `wt73-168-theme-rebound`) and never
-pass silently.
+registered KNOWN-FAIL labels (e.g. `wt80-undo-receipt-ambiguous-theme`)
+and never pass silently.
 
 ## How the gate blocks release
 
