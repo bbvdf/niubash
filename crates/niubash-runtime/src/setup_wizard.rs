@@ -21,6 +21,16 @@ const PRIMARY_RC_FILE: &str = ".niubashrc";
 const COMPAT_RC_FILE: &str = ".winuxshrc";
 const SETUP_DONE_FILE: &str = ".setup-done";
 
+/// One-shot handoff marker (niubash#180): every rc rewrite leaves
+/// `~/.niubash/setup-apply-pending` behind, and a live interactive session
+/// consumes it at its next prompt to re-source the new rc in-process —
+/// writing the configuration and applying it to the running session are no
+/// longer two different verbs. The consumer lives in `shell.rs`
+/// ([`crate::shell`] `apply_setup_config_if_pending`); a session that
+/// sources the rc at startup consumes stale markers as its baseline, so
+/// only a setup that ran while the session was live triggers the re-apply.
+const APPLY_PENDING_FILE: &str = "setup-apply-pending";
+
 /// Schema marker for the wizard answers file (`~/.niubash/wizard-answers.toml`).
 const WIZARD_ANSWERS_SCHEMA: &str = "niubash:wizard-answers@0.1.0";
 
@@ -1648,6 +1658,21 @@ fn print_finish_screen(
             fill(t.tr("Previous rc backed up to {}"), &[&path.display()])
         );
     }
+    // niubash#180 bottom line (mandatory minimum): the finish screen must
+    // state the truth about the current session. The wizard process cannot
+    // know what its parent is, so the line names both ways the new config
+    // reaches a live prompt: a running niu applies the handoff marker at
+    // its next prompt; anything else (PowerShell, cmd, an older niu) gets
+    // it in new terminals or through an explicit `source ~/.niubashrc`.
+    println!();
+    println!(
+        "  \u{26a1}  {}",
+        t.tr("New config takes effect in new terminals.")
+    );
+    println!(
+        "  \u{2502}    {}",
+        t.tr("A running niu session applies it at the next prompt; other shells: `source ~/.niubashrc`")
+    );
     if !failed.is_empty() {
         println!();
         println!(
@@ -1818,6 +1843,11 @@ fn write_rc_and_mark_done(
     let niubash_dir = home.join(".niubash");
     let _ = std::fs::create_dir_all(&niubash_dir);
     let _ = std::fs::write(niubash_dir.join(SETUP_DONE_FILE), b"");
+    // niubash#180: hand the new configuration to any live session. The rc
+    // write already succeeded; a failed marker only costs the in-session
+    // apply — the finish-screen truth line still tells the user how to
+    // apply it by hand, so this stays non-fatal.
+    let _ = std::fs::write(niubash_dir.join(APPLY_PENDING_FILE), b"");
 
     println!();
     println!(
@@ -1825,6 +1855,45 @@ fn write_rc_and_mark_done(
         fill(lang.tr("Shell rc written to {}"), &[&rc_path.display()])
     );
     Ok(backup_path)
+}
+
+/// Path of the niubash#180 handoff marker.
+fn apply_pending_path(home: &std::path::Path) -> PathBuf {
+    home.join(".niubash").join(APPLY_PENDING_FILE)
+}
+
+/// Session side of the handoff (called from `shell.rs` at every prompt
+/// draw): `true` exactly once per setup run — the marker is consumed before
+/// the caller re-sources, so a failed apply can never loop the REPL.
+pub fn take_apply_pending_marker(home: &std::path::Path) -> bool {
+    let path = apply_pending_path(home);
+    if !path.is_file() {
+        return false;
+    }
+    matches!(std::fs::remove_file(&path), Ok(()))
+}
+
+/// Startup baseline (called when a session sources its rc): a marker left
+/// by a setup that ran before this session started is stale by definition —
+/// the rc being sourced right now already carries that configuration.
+pub fn clear_stale_apply_pending_marker(home: &std::path::Path) {
+    let _ = std::fs::remove_file(apply_pending_path(home));
+}
+
+/// The line the live session prints above its next prompt after it applied
+/// a finished setup run's configuration (niubash#180).
+pub(crate) fn session_apply_notice() -> &'static str {
+    Lang::detect().tr("\u{21bb}  Applied the new configuration from ~/.niubashrc (`niu setup`).")
+}
+
+/// The honest failure line for the session side: the marker was consumed
+/// but the re-source did not come back clean, so the session may still run
+/// the old configuration and the user applies it by hand.
+pub(crate) fn session_apply_failed_notice() -> &'static str {
+    Lang::detect().tr(
+        "\u{26a0}\u{fe0f}  Could not apply the new configuration \u{2014} run \
+         `source ~/.niubashrc` to see the error.",
+    )
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -2178,6 +2247,10 @@ fn zh(en: &str) -> Option<&'static str> {
         "could not write" => "无法写入",
 
         // Finish screen
+        "New config takes effect in new terminals." =>
+            "新配置将在新打开的终端生效。",
+        "A running niu session applies it at the next prompt; other shells: `source ~/.niubashrc`" =>
+            "正在运行的 niu 会话会在下一个提示符自动应用；其他终端请执行 `source ~/.niubashrc`",
         "Change things later:" => "之后想调整：",
         "theme      `niu plugin list`  →  `niu plugin enable <name>`" =>
             "主题       `niu plugin list`  →  `niu plugin enable <名称>`",
@@ -2193,6 +2266,13 @@ fn zh(en: &str) -> Option<&'static str> {
         "unknown preset" => "未知预设",
         "available:" => "可用：",
         "Preset applied:" => "预设已应用：",
+
+        // In-session apply of a finished setup run (niubash#180, shell.rs)
+        "\u{21bb}  Applied the new configuration from ~/.niubashrc (`niu setup`)." =>
+            "\u{21bb}  已应用新配置 —— ~/.niubashrc（来自 `niu setup`）。",
+        "\u{26a0}\u{fe0f}  Could not apply the new configuration \u{2014} run \
+         `source ~/.niubashrc` to see the error." =>
+            "\u{26a0}\u{fe0f}  应用新配置失败 —— 请执行 `source ~/.niubashrc` 查看错误。",
 
         // Preset-expansion notes
         "pack '{}' skipped ('{}' not found on PATH)" =>
@@ -2240,6 +2320,34 @@ mod tests {
             completion_style: "column".to_string(),
             ..WizardConfig::default()
         }
+    }
+
+    /// niubash#180: every rc rewrite leaves the one-shot handoff marker for
+    /// the live session; the session consumes it exactly once, and a stale
+    /// marker from before a session started is cleared as its baseline.
+    #[test]
+    fn rc_rewrite_leaves_a_consumable_apply_pending_marker() {
+        let temp = unique_temp_dir("wizard-apply-pending");
+        let home = temp.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        assert!(!take_apply_pending_marker(&home), "no marker before a run");
+        let backup = write_rc_and_mark_done(&home, &clean_cfg(), Lang::En)
+            .expect("the rc write must succeed");
+        assert!(
+            backup.is_none(),
+            "no previous rc means no backup: {backup:?}"
+        );
+        assert!(apply_pending_path(&home).is_file(), "marker written");
+        assert!(take_apply_pending_marker(&home), "marker consumed once");
+        assert!(
+            !take_apply_pending_marker(&home),
+            "second take must not fire — a failed apply can never loop the REPL"
+        );
+
+        clear_stale_apply_pending_marker(&home);
+        assert!(!apply_pending_path(&home).is_file());
+        let _ = std::fs::remove_dir_all(&temp);
     }
 
     #[test]
@@ -2349,6 +2457,13 @@ mod tests {
             "Apply",
             "Cancel",
             "Change things later:",
+            // niubash#180: the finish-screen truth line and the live
+            // session's apply notices.
+            "New config takes effect in new terminals.",
+            "A running niu session applies it at the next prompt; other shells: `source ~/.niubashrc`",
+            "\u{21bb}  Applied the new configuration from ~/.niubashrc (`niu setup`).",
+            "\u{26a0}\u{fe0f}  Could not apply the new configuration \u{2014} run \
+             `source ~/.niubashrc` to see the error.",
         ] {
             assert!(zh(key).is_some(), "missing zh translation for {key:?}");
         }

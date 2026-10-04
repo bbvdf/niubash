@@ -340,6 +340,24 @@ fn try_spawn_inner(
     timeout: Duration,
 ) -> Option<NiuSession> {
     let root = unique_temp_dir(prefix);
+    try_spawn_in_root(root, rc, args, extra_env, path_dirs, size, timeout)
+}
+
+/// The spawn core over a root the caller manages: the niubash#180 journey
+/// runs `niu setup` as a child of the live session, so the wizard child and
+/// the parent REPL must share one HOME (the caller stages rc, sources, and
+/// trust state into `root/home` before spawning). The root is still removed
+/// on drop.
+#[allow(clippy::too_many_arguments)]
+fn try_spawn_in_root(
+    root: PathBuf,
+    rc: Option<&str>,
+    args: &[String],
+    extra_env: &[(String, String)],
+    path_dirs: &[PathBuf],
+    size: (u16, u16),
+    timeout: Duration,
+) -> Option<NiuSession> {
     let home = root.join("home");
     let start = root.join("start");
     std::fs::create_dir_all(home.join("tmp")).ok()?;
@@ -493,6 +511,37 @@ impl NiuSession {
                 )
             },
         )
+    }
+
+    /// Spawn the interactive shell over a home the test staged beforehand
+    /// (niubash#180 journey: the `niu setup` child the session spawns must
+    /// share that exact HOME, so the driver must not mint its own sandbox).
+    /// The root is removed on drop, like every session's. Dead code in this
+    /// target; used by the smoke target's journey leg.
+    #[allow(dead_code)]
+    pub fn spawn_shared_home(
+        root: &Path,
+        rc: &str,
+        extra_env: &[(String, String)],
+        path_dirs: &[PathBuf],
+        size: (u16, u16),
+        timeout: Duration,
+    ) -> NiuSession {
+        try_spawn_in_root(
+            root.to_path_buf(),
+            Some(rc),
+            &[],
+            extra_env,
+            path_dirs,
+            size,
+            timeout,
+        )
+        .unwrap_or_else(|| {
+            panic!(
+                "niu session over {root:?} could not be spawned under a pseudo \
+                 terminal after a successful probe"
+            )
+        })
     }
 
     /// Wait for the startup banner and the first prompt.

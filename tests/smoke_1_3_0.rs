@@ -887,6 +887,133 @@ fn d2_wizard_one_run_theme_journey() {
     let _ = fs::remove_dir_all(&root);
 }
 
+/// d3 — niubash#180: `niu setup` typed INSIDE a live session (the owner's
+/// exact repro: answer the wizard, and the session still ran the old
+/// configuration until a manual `source ~/.niubashrc`). The wizard is a
+/// child process, so the handoff goes through a one-shot marker: the rc
+/// rewrite leaves `~/.niubash/setup-apply-pending`, the finish screen
+/// states the truth about the current session, and the parent session
+/// consumes the marker at its next prompt — re-sourcing the new rc so the
+/// freshly picked theme (a DIFFERENT theme than the session's current
+/// look) renders without opening a new terminal.
+#[test]
+fn d3_setup_rerun_applies_in_the_live_session() {
+    if !journey_driver::require_pty_or_skip("d3_setup_rerun_applies_in_the_live_session") {
+        return;
+    }
+
+    let root = temp_dir("d3-journey");
+    let home = root.join("home");
+    let sources = root.join("sources");
+    fs::create_dir_all(home.join(".niubash")).unwrap();
+    fs::create_dir_all(&sources).unwrap();
+    // The session's CURRENT look: the old-configuration sentinel prompt.
+    let rc_text = "PS1='OLD> '\nNIU_DISABLE_DEFAULT_PLUGINS=1\n";
+    fs::write(home.join(".niubashrc"), rc_text).unwrap();
+
+    let spec_path = home.join(".niubash").join("plugins.toml");
+    let envs: Vec<(&str, String)> = vec![
+        ("HOME", home.to_string_lossy().into_owned()),
+        ("USERPROFILE", home.to_string_lossy().into_owned()),
+        (
+            "NIU_PLUGIN_SOURCES_ROOT",
+            sources.to_string_lossy().into_owned(),
+        ),
+        ("NIU_PLUGIN_SPEC", spec_path.to_string_lossy().into_owned()),
+        ("NIU_ENV", String::new()),
+    ];
+
+    // A trusted fixture source, so the rerun wizard's Q1 gallery is
+    // non-empty and a theme different from the current look is pickable.
+    let fixture_str = fixture("oh-my-bash").to_string_lossy().into_owned();
+    let add = run_niu(&["plugin", "source", "add", &fixture_str], &envs);
+    assert_success(&add, "plugin source add (fixture oh-my-bash)");
+    let trust = run_niu(&["plugin", "source", "trust", "oh-my-bash"], &envs);
+    assert_success(&trust, "plugin source trust oh-my-bash");
+
+    // PATH must carry the niu binary so the live session can spawn
+    // `niu setup` as its child (the wizard of this journey).
+    let niu_dir = niu_binary()
+        .parent()
+        .expect("niu binary has a parent dir")
+        .to_path_buf();
+    let system_root = std::env::var_os("SystemRoot")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
+    let path_dirs = vec![system_root.join("System32"), system_root, niu_dir];
+    let extra_env: Vec<(String, String)> = envs
+        .iter()
+        .map(|(key, value)| (key.to_string(), value.clone()))
+        .collect();
+    let mut s = journey_driver::NiuSession::spawn_shared_home(
+        &root,
+        rc_text,
+        &extra_env,
+        &path_dirs,
+        (120, 34),
+        Duration::from_secs(180),
+    );
+    s.expect("Niubash");
+    s.expect("OLD> ");
+
+    // Menus drop input queued while they draw (the d2 note), so every
+    // answer waits out the draw before pressing a key.
+    let answer = |s: &mut journey_driver::NiuSession, keys: &str| {
+        std::thread::sleep(Duration::from_millis(250));
+        s.send(keys);
+    };
+
+    // The wizard child runs on the session's console, exactly like a user
+    // typing `niu setup` at the prompt.
+    s.send_line("niu setup");
+    // Q1 gallery (1-based jump keys): Skip is 1; themes sorted by name —
+    // agnoster (the fixture's "agnoster-fixture-face " PS1) is 2, i.e. a
+    // DIFFERENT theme than the session's current look.
+    s.expect("Pick a theme");
+    answer(&mut s, "2\r");
+    // Q2.5 is skipped (the source registry is non-empty). Q3 (Windows only):
+    // niu-git — the default (Skip) is highlighted.
+    #[cfg(windows)]
+    {
+        s.expect("niu-git");
+        answer(&mut s, "\r");
+    }
+    // Apply gate: Apply is the highlighted default.
+    s.expect("Apply this configuration?");
+    answer(&mut s, "\r");
+
+    // The finish screen must state the truth about the current session
+    // (niubash#180 minimum) — prominent, before the how-to-change block.
+    let finish = s.expect("Change things later:");
+    assert!(
+        finish.contains("New config takes effect in new terminals."),
+        "{finish}"
+    );
+    assert!(finish.contains("source ~/.niubashrc"), "{finish}");
+
+    // The wizard child exits; the parent session consumes the handoff
+    // marker at its next prompt, re-sources the new rc, and renders the
+    // freshly picked theme — no new terminal opened.
+    s.expect("Applied the new configuration");
+    s.expect("agnoster-fixture-face ");
+
+    // The one-shot marker is consumed, the rc carries the pick, and the
+    // old sentinel prompt is gone for good.
+    assert!(
+        !home.join(".niubash").join("setup-apply-pending").exists(),
+        "the handoff marker must be consumed by the apply"
+    );
+    let rc = fs::read_to_string(home.join(".niubashrc")).unwrap();
+    assert!(rc.contains("OSH_THEME='agnoster'"), "{rc}");
+    assert!(!rc.contains("OLD> "), "{rc}");
+
+    s.send_line("exit");
+    let code = s.wait_exit();
+    assert_eq!(code, 0, "the session must exit cleanly after the apply");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
 // ── E. basics ────────────────────────────────────────────────────────────────
 
 #[test]
