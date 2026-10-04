@@ -90,7 +90,7 @@ SOURCE_TIMEOUT = 12.0
 ENTER_TIMEOUT = 6.0
 GNU_SYNTAX_TIMEOUT = 15.0
 GNU_RUNTIME_TIMEOUT = 10.0
-FETCH_RETRIES = 3
+FETCH_RETRIES = 5
 
 STORM_LINES = 100       # >= this many error-pattern lines -> ERROR-STORM
 STORM_BYTES = 512_000   # > this much stripped output -> ERROR-STORM
@@ -163,11 +163,21 @@ def fetch_asset(asset: dict, token: str | None) -> Path | None:
                 with urllib.request.urlopen(req, timeout=45) as resp:
                     data = resp.read()
                 break
-            except (urllib.error.HTTPError, urllib.error.URLError,
-                    TimeoutError, ConnectionError):
+            except urllib.error.HTTPError as err:
+                if err.code in (429, 502, 503, 504) and \
+                        attempt < FETCH_RETRIES:
+                    retry_after = err.headers.get("Retry-After")
+                    time.sleep(min(float(retry_after) if
+                                   (retry_after or "").isdigit() else
+                                   3 * attempt, 60))
+                    continue
                 if attempt == FETCH_RETRIES:
                     return None
-                time.sleep(2 * attempt)
+                time.sleep(3 * attempt)
+            except (urllib.error.URLError, TimeoutError, ConnectionError):
+                if attempt == FETCH_RETRIES:
+                    return None
+                time.sleep(3 * attempt)
         if data is None:
             return None
         with _fetch_lock:
@@ -553,19 +563,42 @@ def test_one(asset: dict, cfg) -> dict:
         rub_ok, rub_err = False, "rubash -n timed out (20s)"
     rec["rubash_ok"] = rub_ok
     if not rub_ok:
-        # GNU parity classification (file argument, stdin pinned).
+        # GNU parity classification (file argument, stdin pinned). GNU -n
+        # alone is NOT a sufficient oracle: bash parses incrementally, so a
+        # `shopt -s extglob` makes `case x in @(a|b))` legal at runtime while
+        # `bash -n` (which never executes the shopt) rejects it — observed on
+        # oh-my-bash lib/cli.bash (sources clean under GNU, rc=0). When -n
+        # rejects, fall back to a GNU RUNTIME source before calling the file
+        # upstream-broken.
         gnu_ok, gnu_err = (False, "GNU bash unavailable") if cfg.gnu.bin is None \
             else cfg.gnu.syntax(work)
         rec["gnu_syntax_ok"] = gnu_ok
         rec["gnu_err"] = gnu_err
-        if gnu_ok:
+        gnu_runtime_note = None
+        if not gnu_ok and cfg.gnu.bin is not None:
+            gnu_runtime_note, gnu_runtime_detail = cfg.gnu.runtime(work)
+            rec["gnu_parity"] = gnu_runtime_note
+            rec["gnu_runtime_detail"] = gnu_runtime_detail
+        gnu_valid = cfg.gnu.bin is None or gnu_ok or \
+            gnu_runtime_note == "ok"
+        if gnu_valid:
+            # Engine divergence candidate. Confirm what niu's EXECUTOR does
+            # with the same file (rubash -n may be stricter than rubash's
+            # own runtime — still a parser divergence worth its own group).
+            try:
+                out = test_asset_conpty(asset, work, cfg.niu, cfg.tmp_root,
+                                        cfg.slow_threshold)
+                rec["niu_sources"] = out["verdict"]
+            except Exception as err:
+                rec["niu_sources"] = f"HARNESS-ERROR: {err!r}"[:120]
             rec.update(verdict="SYNTAX-REJECT-RUBASH-ONLY",
                        signature=syntax_signature(rub_err, work),
                        rubash_err=rub_err, ms=int((time.time() - t0) * 1000))
-        else:
-            rec.update(verdict="GNU-ALSO-FAILS",
-                       signature="gnu-syntax:" + norm_signature(gnu_err or "?"),
-                       rubash_err=rub_err, ms=int((time.time() - t0) * 1000))
+            cleanup_work(work)
+            return rec
+        rec.update(verdict="GNU-ALSO-FAILS",
+                   signature="gnu-syntax:" + norm_signature(gnu_err or "?"),
+                   rubash_err=rub_err, ms=int((time.time() - t0) * 1000))
         cleanup_work(work)
         return rec
 
@@ -625,15 +658,22 @@ def report(results_path: Path, top: int, include_storms: bool,
            include_gnu: bool):
     groups: dict[str, list[dict]] = collections.defaultdict(list)
     verdicts = collections.Counter()
-    rows = []
+    latest: dict[str, dict] = {}
     with open(results_path, encoding="utf-8") as fh:
         for ln in fh:
             ln = ln.strip()
             if not ln:
                 continue
-            r = json.loads(ln)
-            rows.append(r)
-            verdicts[r.get("verdict", "?")] += 1
+            try:
+                r = json.loads(ln)
+            except json.JSONDecodeError:
+                continue
+            # One asset, one verdict: the LAST result line wins (re-tests
+            # and resume retries override their stale predecessors).
+            latest[r.get("content_hash", "?")] = r
+    rows = list(latest.values())
+    for r in rows:
+        verdicts[r.get("verdict", "?")] += 1
     for r in rows:
         v = r.get("verdict")
         gold = v in GOLD or (include_storms and v == "ERROR-STORM") or \
@@ -723,13 +763,17 @@ def main(argv=None):
     qmarks = ",".join("?" * len(tier_list))
 
     done = set()
+    # Transient verdicts are NOT "done": a resume must retry them.
+    transient = {"FETCH-FAILED", "HARNESS-ERROR"}
     if results_path.exists() and not args.redo:
         with open(results_path, encoding="utf-8") as fh:
             for ln in fh:
                 try:
-                    done.add(json.loads(ln)["content_hash"])
-                except (json.JSONDecodeError, KeyError):
+                    r = json.loads(ln)
+                except json.JSONDecodeError:
                     continue
+                if r.get("verdict") not in transient:
+                    done.add(r["content_hash"])
     rows = db.execute(
         f"SELECT content_hash, hash_kind, source_url, repo, path, commit_sha, "
         f"bytes, category, tier FROM assets WHERE tier IN ({qmarks}) "

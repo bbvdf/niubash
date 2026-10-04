@@ -126,9 +126,13 @@ T1_SOURCES = [
 
 # T2: completion / keybinding / init-hook repos.
 T2_SOURCES = [
-    ("bash-completion/bash-completion", "bash-completion", "completion", [
-        r"^completions/[^/]+$",          # 1000+ per-command completion FILES
-        r"^[^/]+\.bash$",
+    # NOTE: canonical repo is scop/bash-completion; the `bash-completion`
+    # org name 404s (verified 2026-10-05 via the API). Since 2.12 the
+    # per-command completion FILES live under completions-core/ +
+    # completions-fallback/ (completions/ holds only release packaging).
+    ("scop/bash-completion", "bash-completion", "completion", [
+        r"^(completions-core|completions-fallback)/[^/]+\.bash$",
+        r"^(bash_completion|[^/]+)\.bash$",
     ]),
     ("junegunn/fzf", "fzf", "keybinding", [
         r"^shell/[^/]+\.bash$",
@@ -178,9 +182,11 @@ T4_QUERIES = [
 ]
 
 # T5: dotfiles crawl — bashrc-family basenames inside topic:dotfiles repos.
+# Optional leading dot, bash-family core name, ANY trailing suffix (popular
+# layouts use `bashrc.symlink`, `bashrc.example`, …).
 T5_BASENAMES = re.compile(
-    r"^(\.bashrc|bashrc|\.bash_profile|bash_profile|\.bash_aliases|"
-    r"bash_aliases|\.aliases|aliases|\.bash_functions|\.profile)$",
+    r"^\.?(bashrc|bash_profile|bash_aliases|bash_functions|bash_exports|"
+    r"bash_paths|profile|aliases)(\.[^/\\]*)?$",
     re.IGNORECASE)
 
 # ---------------------------------------------------------------------------
@@ -747,9 +753,11 @@ def main(argv=None):
         elif tier == "t4":
             t4_run(gh, man, state, state_path)
         elif tier == "t5":
+            # Permissive include: .bashrc-family paths do NOT end in .sh/.bash
+            # (`.bashrc` ends in `bashrc`), so the BASENAME filter decides.
             t3_t5_run(gh, man, "t5", args.t5_repos, args.workers,
                       args.max_files_per_repo, state, state_path,
-                      T3_ENTRYPOINT_SUFFIX, T5_BASENAMES,
+                      re.compile(r"."), T5_BASENAMES,
                       ["topic:dotfiles"], "dotfiles")
         else:
             print(f"unknown tier {tier}")
