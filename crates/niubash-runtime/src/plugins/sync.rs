@@ -486,26 +486,36 @@ fn sync_with_spec(
         undeclared.push(record.id.clone());
         if record.spec_enabled.is_some() {
             // The spec owned this source and no longer declares it: drop
-            // its managed block (spec is the truth) but keep the tree.
-            let _ = remove_activation_block(&record);
-            let mut registry_now = read_source_registry();
-            if let Some(stored) = registry_now
-                .iter_mut()
-                .find(|candidate| candidate.id == record.id)
-            {
-                stored.spec_enabled = None;
-                stored.spec_theme = None;
-                sources::write_source_registry(&registry_now)?;
+            // its managed block (spec is the truth) but keep the tree. A
+            // failed removal (a malformed block) is a failed row, never a
+            // "deactivated" print over a block that still loads (wt83 #175).
+            match remove_activation_block(&record) {
+                Ok(()) => {
+                    let mut registry_now = read_source_registry();
+                    if let Some(stored) = registry_now
+                        .iter_mut()
+                        .find(|candidate| candidate.id == record.id)
+                    {
+                        stored.spec_enabled = None;
+                        stored.spec_theme = None;
+                        sources::write_source_registry(&registry_now)?;
+                    }
+                    rows.push(SyncRow {
+                        id: record.id.clone(),
+                        action: "deactivated".to_string(),
+                        detail: format!(
+                            "no longer declared — activation dropped; tree kept \
+                             (`niu plugin source remove {id}` to delete)",
+                            id = record.id
+                        ),
+                    });
+                }
+                Err(err) => rows.push(SyncRow {
+                    id: record.id.clone(),
+                    action: "failed".to_string(),
+                    detail: err.to_string(),
+                }),
             }
-            rows.push(SyncRow {
-                id: record.id.clone(),
-                action: "deactivated".to_string(),
-                detail: format!(
-                    "no longer declared — activation dropped; tree kept \
-                     (`niu plugin source remove {id}` to delete)",
-                    id = record.id
-                ),
-            });
         }
     }
     let mut pruned: Vec<SyncRow> = Vec::new();
@@ -587,10 +597,10 @@ fn write_record(registry: &mut Vec<SourceRecord>, updated: SourceRecord) {
 }
 
 /// Drop a source's managed rc activation (and bash-it enabled/ entries)
-/// without touching the rest of the tree.
+/// without touching the rest of the tree. Errors surface (wt83 #175): a
+/// removal that did not happen must reach the report, not vanish.
 fn remove_activation_block(record: &SourceRecord) -> anyhow::Result<()> {
-    assets::deactivate_block(record);
-    Ok(())
+    assets::deactivate_block(record)
 }
 
 /// `niu plugin update` (no id): the vim-plug `:PlugUpdate` move — refetch

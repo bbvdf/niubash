@@ -283,49 +283,128 @@ fn render_block(record: &SourceRecord, model: &SelectionModel, state: &BlockStat
     )
 }
 
-/// Read one managed block body from the rc (markers excluded).
-fn read_managed_block(id: &str) -> Option<String> {
-    let text = fs::read_to_string(rc_file()).ok()?;
-    extract_block(&text, id)
+/// Every inclusive `(start, stop)` line span of a managed marker pair, in
+/// file order (wt83 #175: every block operation scans ALL pairs — the
+/// first-pair-only scan is what let a duplicate block keep loading after a
+/// "successful" disable). A begin marker with no end marker is an error,
+/// never a silent skip: the malformed block keeps executing at every
+/// startup, so the caller must see the failure.
+fn managed_block_spans(
+    lines: &[String],
+    begin: &str,
+    end: &str,
+) -> anyhow::Result<Vec<(usize, usize)>> {
+    let mut spans = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        if lines[index].trim() == begin {
+            let stop = lines[index + 1..]
+                .iter()
+                .position(|line| line.trim() == end)
+                .map(|offset| index + 1 + offset)
+                .ok_or_else(|| {
+                    anyhow!("rc block starting at '{begin}' has no end marker '{end}'")
+                })?;
+            spans.push((index, stop));
+            index = stop + 1;
+        } else {
+            index += 1;
+        }
+    }
+    Ok(spans)
+}
+
+fn rc_block_lines() -> anyhow::Result<Vec<String>> {
+    let text = fs::read_to_string(rc_file())?;
+    Ok(text.lines().map(str::to_string).collect())
 }
 
 /// Read one managed block *including* markers (for change detection).
 fn managed_block_text(id: &str) -> Option<String> {
-    let text = fs::read_to_string(rc_file()).ok()?;
+    let lines = rc_block_lines().ok()?;
     let begin = begin_marker(id);
     let end = end_marker(id);
-    let start = text.lines().position(|line| line.trim() == begin)?;
-    let stop = text
-        .lines()
-        .skip(start + 1)
-        .position(|line| line.trim() == end)?
-        + start
-        + 1;
-    let block: Vec<&str> = text.lines().skip(start).take(stop - start + 1).collect();
+    let (start, stop) = *managed_block_spans(&lines, &begin, &end).ok()?.first()?;
+    let block: Vec<&str> = lines[start..=stop].iter().map(String::as_str).collect();
     Some(block.join("\n") + "\n")
 }
 
-fn extract_block(text: &str, id: &str) -> Option<String> {
+/// All managed block bodies for an id (markers excluded), in file order —
+/// the text bash actually executes when duplicate blocks exist (wt83 #175).
+/// Read errors and a begin-without-end marker degrade to what was found,
+/// the same tolerance the reads always had; writers never degrade.
+fn read_managed_block_bodies(id: &str) -> Vec<String> {
+    let Ok(lines) = rc_block_lines() else {
+        return Vec::new();
+    };
     let begin = begin_marker(id);
     let end = end_marker(id);
-    let start = text.lines().position(|line| line.trim() == begin)?;
-    let stop = text
-        .lines()
-        .skip(start + 1)
-        .position(|line| line.trim() == end)?
-        + start
-        + 1;
-    let body: Vec<&str> = text
-        .lines()
-        .skip(start + 1)
-        .take(stop - start - 1)
-        .collect();
-    Some(body.join("\n"))
+    managed_block_spans(&lines, &begin, &end)
+        .map(|spans| {
+            spans
+                .iter()
+                .map(|(start, stop)| lines[start + 1..*stop].join("\n"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Number of managed marker pairs for an id; errors on a begin marker with
+/// no end marker (the malformed state must gate the write path).
+fn managed_block_pair_count(id: &str) -> anyhow::Result<usize> {
+    let lines = match rc_block_lines() {
+        Ok(lines) => lines,
+        Err(_) => return Ok(0),
+    };
+    Ok(managed_block_spans(&lines, &begin_marker(id), &end_marker(id))?.len())
+}
+
+/// The merged activation state across ALL of an id's managed blocks — what
+/// a duplicate-block rc contributes beyond its first block. Arrays
+/// accumulate and the last theme wins (the union is a superset, so a
+/// duplicate repair never silently drops a hand line it could have kept).
+fn merged_block_state(bodies: &[String], model: &SelectionModel, record_id: &str) -> BlockState {
+    let mut merged = BlockState::default();
+    for body in bodies {
+        let state = parse_block(body, model, record_id);
+        if state.theme.is_some() {
+            merged.theme = state.theme;
+        }
+        for (var, items) in state.array_items {
+            match merged
+                .array_items
+                .iter_mut()
+                .find(|(existing, _)| *existing == var)
+            {
+                Some((_, list)) => {
+                    for item in items {
+                        if !list.contains(&item) {
+                            list.push(item);
+                        }
+                    }
+                }
+                None => merged.array_items.push((var, items)),
+            }
+        }
+        merged.files.extend(state.files);
+    }
+    merged.files.sort();
+    merged.files.dedup();
+    merged
+}
+
+/// The parsed state of the rc's managed blocks for an id (all of them).
+fn managed_state(id: &str, model: &SelectionModel, record_id: &str) -> BlockState {
+    let bodies = read_managed_block_bodies(id);
+    merged_block_state(&bodies, model, record_id)
 }
 
 /// Insert or replace a managed block in the rc file, creating the rc when
-/// absent. Returns the rc path (for the outcome message).
-fn write_managed_block(begin: &str, end: &str, block: &str) -> anyhow::Result<PathBuf> {
+/// absent. Returns the rc path (for the outcome message) plus how many
+/// existing marker pairs were consumed: 0 = fresh append, 1 = in-place
+/// replace, >1 = duplicate blocks collapsed into the one canonical block
+/// (wt83 #175 — duplicates are an error state, and write repairs them).
+fn write_managed_block(begin: &str, end: &str, block: &str) -> anyhow::Result<(PathBuf, usize)> {
     let path = rc_file();
     let mut lines: Vec<String> = fs::read_to_string(&path)
         .map(|text| text.lines().map(str::to_string).collect())
@@ -333,23 +412,27 @@ fn write_managed_block(begin: &str, end: &str, block: &str) -> anyhow::Result<Pa
             vec!["# Niubash interactive rc - edited by you and `niu plugin`.".to_string()]
         });
     let block_lines: Vec<String> = block.lines().map(str::to_string).collect();
-    match lines.iter().position(|line| line.trim() == begin) {
-        Some(start) => {
-            let stop = lines
-                .iter()
-                .skip(start + 1)
-                .position(|line| line.trim() == end)
-                .map(|offset| offset + start + 1)
-                .ok_or_else(|| {
-                    anyhow!("rc block starting at '{begin}' has no end marker '{end}'")
-                })?;
-            lines.splice(start..=stop, block_lines);
-        }
-        None => {
+    let spans = managed_block_spans(&lines, begin, end)?;
+    let consumed = spans.len();
+    match spans.as_slice() {
+        [] => {
             if !lines.is_empty() && !lines.last().is_some_and(|line| line.trim().is_empty()) {
                 lines.push(String::new());
             }
             lines.extend(block_lines);
+        }
+        [(start, stop)] => {
+            lines.splice(*start..=*stop, block_lines);
+        }
+        many => {
+            // Repair: drop every pair after the first (descending, so the
+            // first span's indices hold), then splice the canonical block
+            // into the first span.
+            for (start, stop) in many.iter().skip(1).rev() {
+                lines.drain(*start..=*stop);
+            }
+            let (first_start, first_stop) = many[0];
+            lines.splice(first_start..=first_stop, block_lines);
         }
     }
     let mut text = lines.join("\n");
@@ -358,36 +441,36 @@ fn write_managed_block(begin: &str, end: &str, block: &str) -> anyhow::Result<Pa
         fs::create_dir_all(parent)?;
     }
     fs::write(&path, text)?;
-    Ok(path)
+    Ok((path, consumed))
 }
 
-/// Remove a managed block; returns false when there was none.
-fn remove_managed_block(begin: &str, end: &str) -> anyhow::Result<bool> {
+/// Remove EVERY managed marker pair for (begin, end); returns how many
+/// pairs were removed (wt83 #175 — disable must leave zero residue, not
+/// drop the first block and strand the duplicates).
+fn remove_managed_block(begin: &str, end: &str) -> anyhow::Result<usize> {
     let path = rc_file();
     let Ok(text) = fs::read_to_string(&path) else {
-        return Ok(false);
+        return Ok(0);
     };
-    let Some(start) = text.lines().position(|line| line.trim() == begin) else {
-        return Ok(false);
-    };
-    let Some(stop) = text
-        .lines()
-        .skip(start + 1)
-        .position(|line| line.trim() == end)
-        .map(|offset| offset + start + 1)
-    else {
-        bail!("rc block starting at '{begin}' has a begin marker but no end marker");
-    };
-    let kept: Vec<&str> = text
-        .lines()
+    let lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let spans = managed_block_spans(&lines, begin, end)?;
+    if spans.is_empty() {
+        return Ok(0);
+    }
+    let kept: Vec<&str> = lines
+        .iter()
         .enumerate()
-        .filter(|(index, _)| *index < start || *index > stop)
-        .map(|(_, line)| line)
+        .filter(|(index, _)| {
+            !spans
+                .iter()
+                .any(|(start, stop)| index >= start && index <= stop)
+        })
+        .map(|(_, line)| line.as_str())
         .collect();
     let mut rewritten = kept.join("\n");
     rewritten.push('\n');
     fs::write(&path, rewritten)?;
-    Ok(true)
+    Ok(spans.len())
 }
 
 /// Build the managed activation block for a source with a theme selected
@@ -481,19 +564,22 @@ fn tree_disable(record: &SourceRecord, asset: &SourceAsset) -> anyhow::Result<()
 }
 
 /// Fully deactivate a source without touching the rest of its tree: the
-/// managed rc block goes, and for `enabled/` managers (bash-it) the tree
-/// entries go too. Used when the spec stops declaring a source it owned
-/// (§14.6.3: spec is the truth; the tree itself is only ever removed by
-/// `niu plugin source remove`).
-pub fn deactivate_block(record: &SourceRecord) {
-    let _ = remove_managed_block(&begin_marker(&record.id), &end_marker(&record.id));
+/// managed rc block goes (ALL matching blocks — wt83 #175), and for
+/// `enabled/` managers (bash-it) the tree entries go too. Used when the
+/// spec stops declaring a source it owned (§14.6.3: spec is the truth; the
+/// tree itself is only ever removed by `niu plugin source remove`).
+/// Errors surface (a malformed block, an unremovable entry): a disable
+/// that could not touch the rc must not print success (wt83 #175).
+pub fn deactivate_block(record: &SourceRecord) -> anyhow::Result<()> {
+    remove_managed_block(&begin_marker(&record.id), &end_marker(&record.id))?;
     if let Some(adapter) = adapter_for(&record.adapter) {
         if let SelectionModel::EnabledDir { .. } = adapter.selection_model() {
             for asset in adapter.list_assets(&record.path) {
-                let _ = tree_disable(record, &asset);
+                tree_disable(record, &asset)?;
             }
         }
     }
+    Ok(())
 }
 
 // ── Overview ─────────────────────────────────────────────────────────────────
@@ -521,11 +607,8 @@ pub fn asset_overview() -> Vec<SourceReport> {
         }
         let record = &status.record;
         let model = adapter.selection_model();
-        let block = read_managed_block(&record.id);
-        let state = block
-            .as_deref()
-            .map(|body| parse_block(body, &model, &record.id))
-            .unwrap_or_default();
+        let bodies = read_managed_block_bodies(&record.id);
+        let state = merged_block_state(&bodies, &model, &record.id);
         let assets = adapter
             .list_assets(&record.path)
             .into_iter()
@@ -537,7 +620,7 @@ pub fn asset_overview() -> Vec<SourceReport> {
         out.push(SourceReport {
             status,
             assets,
-            activated: block.is_some(),
+            activated: !bodies.is_empty(),
         });
     }
     out
@@ -716,10 +799,7 @@ fn current_selection(record: &SourceRecord, model: &SelectionModel) -> Vec<Strin
             .map(|asset| asset.name)
             .collect(),
         SelectionModel::LoaderArrays { .. } | SelectionModel::DirectFiles => {
-            let Some(body) = read_managed_block(&record.id) else {
-                return Vec::new();
-            };
-            let state = parse_block(&body, model, &record.id);
+            let state = managed_state(&record.id, model, &record.id);
             let mut names: Vec<String> = state
                 .array_items
                 .iter()
@@ -732,10 +812,9 @@ fn current_selection(record: &SourceRecord, model: &SelectionModel) -> Vec<Strin
 }
 
 fn current_theme(record: &SourceRecord, model: &SelectionModel) -> Option<String> {
-    read_managed_block(&record.id)
-        .as_deref()
-        .map(|body| parse_block(body, model, &record.id).theme)
-        .unwrap_or(None)
+    managed_state(&record.id, model, &record.id)
+        .theme
+        .filter(|theme| !theme.is_empty())
 }
 
 /// The live activation snapshot of a record — (enabled asset names, active
@@ -763,7 +842,7 @@ pub fn live_selection(record: &SourceRecord) -> (Vec<String>, Option<String>) {
 pub fn enable(name: &str) -> anyhow::Result<ActivationOutcome> {
     let target = resolve_target(name)?;
     let mut spec = spec::load_spec()?.unwrap_or_default();
-    let (_record, summary) = match target {
+    let (record, summary) = match target {
         Target::Source(record) => {
             let adapter = adapter_for(&record.adapter)
                 .ok_or_else(|| anyhow!("unknown adapter '{}'", record.adapter))?;
@@ -839,11 +918,41 @@ pub fn enable(name: &str) -> anyhow::Result<ActivationOutcome> {
         }
     };
     spec::save_spec(&spec)?;
-    super::sync::sync_spec(super::sync::SyncOptions::default())?;
+    let report = super::sync::sync_spec(super::sync::SyncOptions::default())?;
+    // The rc materialization is the visible half of enable: a failed row
+    // for this source (a malformed or unrepairable managed block) must
+    // fail the verb — printing success while the rc was never written is
+    // the fake success wt83 #175 records. A merged row (duplicate blocks
+    // collapsed) is reported in the outcome so the repair is visible.
+    let summary = finish_activation_summary(&record.id, summary, &report)?;
     Ok(ActivationOutcome {
         summary,
         undo: format!("niu plugin disable {name}"),
     })
+}
+
+/// Fold the reconciler's rows for `record_id` into an activation outcome:
+/// a failed row turns into an error (the verb exits nonzero with the
+/// reason); a merged row (duplicate managed blocks collapsed) is appended
+/// to the summary text. Returns the (possibly annotated) summary.
+fn finish_activation_summary(
+    record_id: &str,
+    summary: String,
+    report: &super::sync::SyncReport,
+) -> anyhow::Result<String> {
+    let mut summary = summary;
+    for row in &report.rows {
+        if row.id != record_id {
+            continue;
+        }
+        if row.action == "failed" {
+            bail!("rc update for '{record_id}' failed: {}", row.detail);
+        }
+        if row.action == "merged" {
+            summary.push_str(&format!("; {}", row.detail));
+        }
+    }
+    Ok(summary)
 }
 
 /// `niu plugin disable <target>` — spec sugar: drop the asset (or the whole
@@ -899,7 +1008,11 @@ pub fn disable(name: &str) -> anyhow::Result<ActivationOutcome> {
         }
     }
     spec::save_spec(&spec)?;
-    super::sync::sync_spec(super::sync::SyncOptions::default())?;
+    let report = super::sync::sync_spec(super::sync::SyncOptions::default())?;
+    // Same honesty contract as enable (wt83 #175): a disable whose rc
+    // removal failed must fail loudly, not print "loader block dropped"
+    // over a block that still loads at every startup.
+    let summary = finish_activation_summary(&record.id, summary, &report)?;
     Ok(ActivationOutcome {
         summary,
         undo: format!("niu plugin enable {name}"),
@@ -941,17 +1054,11 @@ pub fn materialize_spec_selection(
         SelectionModel::WholeSource => {
             // Declared = active; the guarded loader block is the unit.
             let rendered = render_block(record, &model, &BlockState::default());
-            let unchanged = managed_block_text(&record.id).as_deref() == Some(rendered.as_str());
-            if !unchanged {
-                write_managed_block(
-                    &begin_marker(&record.id),
-                    &end_marker(&record.id),
-                    &rendered,
-                )?;
-            }
+            let (action, detail) =
+                write_block_report(record, &rendered, "whole-source guarded loader")?;
             SpecMaterialization {
-                action: if unchanged { "unchanged" } else { "activated" }.to_string(),
-                detail: "whole-source guarded loader".to_string(),
+                action,
+                detail,
                 spec_enabled: Some(Vec::new()),
                 spec_theme: None,
             }
@@ -1057,11 +1164,12 @@ pub fn materialize_spec_selection(
                     // entries (even ones niu cannot enumerate — the
                     // manager may still know them) keep their exact
                     // placement; then apply the spec's delta: drop what the
-                    // spec dropped, add what it declares.
-                    let mut state = read_managed_block(&record.id)
-                        .as_deref()
-                        .map(|body| parse_block(body, &model, &record.id))
-                        .unwrap_or_default();
+                    // spec dropped, add what it declares. ALL of the id's
+                    // managed blocks seed the state (wt83 #175): with
+                    // duplicates present, bash executes every block, so
+                    // the union — not the first block — is what the user
+                    // actually runs.
+                    let mut state = managed_state(&record.id, &model, &record.id);
                     let dropped: Vec<String> = prev
                         .iter()
                         .filter(|name| !next.contains(name))
@@ -1172,23 +1280,48 @@ fn apply_block(
     if !active {
         let removed = remove_managed_block(&begin_marker(&record.id), &end_marker(&record.id))?;
         return Ok((
-            if removed { "deactivated" } else { "unchanged" }.to_string(),
+            if removed > 0 {
+                "deactivated"
+            } else {
+                "unchanged"
+            }
+            .to_string(),
             "nothing enabled — managed block dropped".to_string(),
         ));
     }
     let rendered = render_block(record, model, state);
-    let unchanged = managed_block_text(&record.id).as_deref() == Some(rendered.as_str());
-    if !unchanged {
-        write_managed_block(
-            &begin_marker(&record.id),
-            &end_marker(&record.id),
-            &rendered,
-        )?;
+    write_block_report(
+        record,
+        &rendered,
+        "selection materialized into the managed rc block",
+    )
+}
+
+/// The shared write path behind materialization: replace the id's managed
+/// block(s) with the canonical rendering unless the single existing block
+/// is already byte-identical. Duplicate pairs are always collapsed and
+/// reported as a `merged` row — byte-stability of the FIRST block must not
+/// let sync call a duplicated-block rc "in sync" (wt83 #175).
+fn write_block_report(
+    record: &SourceRecord,
+    rendered: &str,
+    detail: &str,
+) -> anyhow::Result<(String, String)> {
+    let pair_count = managed_block_pair_count(&record.id)?;
+    let unchanged = pair_count == 1
+        && managed_block_text(&record.id).as_deref() == Some(rendered.to_string()).as_deref();
+    if unchanged {
+        return Ok(("unchanged".to_string(), detail.to_string()));
     }
-    Ok((
-        if unchanged { "unchanged" } else { "activated" }.to_string(),
-        "selection materialized into the managed rc block".to_string(),
-    ))
+    let (_, consumed) =
+        write_managed_block(&begin_marker(&record.id), &end_marker(&record.id), rendered)?;
+    if consumed > 1 {
+        return Ok((
+            "merged".to_string(),
+            format!("collapsed {consumed} duplicate managed blocks into one canonical block"),
+        ));
+    }
+    Ok(("activated".to_string(), detail.to_string()))
 }
 
 #[cfg(test)]
@@ -1660,5 +1793,96 @@ mod tests {
         assert_eq!(split_quoted_words("'it'\\''s'"), vec!["it's"]);
         // Hand-edited junk tokens are skipped, not fatal.
         assert_eq!(split_quoted_words("'a' bare 'b'"), vec!["a", "b"]);
+    }
+
+    /// A managed block whose end marker was lost (hand edit, partial
+    /// restore) must fail enable/disable HONESTLY (wt83 #175): the verbs
+    /// exit with the writer's reason and the rc is left untouched — never
+    /// a success print over an rc that was not written.
+    #[test]
+    fn malformed_block_fails_enable_and_disable_honestly() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let origin = unique_temp_dir("malformed-origin");
+        write_omb_fixture(&origin);
+        let box_ = sandbox("malformed");
+        install(&origin);
+        trust("oh-my-bash");
+
+        enable("git").expect("clean enable first");
+        // Corrupt: drop the end marker line.
+        let rc = rc_text();
+        let end = "# <<< niu source oh-my-bash <<<\n";
+        assert!(rc.contains(end), "{rc}");
+        let broken = rc.replace(end, "");
+        fs::write(rc_file(), &broken).unwrap();
+        let broken = rc_text();
+
+        let err = disable("git").expect_err("disable must not print success over a failed write");
+        assert!(err.to_string().contains("no end marker"), "{err}");
+        assert!(
+            err.to_string()
+                .contains("rc update for 'oh-my-bash' failed"),
+            "{err}"
+        );
+        assert_eq!(rc_text(), broken, "the rc is untouched by the failed verb");
+
+        let err = enable("agnoster").expect_err("enable must fail the same way");
+        assert!(err.to_string().contains("no end marker"), "{err}");
+        assert_eq!(rc_text(), broken, "the rc is untouched by the failed verb");
+
+        let _ = fs::remove_dir_all(&origin);
+        let _ = fs::remove_dir_all(&box_.temp);
+    }
+
+    /// Duplicate managed blocks (whole-file backup-restore concatenation):
+    /// sync must not call the file "in sync" — it reports the anomaly and
+    /// collapses the duplicates into one canonical block — and a source
+    /// disable removes EVERY matching pair, leaving zero residue (wt83 #175).
+    #[test]
+    fn duplicate_blocks_are_reported_by_sync_and_fully_removed_by_disable() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let origin = unique_temp_dir("dup-origin");
+        write_omb_fixture(&origin);
+        let box_ = sandbox("duplicate");
+        install(&origin);
+        trust("oh-my-bash");
+        enable("git").expect("clean enable first");
+        let one = rc_text();
+
+        // Duplicate the whole rc onto itself.
+        fs::write(rc_file(), format!("{one}{one}")).unwrap();
+        let count = |needle: &str| rc_text().matches(needle).count();
+        assert_eq!(count(">>> niu source oh-my-bash"), 2, "{:?}", rc_text());
+
+        // Sync reports the anomaly (a `merged` row, so the report is not
+        // "clean") and repairs to one canonical block.
+        let report = super::super::sync::sync_spec(super::super::sync::SyncOptions::default())
+            .expect("sync runs");
+        assert!(
+            report.rows.iter().any(|row| row.id == "oh-my-bash"
+                && row.action == "merged"
+                && row.detail.contains("duplicate managed blocks")),
+            "{:?}",
+            report.rows
+        );
+        assert_eq!(count(">>> niu source oh-my-bash"), 1, "{}", rc_text());
+        assert!(rc_text().contains("plugins=('git')"), "{}", rc_text());
+
+        // Duplicate again, then disable the source: zero residue.
+        let one = rc_text();
+        fs::write(rc_file(), format!("{one}{one}")).unwrap();
+        assert_eq!(count(">>> niu source oh-my-bash"), 2);
+        disable("oh-my-bash").expect("source disable removes every block");
+        assert_eq!(count(">>> niu source oh-my-bash"), 0, "{}", rc_text());
+        assert_eq!(count("<<< niu source oh-my-bash"), 0, "{}", rc_text());
+        assert!(!rc_text().contains("oh-my-bash.sh"), "{}", rc_text());
+        assert!(
+            !spec_text().contains("target ="),
+            "the declaration is gone: {}",
+            spec_text()
+        );
+
+        let _ = fs::remove_dir_all(&origin);
+        let _ = fs::remove_dir_all(&box_.temp);
     }
 }
