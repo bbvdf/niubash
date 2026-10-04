@@ -391,12 +391,23 @@ fn gallery_source_rank(source_id: &str) -> u8 {
 /// and the post-install pick (owner ruling 2026-10-03) share this exact
 /// presentation, so both land in the rc through the same ThemePick path.
 /// `None` = Ctrl-C.
+///
+/// The live preview (niubash#170) renders the highlighted theme's real PS1
+/// in the pane below the menu: a child `niu` sources the theme's managed
+/// block in a sandboxed environment and the ready bytes are painted here —
+/// the same [`crate::plugins::theme_preview::GalleryPreviews`] cache the
+/// `niu plugin ui` theme section uses. The callback stays synchronous: the
+/// Measure pass answers from constants (no renders), a Draw pass starts the
+/// theme's render lazily and reads the cache (or the bounded placeholder).
 fn ask_theme_question(
     io: &mut WizardIo,
     t: &Lang,
     gallery: &ThemeGallery,
     current: &ThemePick,
 ) -> Option<ThemePick> {
+    use crate::interactive_menu::PreviewPhase;
+    use crate::plugins::theme_preview::{GalleryPreviews, PreviewState, RENDERING_PLACEHOLDER};
+
     let mut options = vec![match current {
         ThemePick::Keep => t.tr("Skip - keep my current theme").to_string(),
         pick @ ThemePick::External { .. } => format!(
@@ -409,28 +420,45 @@ fn ask_theme_question(
         options.push(entry.name.clone());
     }
     let theme_refs: Vec<&str> = options.iter().map(String::as_str).collect();
-    let preview = |i: usize| -> Vec<String> {
-        if i == 0 {
-            return match current {
+    let previews = GalleryPreviews::new();
+    let preview = move |phase: PreviewPhase, i: usize| -> Vec<String> {
+        match phase {
+            // Layout sweep: constants only — never start a render per option.
+            PreviewPhase::Measure => GalleryPreviews::measure_placeholder(),
+            PreviewPhase::Draw if i == 0 => match current {
                 ThemePick::Keep => vec![t.tr("current look unchanged").to_string()],
                 pick => vec![format!(
                     "{} {}",
                     t.tr("keep"),
                     describe_theme_pick(pick, *t)
                 )],
-            };
+            },
+            PreviewPhase::Draw => {
+                let entry = &gallery.entries[i - 1];
+                // Queue the next neighbor so arrow-key browsing finds its
+                // preview already rendered (never waits, niubash#170).
+                if let Some(next) = gallery.entries.get(i) {
+                    previews.prefetch(&next.source_id, &next.name);
+                }
+                let mut lines = vec![format!("{} · {}", entry.name, entry.adapter)];
+                lines.extend(
+                    match previews.state_for(
+                        &entry.source_id,
+                        &entry.name,
+                        crate::plugins::theme_preview::PREVIEW_GRACE,
+                    ) {
+                        PreviewState::Ready(prompt_lines) => prompt_lines,
+                        PreviewState::Rendering => vec![t.tr(RENDERING_PLACEHOLDER).to_string()],
+                        PreviewState::Unavailable(reason) => {
+                            vec![format!("{}{reason})", t.tr("(preview unavailable: "))]
+                        }
+                    }
+                    .into_iter()
+                    .take(crate::plugins::theme_preview::MAX_PREVIEW_LINES),
+                );
+                lines
+            }
         }
-        let entry = &gallery.entries[i - 1];
-        vec![
-            format!(
-                "{} - {} {}",
-                entry.name,
-                entry.adapter,
-                t.tr("theme (external source)")
-            ),
-            t.tr("renders via the bash-compatible PS1 channel")
-                .to_string(),
-        ]
     };
     let hint = t.tr("  │  external themes from your trusted plugin sources; Skip changes nothing");
     let idx = io.choice_preview(
@@ -715,7 +743,7 @@ impl WizardIo {
         default_idx: usize,
         options: &[&str],
         help: &str,
-        preview: &dyn Fn(usize) -> Vec<String>,
+        preview: &dyn Fn(crate::interactive_menu::PreviewPhase, usize) -> Vec<String>,
     ) -> Option<usize> {
         self.choice_inner(label, default_idx, options, help, Some(preview))
     }
@@ -726,7 +754,7 @@ impl WizardIo {
         default_idx: usize,
         options: &[&str],
         help: &str,
-        preview: Option<&dyn Fn(usize) -> Vec<String>>,
+        preview: Option<&dyn Fn(crate::interactive_menu::PreviewPhase, usize) -> Vec<String>>,
     ) -> Option<usize> {
         // Test seam: a queued answer wins before any console interaction.
         // `usize::MAX` scripts a Ctrl-C (None).
@@ -2052,6 +2080,8 @@ fn zh(en: &str) -> Option<&'static str> {
         "current look unchanged" => "当前外观保持不变",
         "keep" => "保留",
         "default" => "默认",
+        "rendering preview …" => "预览渲染中 …",
+        "(preview unavailable: " => "（预览不可用：",
         "your theme (~/.niubash/themes)" => "你的主题（~/.niubash/themes）",
         "theme (external source, primary)" => "主题（外部源，主选）",
         "renders via the bash-compatible PS1 channel; built-in themes stay as fallback" =>

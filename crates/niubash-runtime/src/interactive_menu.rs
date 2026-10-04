@@ -95,15 +95,27 @@ pub fn interactive_choice(
     interactive_choice_ex(label, options, default_idx, help, None)
 }
 
+/// Which pass is asking the preview callback. `Measure` probes the fixed
+/// preview-pane height once per option while the menu is being laid out —
+/// the callback must answer from constants only, with no rendering work
+/// (niubash#170: a live theme preview starts child renders on `Draw` only,
+/// so the layout sweep can never spawn them). `Draw` is a real paint of the
+/// highlighted option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewPhase {
+    Measure,
+    Draw,
+}
+
 /// Like [`interactive_choice`], plus an optional live preview rendered below
 /// the menu and refreshed whenever the highlight moves. `preview` maps an
-/// option index to the lines to display.
+/// option index (plus the [`PreviewPhase`] asking) to the lines to display.
 pub fn interactive_choice_ex(
     label: &str,
     options: &[&str],
     default_idx: usize,
     help: &str,
-    preview: Option<&dyn Fn(usize) -> Vec<String>>,
+    preview: Option<&dyn Fn(PreviewPhase, usize) -> Vec<String>>,
 ) -> Selection {
     let _raw = RawMode::enter();
 
@@ -115,7 +127,7 @@ pub fn interactive_choice_ex(
             options
                 .iter()
                 .enumerate()
-                .map(|(i, _)| pv(i).len())
+                .map(|(i, _)| pv(PreviewPhase::Measure, i).len())
                 .max()
                 .unwrap_or(0)
         })
@@ -149,10 +161,11 @@ pub fn interactive_choice_ex(
     io::stdout().flush().ok();
 
     if let Some(pv) = preview {
-        for line in pv(selected) {
-            println!("  {}", clip_line(&line, term_width() as usize - 4));
+        let lines = pv(PreviewPhase::Draw, selected);
+        for line in &lines {
+            println!("  {}", clip_line(line, term_width() as usize - 4));
         }
-        for _ in pv(selected).len()..preview_height {
+        for _ in lines.len()..preview_height {
             println!();
         }
     }
@@ -185,7 +198,7 @@ pub fn interactive_choice_ex(
             MenuAction::Abort => return Selection::Abort,
             MenuAction::MoveTo(new) if new != selected => {
                 selected = new;
-                let lines = preview.map(|pv| pv(selected));
+                let lines = preview.map(|pv| pv(PreviewPhase::Draw, selected));
                 redraw_menu(
                     options,
                     selected,

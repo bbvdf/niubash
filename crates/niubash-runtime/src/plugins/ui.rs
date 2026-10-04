@@ -22,7 +22,7 @@ use anyhow::bail;
 use std::io::IsTerminal;
 
 use super::{distros, recipes, sources};
-use crate::interactive_menu::{interactive_choice, Selection};
+use crate::interactive_menu::{interactive_choice, interactive_choice_ex, Selection};
 use crate::text_style;
 
 /// One verb row of the command table. `applies` decides which row kinds
@@ -94,9 +94,22 @@ fn verb(verb_id: &str) -> &'static UiVerb {
 /// What kind of thing a UI row points at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiRowKind {
-    Source { trusted: bool, degraded: bool },
-    Recipe { installable: bool, installed: bool },
-    Collection { builtin: bool },
+    Source {
+        trusted: bool,
+        degraded: bool,
+    },
+    Recipe {
+        installable: bool,
+        installed: bool,
+    },
+    Collection {
+        builtin: bool,
+    },
+    /// A theme asset from a trusted source (niubash#170): highlight previews
+    /// the theme's real PS1, Enter opens the activation verbs.
+    Theme {
+        source_id: String,
+    },
 }
 
 impl UiRowKind {
@@ -125,6 +138,7 @@ impl UiRowKind {
                 }
             }
             Self::Collection { .. } => vec![verb("apply")],
+            Self::Theme { .. } => vec![verb("enable"), verb("disable")],
         }
     }
 }
@@ -203,6 +217,36 @@ pub fn inventory() -> Vec<UiSection> {
         rows: ready.iter().map(|status| row_of(status)).collect(),
         global: false,
     });
+
+    // Themes from trusted sources (niubash#170): a browsable section whose
+    // highlighted row previews the theme's real PS1 (the same
+    // `theme_preview::GalleryPreviews` cache the wizard's gallery uses).
+    // Attention-first placement: right after the ready sources, before the
+    // recipe index — themes are the asset users pick, not something to
+    // install.
+    let mut themes = sources::source_theme_entries();
+    themes.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.source_id.cmp(&right.source_id))
+    });
+    if !themes.is_empty() {
+        sections.push(UiSection {
+            title: "Themes — highlight to preview, Enter to activate".into(),
+            rows: themes
+                .into_iter()
+                .map(|theme| UiRow {
+                    id: theme.name,
+                    kind: UiRowKind::Theme {
+                        source_id: theme.source_id,
+                    },
+                    state: "theme".into(),
+                    hint: theme.adapter_display,
+                })
+                .collect(),
+            global: false,
+        });
+    }
 
     // Recipes not installed yet, grouped by category (the mason-style
     // index; only installable or notable rows are listed to keep the menu
@@ -417,8 +461,13 @@ pub fn run_ui() -> anyhow::Result<()> {
 }
 
 /// One section submenu: rows, then per-row verbs, then back. Returns on
-/// Esc/back; actions re-enter the loop with fresh state.
+/// Esc/back; actions re-enter the loop with fresh state. The theme section
+/// paints a live preview of the highlighted theme below the menu
+/// (niubash#170) through the shared [`theme_preview::GalleryPreviews`] cache.
 fn open_section(section: &UiSection) -> anyhow::Result<()> {
+    use crate::interactive_menu::PreviewPhase;
+    use crate::plugins::theme_preview::{GalleryPreviews, PREVIEW_GRACE};
+
     if section.global {
         // The global section is a verb list, not a row list.
         return run_global_verbs();
@@ -433,12 +482,54 @@ fn open_section(section: &UiSection) -> anyhow::Result<()> {
         }
         let options: Vec<String> = rows.iter().map(UiRow::line).collect();
         let option_refs: Vec<&str> = options.iter().map(String::as_str).collect();
-        let pick = interactive_choice(
-            &section.title,
-            &option_refs,
-            0,
-            "Enter opens the verb menu for the highlighted row · Esc goes back",
-        );
+        let is_theme_section = !rows.is_empty()
+            && rows
+                .iter()
+                .all(|row| matches!(row.kind, UiRowKind::Theme { .. }));
+        let pick = if is_theme_section {
+            let previews = GalleryPreviews::new();
+            interactive_choice_ex(
+                &section.title,
+                &option_refs,
+                0,
+                "Enter opens the verb menu for the highlighted row · Esc goes back",
+                Some(&|phase, index| match phase {
+                    // Layout sweep: constants only, no renders.
+                    PreviewPhase::Measure => GalleryPreviews::measure_placeholder(),
+                    PreviewPhase::Draw => {
+                        let row = &rows[index];
+                        let UiRowKind::Theme { source_id } = &row.kind else {
+                            return vec![row.hint.clone()];
+                        };
+                        // Queue the neighbor so arrow-key browsing finds its
+                        // preview already rendered (never waits, niubash#170).
+                        if let Some(next) = rows.get(index + 1) {
+                            if let UiRowKind::Theme {
+                                source_id: next_source,
+                            } = &next.kind
+                            {
+                                previews.prefetch(next_source, &next.id);
+                            }
+                        }
+                        let mut lines = vec![format!("{} · {}", row.id, row.hint)];
+                        lines.extend(
+                            previews
+                                .lines_for(source_id, &row.id, PREVIEW_GRACE)
+                                .into_iter()
+                                .take(crate::plugins::theme_preview::MAX_PREVIEW_LINES),
+                        );
+                        lines
+                    }
+                }),
+            )
+        } else {
+            interactive_choice(
+                &section.title,
+                &option_refs,
+                0,
+                "Enter opens the verb menu for the highlighted row · Esc goes back",
+            )
+        };
         let index = match pick {
             Selection::Confirmed(index) => index,
             Selection::UseDefault | Selection::Abort => return Ok(()),
@@ -610,5 +701,81 @@ mod tests {
     fn apply_verb_rejects_unknown_verbs() {
         let err = apply_verb("explode", "x").unwrap_err().to_string();
         assert!(err.contains("no such UI verb"), "{err}");
+    }
+
+    #[test]
+    fn theme_rows_offer_activation_verbs() {
+        let theme = UiRowKind::Theme {
+            source_id: "oh-my-bash".into(),
+        };
+        let labels: Vec<&str> = theme.verbs().iter().map(|entry| entry.verb).collect();
+        assert!(labels.contains(&"enable"), "{labels:?}");
+        assert!(labels.contains(&"disable"), "{labels:?}");
+    }
+
+    /// niubash#170: a trusted theme-bearing source contributes a Themes
+    /// section whose rows are theme rows (the preview pane's subjects), one
+    /// per theme, sorted by name.
+    #[test]
+    fn inventory_lists_a_themes_section_for_trusted_theme_sources() {
+        use crate::test_support::PROCESS_STATE_LOCK;
+        use std::path::PathBuf;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp =
+            std::env::temp_dir().join(format!("ui-theme-section-{}-{nanos}", std::process::id()));
+        let _sources = std::env::set_var(
+            "NIU_PLUGIN_SOURCES_ROOT",
+            &temp.join("sources").to_string_lossy().to_string(),
+        );
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::plugins::sources::add_source(crate::plugins::sources::SourceInstallRequest {
+                adapter: None,
+                origin: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../tests/fixtures/sources/oh-my-bash")
+                    .to_string_lossy()
+                    .into_owned(),
+                ref_name: None,
+                commit: None,
+                expected_checksum: None,
+                id: None,
+                entry: None,
+            })
+            .expect("fixture source add must succeed");
+            crate::plugins::sources::trust_source("oh-my-bash").expect("fixture trust");
+
+            let sections = inventory();
+            let themes = sections
+                .iter()
+                .find(|section| section.title.starts_with("Themes"))
+                .expect("trusted theme source must contribute a Themes section");
+            assert!(!themes.rows.is_empty(), "{:?}", themes.rows);
+            let names: Vec<&str> = themes.rows.iter().map(|row| row.id.as_str()).collect();
+            assert!(
+                names.iter().any(|name| *name == "robbyrussell"),
+                "{names:?}"
+            );
+            assert!(
+                names.windows(2).all(|pair| pair[0] <= pair[1]),
+                "theme rows must be sorted by name: {names:?}"
+            );
+            for row in &themes.rows {
+                let UiRowKind::Theme { source_id } = &row.kind else {
+                    panic!("theme section row must be a Theme row: {row:?}");
+                };
+                assert_eq!(source_id, "oh-my-bash", "{row:?}");
+            }
+        }));
+        let _ = std::env::remove_var("NIU_PLUGIN_SOURCES_ROOT");
+        let _ = crate::plugins::sources::remove_source("oh-my-bash");
+        let _ = std::fs::remove_dir_all(&temp);
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
     }
 }
