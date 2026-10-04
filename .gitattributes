@@ -24,3 +24,11 @@ scripts/journey/*.py text eol=lf
 # The adversarial injection kit (wt88/advmatrix) is python edited and run
 # across agents/shells; same shared-tree hygiene as scripts/journey/*.py.
 scripts/adversarial/*.py text eol=lf
+# Skill bundle (niubash#188): the corpus transcripts are byte-diffed by
+# scripts/generate-skill.py, and the bundle files are embedded via
+# include_str! — a CRLF working copy would flip both the golden check and
+# the shipped bytes.
+crates/niubash-runtime/tests/fixtures/skill-corpus/** text eol=lf
+skills/niubash/** text eol=lf
+scripts/generate-skill.py text eol=lf
+scripts/test-skill-bundle.py text eol=lf

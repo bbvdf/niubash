@@ -1,0 +1,52 @@
+Niubash <version> — a bash-compatible shell that feels at home on Windows.
+
+Usage:  niu [option]
+        niu -c <cmd>         Run a command then exit
+        niu -C <cmd>         Run one REPL-style command then exit
+        niu setup           Re-run prompt/plugin setup
+        niu font            Nerd Font detection & install recommendations
+        niu doctor          Health-check the installation
+        niu <script> [args]  Run a script file
+
+Options:
+  -h, --help                Show this help
+  -V, --version             Version and component info
+  -c <command>              Execute a command ad-hoc
+  -C, --repl-command <cmd>  Execute one non-interactive REPL command
+
+  --install-wt-profile      Add/update the Windows Terminal profile
+      --set-default         Also set Niubash as the WT default profile
+      --quiet               Suppress non-error profile output
+  --self-update             Download and run the latest release installer
+      --check               Only report the latest release
+      --dry-run             Download installer without running it
+  self-update               REPL command: update Niubash and exit this shell
+  update-niubash            Alias for self-update
+
+  plugin add <id|owner/repo|url|path>
+                            Install an external plugin source (untrusted)
+  plugin list [--json]      Sources, their assets, activation state
+  plugin enable|disable <t> Activate or deactivate a source or asset
+  plugin update|sync|restore|rollback|clean
+                            Lockfile verbs (vim-plug/lazy.nvim-style)
+  plugin trust <id>         Review and activate a source's assets
+  plugin discover [--verbose]
+                            Read-only overview of external plugin sources
+  plugin source <command>   Full source protocol (add/trust/sign/verify/
+                            remove/update/rollback/list)
+  plugin recipe <command>   Recipe index (list/show/add)
+  plugin distro <command>   Collections (list/import/remove/apply)
+  plugin mirror <command>   Git fetch mirroring (list/show/set)
+  plugin ui                 Menu UI (sections by state, same verbs)
+
+  --completion-probe <line> [cursor]  Debug: print completion candidates
+
+Configuration: ~/.niubashrc for interactive startup; a pre-rename ~/.winuxshrc is migrated once into ~/.niubashrc
+
+Environment:
+  NIU_ENV=<file>          Non-interactive init file sourced by -c, scripts, and stdin
+                          before running the command (bash BASH_ENV is also honored,
+                          NIU_ENV takes precedence). Unset by default, keeping -c fast.
+  BASH_ENV=<file>         GNU bash compatible: same as NIU_ENV, lower precedence.
+  NIU_LANG=<lang>         Setup wizard language (zh / en). Falls back to the
+                          Windows UI language, then LC_ALL/LANG.

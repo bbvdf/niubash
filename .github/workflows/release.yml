@@ -814,9 +814,60 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # AI agent skill bundle (niubash#188): the same tree `niu skill install`
+  # embeds, zipped with the WinuxCmd-skill layout (one top-level directory
+  # holding SKILL.md + references/ + agents/) so agent hosts can consume
+  # either the release zip or the installed dir interchangeably. The golden
+  # region check runs here too — a release never ships a drifted bundle.
+  skill-bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - name: Resolve release inputs
+        id: release
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${{ github.ref_name }}"
+          fi
+          version="${tag#v}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Golden-check the skill bundle
+        run: python scripts/test-skill-bundle.py
+
+      - name: Package niubash-skill zip
+        run: |
+          mkdir -p dist
+          (cd skills && zip -r "../dist/niubash-skill-v${{ steps.release.outputs.version }}.zip" niubash)
+          unzip -l "dist/niubash-skill-v${{ steps.release.outputs.version }}.zip"
+
+      - name: Verify zip layout (SKILL.md at niubash/ root)
+        run: |
+          set -eu
+          test "$(unzip -l "dist/niubash-skill-v${{ steps.release.outputs.version }}.zip" | grep -c 'niubash/SKILL.md')" -eq 1
+          unzip -l "dist/niubash-skill-v${{ steps.release.outputs.version }}.zip" | grep -q 'niubash/references/quickref.md'
+          unzip -l "dist/niubash-skill-v${{ steps.release.outputs.version }}.zip" | grep -q 'niubash/agents/openai.yaml'
+
+      - name: Upload skill bundle artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: niubash-skill-v${{ steps.release.outputs.version }}
+          path: dist/niubash-skill-v${{ steps.release.outputs.version }}.zip
+          if-no-files-found: error
+          retention-days: 1
+
   release:
     runs-on: ubuntu-latest
-    needs: [build-windows, build-linux, build-macos, journey, perfbudget]
+    needs: [build-windows, build-linux, build-macos, journey, perfbudget, skill-bundle]
     steps:
       - uses: actions/checkout@v4.2.2
 
@@ -868,6 +919,8 @@ jobs:
             Verify locally with `niu --version`, which prints the same revision.
 
             Windows (x64, ARM64): Inno Setup installers (`*-setup.exe`) add user PATH and Windows Terminal profile integration; portable zips bundle `niu` with WinuxCmd and bash/sh shims.
+
+            `niubash-skill-v<version>.zip` is the AI agent skill bundle (SKILL.md + references, WinuxCmd-skill layout): unpack it into an agent skills directory, or let the shell do it — `niu skill install` embeds the same content.
 
             Linux (x86_64, aarch64; glibc): portable tarballs with the `niu` binary, README, and LICENSE — Unix builds bundle nothing, native system tools are used. Untar anywhere and run `./niu`.
 

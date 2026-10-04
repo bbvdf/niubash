@@ -83,6 +83,7 @@ macro_rules! eprintln {
 }
 
 mod self_update;
+mod skill;
 // GNU variables.c FUNCNEST: 0/unset means no limit, so recursion depth is
 // bounded only by the real stack. Debug frames in the engine's call chain
 // run ~150KB each; 512MiB (reserved, not committed) covers func4.sub's
@@ -211,8 +212,9 @@ fn run(args: &[String]) -> anyhow::Result<()> {
             None => niubash_runtime::setup_wizard::rerun_wizard(),
         },
         "font" => niubash_runtime::fonts::run_font_command(),
-        "doctor" => niubash_runtime::doctor::run_doctor(),
+        "doctor" => niubash_runtime::doctor::run_doctor(skill::SKILL_FILES),
         "plugin" => run_plugin_command(args),
+        "skill" => skill::run_skill_command(args),
         _ => {
             // Treat as a script file to execute
             let mut shell = niubash_runtime::Shell::new()?;
@@ -1338,6 +1340,9 @@ fn print_usage() {
     println!("  plugin distro <command>   Collections (list/import/remove/apply)");
     println!("  plugin mirror <command>   Git fetch mirroring (list/show/set)");
     println!("  plugin ui                 Menu UI (sections by state, same verbs)");
+    println!();
+    println!("  skill install|status      Install/check the AI agent skill bundle");
+    println!("                            ([--target claude|zcode|cursor|all|<dir>])");
     println!();
     println!("  --completion-probe <line> [cursor]  Debug: print completion candidates");
     println!();
