@@ -169,7 +169,28 @@ network access to github.com.
 Options: `--artifacts DIR` (default
 `target/journey-results/<timestamp>`), `--keep-sandbox DIR` (create the
 sandbox under a directory you choose; it is kept on red, removed on
-green).
+green), `--phases IDS` (comma-separated spec phase ids from
+[journey-steps.json](journey-steps.json) to compose after the base gate,
+e.g. `--phases P4,P7`; `all` = every registered phase; default `base` =
+J1–J6, the release gate, unchanged).
+
+### Phase composition (--phases)
+
+The phased expansion ([journey-spec.md](journey-spec.md)) lands lane by
+lane: each wave lane appends clearly-separated phase runner functions to
+`scripts/journey/golden-journey.py`, registered under the spec's phase id
+in `PHASE_RUNNERS` (`wt79/jw1-persistence` → `P3` + `P8-S4`,
+`wt80/jw2-wizardspec` → `P4` + `P7`). The registry + the `--phases` flag
+are the only shared surface, so lanes cannot collide in step code.
+
+Selected phases run AFTER the base gate on the same sandbox — every phase
+walks on the installed state J1–J6 leave — so a lane's local run is
+`--phases base,P4,P7` and the whole-spec walk is `--phases all`. A
+base-gate failure blocks the phases (nothing to walk on), exactly like it
+blocks J2–J6 today. Phase verdicts appear in the same
+`verdict.{json,txt}` as steps; expected-red phase steps carry their
+registered KNOWN-FAIL labels (e.g. `wt73-168-theme-rebound`) and never
+pass silently.
 
 ## How the gate blocks release
 

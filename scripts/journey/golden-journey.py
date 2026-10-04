@@ -44,10 +44,21 @@ the registered KNOWN-FAIL list. A known-fail is still RED (exit 1) — the
 gate's job is to tell the truth — but the verdict names the owning ticket
 so the red is expected-red, not a mystery.
 
+Spec phases (docs/journey-spec.md §3, lane split §7): wave lanes land
+their phases as clearly-separated runner functions keyed by the spec's
+phase ids (docs/journey-steps.json) — wt79/jw1-persistence owns P3/P8-S4,
+wt80/jw2-wizardspec owns P4/P7. `--phases base` (the default) is J1–J6,
+the release gate, unchanged. Selected phases compose AFTER the base gate
+on the same sandbox — every phase walks on the installed state the base
+gate leaves — so a lane's local run is `--phases base,P4,P7` and the full
+walk is `--phases all`.
+
 Exit codes: 0 every assertion holds, 1 any fail/known-fail, 2 skip
-(missing python deps / not Windows / no niu.exe / no git).
+(missing python deps / not Windows / no niu.exe / no git / unknown phase
+id).
 
 Usage: python scripts/journey/golden-journey.py <niu.exe> [--artifacts DIR]
+        [--phases base|P4,P7,...|all]
 """
 
 import argparse
@@ -183,6 +194,35 @@ KNOWN_FAILS = [
         "note": "the 'full' collection's bash-preexec recipe names entry "
                 "'bash-preexec' but upstream rcaloras/bash-preexec ships "
                 "'bash-preexec.sh' — the apply reports '1 entries failed'",
+    },
+    {
+        "id": "wt73-168-theme-rebound",
+        "ticket": "niu#168 (fix lane wt72/themeback): wizard/sync leave the rc "
+                  "and the spec disagreeing about the picked theme",
+        "pattern": r"wt73-168-theme-rebound|theme rebound|theme ownership "
+                   r"disagrees",
+        "note": "the wizard's re-run pick (or the sync rewrite) never reaches "
+                "the spec, so the next sync re-materializes the stale claim "
+                "over it — the pick reverts or the framework flips across "
+                "source/new terminals. expected-red until wt72 lands; "
+                "labeling, never waiving — when the fix lands the assertions "
+                "go green without edits",
+    },
+    {
+        "id": "wt80-undo-receipt-ambiguous-theme",
+        "ticket": "niu (new finding, lane wt80/jw2-wizardspec, run "
+                  "20261004-173006): the wizard's undo receipt "
+                  "`niu plugin disable <theme>` fails when the theme name "
+                  "exists in more than one installed source",
+        "pattern": r"exists in multiple sources",
+        "note": "the finish screen and setup-journal print the bare theme "
+                "name, but resolution refuses ambiguous names ('pick one: "
+                "oh-my-bash/powerline-multiline, bash-it/powerline-multiline') "
+                "— the undo contract breaks in exactly the dual-framework "
+                "state the 'full' collection itself creates (the same-name "
+                "family of niu#168). expected-red until the receipt prints "
+                "the qualified id or resolution prefers the theme's owning "
+                "source. labeling, never waiving",
     },
 ]
 
@@ -467,7 +507,8 @@ class Session:
                     "the step's own wait will rule",
                     "undelivered")
 
-    def send_line(self, line, anchor_timeout=ANCHOR_TIMEOUT_SECONDS):
+    def send_line(self, line, anchor_timeout=ANCHOR_TIMEOUT_SECONDS,
+                  anchor=True):
         """Type a whole command at the REPL prompt, then Enter — and do
         not return until the command has COMPLETED.
 
@@ -488,7 +529,14 @@ class Session:
         sits below the typed line — so the NEXT send in this session can
         never land while this command is still executing (the gluing).
         `anchor_timeout` carries the known-long commands' own bounds
-        (trust 90s, source 60s); the default covers everything else."""
+        (trust 90s, source 60s); the default covers everything else.
+
+        `anchor=False` skips that post-execution anchor for commands
+        whose completion is INTERACTIVE, not a returning prompt — the
+        wizard re-runs (`niu setup`): the flow continues with menu keys
+        gated on the wizard's own screens (wait_for), and the anchor's
+        prompt-ish matcher must not decide when interaction may start.
+        Delivery hardening (settle/wake/echo/retry) is identical."""
         settle = self.wait_quiescent()
         for attempt in (1, 2):
             before = self.text()
@@ -522,7 +570,8 @@ class Session:
                 f"screen did not advance within {ENTER_ACK_SECONDS}s of "
                 "Enter — resending Enter once", "resend")
             self.proc.write(ENTER)
-        self.await_output_anchor(line, input_row, timeout=anchor_timeout)
+        if anchor:
+            self.await_output_anchor(line, input_row, timeout=anchor_timeout)
 
     def close(self):
         try:
@@ -793,10 +842,12 @@ def drain_notices(session: Session, seconds: float = 1.0):
 
 
 # ── The journey steps ───────────────────────────────────────────────────────
-def journey(exe: Path, root: Path, verdict: Verdict) -> str:
+def journey(exe: Path, root: Path, verdict: Verdict,
+            phases: list = None) -> str:
     home = (root / "home").resolve()
     home.mkdir(parents=True, exist_ok=True)
     env = build_env(home, exe)
+    phases = [p for p in (phases or []) if p in PHASE_RUNNERS]
 
     # ── J1 + J2 share one session: on a fresh install `niu` IS the wizard.
     step = verdict.step(
@@ -1262,7 +1313,854 @@ def journey(exe: Path, root: Path, verdict: Verdict) -> str:
         s6b.close()
     step.finish()
 
+    # ── Spec phases (journey-spec.md §3/§7; wave lanes) ─────────────────────
+    # Composed after the base gate on the same sandbox: every phase walks on
+    # the installed state J1–J6 leave. Runner functions register themselves
+    # under their spec phase id in PHASE_RUNNERS (see the phase section
+    # below); --phases selects. A base-gate failure blocks them (nothing to
+    # walk on), exactly like the early block_rest returns above.
+    for phase_id in phases:
+        try:
+            PHASE_RUNNERS[phase_id](exe, home, env, verdict)
+        except Exception as err:  # noqa: BLE001 - a crashed phase must not
+            # crash the gate out of the verdict: mark it blocked, seal the
+            # rest of the run honestly.
+            verdict.step(phase_id, f"{phase_id} (crashed: {err})").finish(
+                status="blocked")
+
     return verdict.seal()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Spec phases (docs/journey-spec.md §3; the lane split of §7)
+#
+# Wave lanes land their phases HERE, as clearly-separated runner functions
+# keyed by the spec's phase ids (docs/journey-steps.json). Lanes share only
+# this registry and the --phases flag — never each other's step code — so
+# their diffs to this file cannot collide: wt79/jw1-persistence registers
+# P3 (+ P8-S4), wt80/jw2-wizardspec registers P4 + P7.
+#
+# Composition: `--phases base` (the default) is J1–J6, the release gate,
+# unchanged. Selected phases compose AFTER the base gate on the same
+# sandbox — every phase walks on the installed state the base gate leaves —
+# so a lane's local run is `--phases base,P4,P7` and the full walk is
+# `--phases all`.
+# ═════════════════════════════════════════════════════════════════════════════
+
+PHASE_RUNNERS = {}
+
+
+def register_phase(phase_id: str):
+    """Register a phase runner under its journey-spec phase id."""
+    def wrap(fn):
+        PHASE_RUNNERS[phase_id] = fn
+        return fn
+    return wrap
+
+
+# ── Shared phase helpers (assertions on what the USER sees: screen text and
+#    files under the sandbox home; no product internals) ─────────────────────
+
+def read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8") if path.is_file() else ""
+
+
+def read_bytes(path: Path) -> bytes:
+    return path.read_bytes() if path.is_file() else b""
+
+
+RC_BEGIN_MARK = "# >>> niu source {sid} (managed by `niu plugin enable/disable`) >>>"
+RC_END_MARK = "# <<< niu source {sid} <<<"
+
+
+def rc_managed_block(rc_text: str, source_id: str):
+    """One managed source block INCLUDING its marker lines — the exact text
+    a user sees in ~/.niubashrc — or None. Mirrors the product's marker
+    spelling (plugins/assets.rs begin_marker/end_marker)."""
+    begin = RC_BEGIN_MARK.format(sid=source_id)
+    end = RC_END_MARK.format(sid=source_id)
+    lines = rc_text.splitlines()
+    for start, line in enumerate(lines):
+        if line.strip() != begin:
+            continue
+        out = [line]
+        for later in lines[start + 1:]:
+            out.append(later)
+            if later.strip() == end:
+                return "\n".join(out)
+        return None  # begin marker without its end: report as absent
+    return None
+
+
+def rc_managed_block_count(rc_text: str, source_id: str) -> int:
+    begin = RC_BEGIN_MARK.format(sid=source_id)
+    return sum(1 for line in rc_text.splitlines() if line.strip() == begin)
+
+
+def rc_without_block(rc_text: str, source_id: str) -> str:
+    block = rc_managed_block(rc_text, source_id)
+    return rc_text.replace(block, "", 1) if block is not None else rc_text
+
+
+THEME_VAR_LINE = re.compile(
+    r"^(?:export\s+)?(OSH_THEME|BASH_IT_THEME)=(.+)$", re.M)
+
+
+def rc_theme_vars(rc_text: str) -> dict:
+    """The theme variables actually set in the rc (non-empty values) — the
+    same two assignments setup_wizard.rs current_theme_pick reads to name
+    the active pick."""
+    vars_ = {}
+    for match in THEME_VAR_LINE.finditer(rc_text):
+        value = match.group(2).strip().strip("'").strip('"')
+        if value:
+            vars_[match.group(1)] = value
+    return vars_
+
+
+def spec_source_blocks(spec_text: str) -> list:
+    """The [[sources]] entry bodies of the plugin spec (minimal split for
+    user-visible file assertions only)."""
+    blocks, current = [], None
+    for line in spec_text.splitlines():
+        if line.strip() == "[[sources]]":
+            current = []
+            blocks.append(current)
+        elif current is not None:
+            current.append(line)
+    return ["\n".join(block) for block in blocks]
+
+
+def entry_field(block: str, field: str):
+    match = (re.search(rf"^{field}\s*=\s*'([^']*)'", block, re.M)
+             or re.search(rf'^{field}\s*=\s*"([^"]*)"', block, re.M))
+    return match.group(1) if match else None
+
+
+def spec_entry(spec_text: str, source_id: str):
+    """The [[sources]] block whose id or target names `source_id`."""
+    for block in spec_source_blocks(spec_text):
+        if (entry_field(block, "id") == source_id
+                or entry_field(block, "target") == source_id):
+            return block
+    return None
+
+
+def journal_value(journal_text: str, key: str):
+    match = (re.search(rf"^{re.escape(key)}\s*=\s*'(.*)'\s*$", journal_text,
+                       re.M)
+             or re.search(rf'^{re.escape(key)}\s*=\s*"(.*)"\s*$',
+                          journal_text, re.M))
+    return match.group(1) if match else None
+
+
+def fresh_terminal(exe, home, env, verdict, label: str) -> Session:
+    """A fresh niu terminal in the sandbox — the user's 'open a new window'."""
+    return Session([str(exe)], home, env,
+                   raw_log=verdict.transcripts / f"{label}.raw.ansi",
+                   label=label, delivery_log=verdict.delivery_events)
+
+
+DEFAULT_PROMPT_SHAPE = re.compile(r"^\S+@\S+:[^#]*#\s")
+
+
+def prompt_is_themed(session: Session, marker: str) -> bool:
+    """The theme owns the prompt: the typed `echo <marker>` rows do not sit
+    behind the default user@host:cwd# fallback shape (the J5 discipline —
+    a sourced theme that leaves PS1 alone is not a rendered theme)."""
+    typed = [line for line in session.transcript().splitlines()
+             if f"echo {marker}" in line]
+    return bool(typed) and all(not DEFAULT_PROMPT_SHAPE.match(line.strip())
+                               for line in typed)
+
+
+def gallery_highlighted(session: Session, candidates):
+    """The highlighted gallery row naming one of `candidates`, excluding the
+    option-0 'Skip - keep my current theme (…)' row — which names the
+    CURRENT theme and would otherwise match before the walk moves."""
+    for line in session.text().splitlines():
+        if "◆" not in line or "keep my current theme" in line:
+            continue
+        for name in candidates:
+            if name in line:
+                return name
+    return None
+
+
+def gallery_walk_to(session: Session, candidates):
+    """DOWN-walk the wizard theme gallery until the highlighted row names one
+    of `candidates`; the J2 walk's dynamics (no per-key resend — a repaint
+    can lag a delivered arrow — poll the highlight; settle + re-verify
+    before the Enter so a racing Enter picks what niu actually has).
+    Returns the matched candidate name, or None."""
+    if isinstance(candidates, str):
+        candidates = [candidates]
+    session.wait_quiescent()
+    picked = gallery_highlighted(session, candidates)
+    for _ in range(900):
+        if picked is not None:
+            break
+        session.proc.write(DOWN)
+        time.sleep(NAV_GAP_SECONDS)
+        picked = gallery_highlighted(session, candidates)
+    if picked is not None:
+        time.sleep(SETTLE_SECONDS)
+        picked = gallery_highlighted(session, candidates)
+    return picked
+
+
+def wizard_rerun(session: Session, verdict: Verdict, step, capture: str,
+                 pick, expect_current: str = None):
+    """One `niu setup` re-run inside a live REPL session (setup_wizard.rs
+    rerun_wizard — 'Reconfigure your interactive prompt/plugins. Existing
+    rc will be backed up.'). pick=None answers the gallery's
+    'Skip - keep my current theme' (the highlighted default); a name or
+    candidate list is DOWN-walked in the gallery. Returns the theme name
+    the run picked (None = Skip). Every key is gated on the wizard's own
+    screens; delivery hardening comes from send_line/answer."""
+    session.send_line("niu setup", anchor=False)
+    session.wait_for("Reconfigure your interactive prompt/plugins", timeout=90)
+    session.wait_for("Pick a theme", timeout=180)
+    verdict.capture(capture, session)
+    picked = None
+    if pick is None:
+        # The gallery draws progressively; let it finish before reading the
+        # option rows (the Skip row names the current pick).
+        session.wait_quiescent()
+        row = next((line for line in session.text().splitlines()
+                    if "keep my current theme" in line), None)
+        step.check("gallery shows 'Skip - keep my current theme'",
+                   row is not None)
+        if expect_current is not None:
+            step.check(
+                f"the Skip option names the current pick ({expect_current})",
+                row is not None and expect_current in row,
+                f"option row: {row.strip()[:120]}" if row
+                else "no Skip row on screen")
+        session.answer(ENTER)
+    else:
+        picked = gallery_walk_to(session, pick)
+        step.check(f"gallery walk reached the pick ({picked or pick})",
+                   picked is not None)
+        if picked is None:
+            raise AssertionError(f"gallery walk never reached {pick}")
+        verdict.capture(capture + "-highlighted", session)
+        session.answer(ENTER)
+    session.wait_for("niu-git", timeout=60)
+    session.answer(ENTER)  # Skip — the default; never auto-installs
+    session.wait_for("Apply this configuration?", timeout=60)
+    session.answer(ENTER)  # Apply — the highlighted default
+    session.wait_for("Shell rc written", timeout=120)
+    try:
+        session.wait_for("Undo this run", timeout=60)
+        step.check("finish screen printed the undo receipts", True)
+        session.wait_for("restore the previous rc", timeout=30)
+        step.check("undo receipt names the rc restore (cp line)", True)
+        if picked is not None:
+            session.wait_for("niu plugin disable", timeout=30)
+            step.check("undo receipt names `niu plugin disable` for the pick",
+                       True)
+    except TimeoutError as err:
+        step.check("finish screen printed the undo receipts", False, str(err))
+    verdict.capture(capture + "-finish", session)
+    return picked
+
+
+def hop_terminal_asserts(step, verdict: Verdict, exe, home, env, tag: str,
+                         marker: str, picked: str, rc_path: Path,
+                         spec_path: Path, journal_path: Path):
+    """The user-visible state one wizard theme hop must leave, plus the
+    fresh-terminal leg: rc guard block rewritten to the pick, exactly one
+    framework's theme variable, journal + backup receipts, and — the niu#168
+    gate — the pick STICKING across the terminal (rc block + spec agree).
+    Red stickiness labels wt73-168-theme-rebound (expected-red until
+    wt72/themeback lands); it never passes silently."""
+    rc = read_text(rc_path)
+    block = rc_managed_block(rc, "oh-my-bash")
+    step.check(f"{tag}: the rc guard block carries the pick",
+               block is not None and f"OSH_THEME='{picked}'" in block,
+               "block missing" if block is None else "\n".join(
+                   line for line in block.splitlines() if "THEME" in line)[:160])
+    vars_ = rc_theme_vars(rc)
+    step.check(f"{tag}: OSH_THEME/BASH_IT_THEME never both present",
+               not ("OSH_THEME" in vars_ and "BASH_IT_THEME" in vars_),
+               f"theme variables on file: {sorted(vars_.items())}")
+    count = rc_managed_block_count(rc, "oh-my-bash")
+    step.check(f"{tag}: exactly one oh-my-bash guard block (no orphans)",
+               count == 1, f"count = {count}")
+    journal = read_text(journal_path)
+    step.check(f"{tag}: journal records the pick",
+               journal_value(journal, "theme") == picked,
+               f"journal theme = {journal_value(journal, 'theme')!r}")
+    backup = journal_value(journal, "rc_backup")
+    step.check(f"{tag}: journal names an existing rc backup",
+               bool(backup) and Path(backup).is_file(), f"rc_backup = {backup!r}")
+
+    terminal = fresh_terminal(exe, home, env, verdict, f"{tag}-terminal")
+    try:
+        alive = prompt_alive(terminal, marker)
+        step.check(f"{tag}: fresh terminal boots", alive)
+        themed = alive and prompt_is_themed(terminal, marker)
+        if themed:
+            step.check(f"{tag}: fresh terminal renders a themed prompt", True)
+        elif f"OSH_THEME='{picked}'" in (rc_managed_block(read_text(rc_path),
+                                                          "oh-my-bash") or ""):
+            # rc still carries the pick but the prompt fell back: a render
+            # bug, not the rebound — plain red.
+            step.check(f"{tag}: fresh terminal renders a themed prompt", False,
+                       "the rc still carries the pick but the prompt fell "
+                       "back to the default shape")
+        else:
+            check_with_known_fail(
+                step, f"{tag}: fresh terminal renders a themed prompt",
+                f"niu#168 theme rebound (wt73-168-theme-rebound): the fresh "
+                f"terminal's prompt fell back to the default shape because "
+                f"the pick was already re-materialized away")
+        drain_notices(terminal)
+        verdict.capture(f"{tag}-terminal", terminal)
+        errors = all_syntax_errors(terminal)
+        if errors:
+            check_with_known_fail(
+                step, f"{tag}: zero syntax errors in the fresh terminal",
+                "\n".join(errors))
+        else:
+            step.check(f"{tag}: zero syntax errors in the fresh terminal", True)
+    finally:
+        terminal.close()
+
+    rc = read_text(rc_path)
+    omb_entry = spec_entry(read_text(spec_path), "oh-my-bash")
+    declared = entry_field(omb_entry, "theme") if omb_entry else None
+    block_now = rc_managed_block(rc, "oh-my-bash") or ""
+    if f"OSH_THEME='{picked}'" in block_now and declared == picked:
+        step.check(f"{tag}: the pick sticks (rc block + spec agree)", True)
+    else:
+        check_with_known_fail(
+            step, f"{tag}: the pick sticks (rc block + spec agree)",
+            f"niu#168 theme ownership disagrees (wt73-168-theme-rebound): "
+            f"after the fresh terminal the rc carries "
+            f"{sorted(rc_theme_vars(rc).items())} while the spec's oh-my-bash "
+            f"entry declares theme = {declared!r} (picked {picked!r}) — the "
+            "next sync re-materializes the stale claim over the pick")
+
+
+# ── P4 — re-running setup + switching themes (wave lane W2, wt80) ────────────
+
+@register_phase("P4")
+def phase_p4(exe, home, env, verdict):
+    """journey-spec P4 — the #168 entry door (owner: 向导重选后) plus the first
+    regression walk of the most-burned rc writer (#157/#159), the
+    hand-migrated rc coexistence (#143), and the dual-framework same-name
+    routing (#168 mechanics / wt61 G2). Runs on the base gate's sandbox:
+    theme A ('powerline-multiline') active in rc + spec from J2's pick."""
+    rc_path = home / ".niubashrc"
+    spec_path = home / ".niubash" / "plugins.toml"
+    journal_path = home / ".niubash" / "setup-journal.toml"
+    theme_a = "powerline-multiline"   # the base gate's J2 pick
+    hop_b_candidates = ["edsonarios", "agnoster", "brainy", "hawaii50",
+                        "iterate"]  # any second gallery theme (spec names one)
+    dual_theme = "powerbash10k"       # ships in oh-my-bash AND bash-it
+
+    # ── P4-S1 — re-run `niu setup` on the existing install: the gallery
+    # names the current pick; the run ends with exactly one theme state.
+    step = verdict.step("P4-S1", "re-run `niu setup` on the existing install "
+                                 "(rerun_wizard)")
+    block_a_original = None
+    s1_failed = False
+    try:
+        rc_before = read_text(rc_path)
+        block_a_original = rc_managed_block(rc_before, "oh-my-bash")
+        step.check("pre-state: the base gate left theme A in the rc guard "
+                   "block",
+                   block_a_original is not None
+                   and f"OSH_THEME='{theme_a}'" in block_a_original)
+        omb_entry = spec_entry(read_text(spec_path), "oh-my-bash")
+        declared_a = entry_field(omb_entry, "theme") if omb_entry else None
+        step.check("pre-state: the spec declares theme A",
+                   declared_a == theme_a, f"declared = {declared_a!r}")
+        wizard = fresh_terminal(exe, home, env, verdict, "P4-S1-wizard")
+        try:
+            step.check("live session ready",
+                       prompt_alive(wizard, "P4_WIZ_READY"))
+            wizard_rerun(wizard, verdict, step, "P4-S1", pick=None,
+                         expect_current=theme_a)
+            verdict_for_syntax_errors(
+                step, "zero syntax errors during the re-run",
+                all_syntax_errors(wizard))
+        finally:
+            wizard.close()
+        # The settled state after a fresh terminal: rc block and spec agree
+        # on one theme — never a third state.
+        terminal = fresh_terminal(exe, home, env, verdict, "P4-S1-terminal")
+        try:
+            step.check("fresh terminal after the re-run: prompt renders",
+                       prompt_alive(terminal, "P4S1_ALIVE"))
+        finally:
+            terminal.close()
+        block_now = rc_managed_block(read_text(rc_path), "oh-my-bash")
+        omb_entry = spec_entry(read_text(spec_path), "oh-my-bash")
+        declared = entry_field(omb_entry, "theme") if omb_entry else None
+        if (block_now is not None and f"OSH_THEME='{theme_a}'" in block_now
+                and declared == theme_a):
+            step.check("one theme state: rc block and spec agree on A", True)
+        else:
+            check_with_known_fail(
+                step, "one theme state: rc block and spec agree on A",
+                f"niu#168 theme rebound (wt73-168-theme-rebound): rc block "
+                f"theme vars {sorted(rc_theme_vars(read_text(rc_path)).items())}, "
+                f"spec declares {declared!r} — expected both to agree on "
+                f"{theme_a!r}")
+    except AssertionError as err:
+        s1_failed = True
+        step.check("P4-S1 completed", False, str(err))
+        step.finish()
+    else:
+        step.finish()
+    if s1_failed:
+        for later in ("P4-S2", "P4-S3", "P4-S4"):
+            verdict.step(later, f"{later} (blocked: P4-S1 failed)").finish(
+                status="blocked")
+        return
+
+    # ── P4-S2 — theme switch A→B→A through the wizard gallery; each hop
+    # rewrites the rc block, journals the pick + receipts, and must stick.
+    step = verdict.step("P4-S2", "theme switch A→B→A through the wizard gallery")
+    try:
+        wizard = fresh_terminal(exe, home, env, verdict, "P4-S2-wizard-B")
+        try:
+            step.check("hop A→B: live session ready",
+                       prompt_alive(wizard, "P4S2B_READY"))
+            picked_b = wizard_rerun(wizard, verdict, step, "P4-S2-hop-B",
+                                    pick=hop_b_candidates)
+        finally:
+            wizard.close()
+        if not picked_b:
+            raise AssertionError("hop A→B never picked a second theme")
+        step.check("hop A→B: a second theme was picked from the gallery",
+                   picked_b in hop_b_candidates and picked_b != theme_a,
+                   f"picked {picked_b!r}")
+        hop_terminal_asserts(step, verdict, exe, home, env,
+                             "P4-S2 hop A-B", "P4S2B_ALIVE", picked_b,
+                             rc_path, spec_path, journal_path)
+
+        wizard = fresh_terminal(exe, home, env, verdict, "P4-S2-wizard-A")
+        try:
+            step.check("hop B→A: live session ready",
+                       prompt_alive(wizard, "P4S2A_READY"))
+            picked_a = wizard_rerun(wizard, verdict, step, "P4-S2-hop-A",
+                                    pick=theme_a)
+        finally:
+            wizard.close()
+        if picked_a != theme_a:
+            raise AssertionError(f"hop B→A picked {picked_a!r}, wanted A")
+        hop_terminal_asserts(step, verdict, exe, home, env,
+                             "P4-S2 hop B-A", "P4S2A_ALIVE", theme_a,
+                             rc_path, spec_path, journal_path)
+        block_restored = rc_managed_block(read_text(rc_path), "oh-my-bash")
+        step.check("returning to A restores the managed block byte-identically",
+                   block_restored == block_a_original,
+                   "the oh-my-bash guard block bytes differ from the "
+                   "pre-phase snapshot")
+    except AssertionError as err:
+        step.check("P4-S2 completed", False, str(err))
+    step.finish()
+
+    # ── P4-S3 — execute the undo receipts the finish screen printed: the
+    # exact `cp` restore line + the `niu plugin disable` line, then verify
+    # the state and that nothing resurrects at the next sync (F4).
+    step = verdict.step("P4-S3", "execute the undo receipts (cp restore + "
+                                 "`niu plugin disable`)")
+    disable_error = ""
+    try:
+        journal = read_text(journal_path)
+        backup = journal_value(journal, "rc_backup")
+        theme_pick = journal_value(journal, "theme")
+        step.check("the journal carries the receipts to execute",
+                   bool(backup) and bool(theme_pick),
+                   f"rc_backup = {backup!r}, theme = {theme_pick!r}")
+        backup_bytes = read_bytes(Path(backup)) if backup else b""
+        undo = fresh_terminal(exe, home, env, verdict, "P4-S3-undo")
+        try:
+            step.check("live session ready", prompt_alive(undo, "P4S3_READY"))
+            # Receipt 1: the exact `cp <backup> <rc>` line the journal named.
+            undo.send_line(f"cp {backup} {rc_path}", anchor_timeout=30)
+            step.check("the cp receipt restored the previous rc byte-for-byte",
+                       read_bytes(rc_path) == backup_bytes)
+            # Receipt 2: the exact `niu plugin disable <theme>` line.
+            undo.send_line(f"niu plugin disable {theme_pick}",
+                           anchor_timeout=90)
+            try:
+                undo.wait_for("removed from the spec", timeout=30)
+                step.check("the disable receipt reported the removal", True)
+            except TimeoutError:
+                time.sleep(1.0)  # let the error line land before reading
+                disable_error = "\n".join(
+                    line.strip() for line in undo.raw_stripped().splitlines()
+                    if "exists in multiple sources" in line)
+                if disable_error:
+                    check_with_known_fail(
+                        step, "the disable receipt reported the removal",
+                        f"the wizard-printed undo receipt failed at the "
+                        f"REPL: {disable_error}")
+                else:
+                    step.check("the disable receipt reported the removal",
+                               False, "no removal report within 30s")
+        finally:
+            undo.close()
+
+        def s3_check(name, ok, evidence=""):
+            """A downstream S3 assertion: green, or — when the disable
+            receipt failed — a labeled known-fail carrying the receipt's
+            own error (the cascade is the receipt bug, not a mystery)."""
+            if ok:
+                step.check(name, True)
+            elif disable_error:
+                check_with_known_fail(
+                    step, name, f"{evidence} — cascade of the failed undo "
+                    f"receipt: {disable_error}")
+            else:
+                step.check(name, False, evidence)
+
+        block_now = rc_managed_block(read_text(rc_path), "oh-my-bash") or ""
+        s3_check("after the receipts the rc block no longer activates a "
+                 "theme", "OSH_THEME" not in block_now,
+                 "\n".join(line for line in block_now.splitlines()
+                           if "THEME" in line)[:160])
+        omb_entry = spec_entry(read_text(spec_path), "oh-my-bash")
+        declared = entry_field(omb_entry, "theme") if omb_entry else None
+        s3_check("the spec's theme pick is explicitly cleared (theme = '')",
+                 declared == "", f"declared = {declared!r}")
+        verify = fresh_terminal(exe, home, env, verdict, "P4-S3-verify")
+        try:
+            step.check("session after the undo boots",
+                       prompt_alive(verify, "P4S3_SYNC_READY"))
+            verify.send_line("niu plugin sync", anchor_timeout=90)
+            block_after = rc_managed_block(read_text(rc_path),
+                                           "oh-my-bash") or ""
+            s3_check("nothing resurrects at the next sync (F4)",
+                     "OSH_THEME" not in block_after)
+            verdict_for_syntax_errors(
+                step, "zero syntax errors after the undo",
+                all_syntax_errors(verify))
+        finally:
+            verify.close()
+        step.note("the wizard re-runs successfully after the undo — P4-S4's "
+                  "run demonstrates it")
+    except AssertionError as err:
+        step.check("P4-S3 completed", False, str(err))
+    step.finish()
+
+    # ── P4-S4 — dual-framework same-name theme routing: with BOTH frameworks
+    # trusted, pick the name both ship; the gallery priority must route it
+    # through oh-my-bash, exactly one guard block may activate it, and the
+    # attribution must stick across a second terminal. Expected RED until
+    # #168 lands (KNOWN-FAIL wt73-168-theme-rebound, registered, never
+    # waived).
+    step = verdict.step("P4-S4", "dual-framework same-name theme routing "
+                                 f"({dual_theme} in oh-my-bash AND bash-it)")
+    try:
+        wizard = fresh_terminal(exe, home, env, verdict, "P4-S4-wizard")
+        try:
+            step.check("live session ready", prompt_alive(wizard, "P4S4_READY"))
+            # The dual-framework precondition: a gallery lists trusted
+            # sources only, so bash-it's themes join only after its trust.
+            wizard.send_line("niu plugin trust bash-it", anchor_timeout=90)
+            try:
+                wizard.wait_for("is now trusted", timeout=90)
+                step.check("bash-it trusted (both frameworks' themes are in "
+                           "the gallery)", True)
+            except TimeoutError as err:
+                step.check("bash-it trusted (both frameworks' themes are in "
+                           "the gallery)", False, str(err))
+            picked = wizard_rerun(wizard, verdict, step, "P4-S4",
+                                  pick=dual_theme)
+        finally:
+            wizard.close()
+        if picked != dual_theme:
+            raise AssertionError(f"gallery walk picked {picked!r}, wanted "
+                                 f"{dual_theme!r}")
+        # Immediately after the pick: exactly ONE framework's block may
+        # activate the same-named theme.
+        rc_now = read_text(rc_path)
+        vars_now = rc_theme_vars(rc_now)
+        omb_block = rc_managed_block(rc_now, "oh-my-bash") or ""
+        step.check(f"the same-name pick routed to oh-my-bash (gallery "
+                   f"priority): OSH_THEME='{dual_theme}'",
+                   f"OSH_THEME='{dual_theme}'" in omb_block,
+                   f"theme variables on file: {sorted(vars_now.items())}")
+        step.check("BASH_IT_THEME never activated for the same-name pick",
+                   "BASH_IT_THEME" not in vars_now,
+                   f"theme variables on file: {sorted(vars_now.items())}")
+        spec_now = read_text(spec_path)
+        omb_entry = spec_entry(spec_now, "oh-my-bash")
+        bash_it_entry = spec_entry(spec_now, "bash-it")
+        declared_omb = entry_field(omb_entry, "theme") if omb_entry else None
+        declared_bashit = (entry_field(bash_it_entry, "theme")
+                           if bash_it_entry else None)
+        if declared_omb == dual_theme and declared_bashit in (None, ""):
+            step.check("spec framework attribution agrees with the rc guard "
+                       "block", True)
+        else:
+            check_with_known_fail(
+                step, "spec framework attribution agrees with the rc guard "
+                      "block",
+                f"niu#168 theme ownership disagrees (wt73-168-theme-rebound): "
+                f"the rc guard block carries OSH_THEME='{dual_theme}' but the "
+                f"spec's oh-my-bash entry declares theme = {declared_omb!r} "
+                f"and the bash-it entry {declared_bashit!r} — the wizard's "
+                "pick never reached the spec, so the next sync re-materializes "
+                "the stale claim over it")
+        terminal = fresh_terminal(exe, home, env, verdict, "P4-S4-terminal")
+        try:
+            alive = prompt_alive(terminal, "P4S4_ALIVE")
+            step.check("second terminal renders", alive)
+            drain_notices(terminal)
+            verdict.capture("P4-S4-terminal", terminal)
+            errors = all_syntax_errors(terminal)
+            if errors:
+                check_with_known_fail(
+                    step, "zero syntax errors in the second terminal",
+                    "\n".join(errors))
+            else:
+                step.check("zero syntax errors in the second terminal", True)
+        finally:
+            terminal.close()
+        rc_later = read_text(rc_path)
+        vars_later = rc_theme_vars(rc_later)
+        block_later = rc_managed_block(rc_later, "oh-my-bash") or ""
+        if (f"OSH_THEME='{dual_theme}'" in block_later
+                and "BASH_IT_THEME" not in vars_later):
+            step.check("second terminal does not flip the framework or lose "
+                       "the pick", True)
+        else:
+            check_with_known_fail(
+                step, "second terminal does not flip the framework or lose "
+                      "the pick",
+                f"niu#168 theme rebound (wt73-168-theme-rebound): after the "
+                f"second terminal the rc carries "
+                f"{sorted(vars_later.items())} — expected "
+                f"OSH_THEME='{dual_theme}' in the oh-my-bash guard block only")
+    except AssertionError as err:
+        step.check("P4-S4 completed", False, str(err))
+    step.finish()
+
+
+# ── P7 — spec hand-editing (wave lane W2, wt80) ──────────────────────────────
+
+@register_phase("P7")
+def phase_p7(exe, home, env, verdict):
+    """journey-spec P7 — the documented power-user workflow: hand-edit
+    `~/.niubash/plugins.toml` + `niu plugin sync` (plugins-guide 'Merge
+    semantics: spec vs your hand edits', design §14.6), its corruption
+    behavior (a wedged startup bricks every terminal — the hang class),
+    and #168's inverse invariant (sync claims only what the spec declares).
+    Theme-agnostic by design: it runs after whatever state P4 (or the bare
+    base gate) left, snapshotting bytes before each mutation."""
+    rc_path = home / ".niubashrc"
+    spec_path = home / ".niubash" / "plugins.toml"
+    fixture_root = home / "plugin-fixtures" / "tinysh"
+    fixture_root.mkdir(parents=True, exist_ok=True)
+    (fixture_root / "tiny.sh").write_text(
+        "# journey P7 fixture: one sourceable file\n"
+        "tiny_hello() { echo tiny-hello; }\n",
+        encoding="utf-8", newline="\n")
+
+    # ── P7-S1 — hand-add a source entry: sync installs it (untrusted) and
+    # declares it; the second sync is a byte-identical no-op.
+    step = verdict.step("P7-S1", "hand-add a source entry: sync installs it "
+                                 "(untrusted) + declares it; second sync is a "
+                                 "byte-identical no-op")
+    session = None
+    rc_stable = None
+    try:
+        session = fresh_terminal(exe, home, env, verdict, "P7-session")
+        step.check("live session ready", prompt_alive(session, "P7_READY"))
+        drain_notices(session)
+        verdict.capture("P7-session-open", session)
+        rc_stable = read_bytes(rc_path)
+        spec_before = read_bytes(spec_path)
+        hand_entry = (f"\n[[sources]]\n"
+                      f"target = '{fixture_root.as_posix()}'\n"
+                      f"enable = ['tiny.sh']\n").encode("utf-8")
+        spec_path.write_bytes(spec_before + hand_entry)
+        session.send_line("niu plugin sync", anchor_timeout=120)
+        try:
+            session.wait_for("awaiting-trust", timeout=90)
+            step.check("sync installed the hand-declared source untrusted "
+                       "(awaiting-trust row)", True)
+        except TimeoutError as err:
+            step.check("sync installed the hand-declared source untrusted "
+                       "(awaiting-trust row)", False, str(err))
+        try:
+            session.wait_for("niu plugin trust tinysh", timeout=30)
+            step.check("sync printed the exact trust verb for the new source",
+                       True)
+        except TimeoutError as err:
+            step.check("sync printed the exact trust verb for the new source",
+                       False, str(err))
+        spec_after = read_bytes(spec_path)
+        step.check("sync declared the entry (derived id bound into the spec)",
+                   b"id = 'tinysh'" in spec_after)
+        step.check("the untrusted install left the rc byte-identical",
+                   read_bytes(rc_path) == rc_stable)
+        session.send_line("niu plugin sync", anchor_timeout=120)
+        step.check("second sync: rc byte-identical (no-op)",
+                   read_bytes(rc_path) == rc_stable)
+        step.check("second sync: spec byte-identical (no-op)",
+                   read_bytes(spec_path) == spec_after)
+    except AssertionError as err:
+        step.check("P7-S1 completed", False, str(err))
+        step.finish()
+        if session is not None:
+            session.close()
+        verdict.step("P7-S2", "P7-S2 (blocked: P7-S1 failed)").finish(
+            status="blocked")
+        verdict.step("P7-S3", "P7-S3 (blocked: P7-S1 failed)").finish(
+            status="blocked")
+        verdict.step("P7-S4", "P7-S4 (blocked: P7-S1 failed)").finish(
+            status="blocked")
+        return
+
+    # ── P7-S2 — merge semantics: hand entries and wizard entries coexist,
+    # and a hand-added selection survives a REAL materialization (the
+    # documented hand_added ∪ next(spec) rule, §14.6).
+    step = verdict.step("P7-S2", "sync merge semantics: hand + wizard entries "
+                                 "coexist; hand-added selection survives")
+    try:
+        rc_before = read_text(rc_path)
+        spec_before = read_bytes(spec_path)
+        block = rc_managed_block(rc_before, "oh-my-bash")
+        if block is None:
+            raise AssertionError("no oh-my-bash managed block to hand-edit")
+        marker_line = RC_BEGIN_MARK.format(sid="oh-my-bash")
+        rc_hand = rc_before.replace(
+            block,
+            block.replace(marker_line + "\n",
+                          marker_line + "\nplugins=('git')\n", 1), 1)
+        rc_path.write_bytes(rc_hand.encode("utf-8"))
+        session.send_line("niu plugin sync", anchor_timeout=120)
+        try:
+            session.wait_for("selection materialized", timeout=90)
+        except TimeoutError:
+            pass  # the file state below is the assertion, not the wording
+        rc_after = read_text(rc_path)
+        rc_after_bytes = read_bytes(rc_path)
+        block_after = rc_managed_block(rc_after, "oh-my-bash") or ""
+        step.check("the hand-added selection survives the materialization",
+                   "plugins=('git')" in block_after,
+                   "\n".join(line for line in block_after.splitlines()
+                             if "plugins" in line)[:160])
+        step.check("the merge touched nothing outside the edited block",
+                   rc_without_block(rc_after, "oh-my-bash")
+                   == rc_without_block(rc_hand, "oh-my-bash"))
+        step.check("the merge left the theme variables untouched",
+                   rc_theme_vars(rc_after) == rc_theme_vars(rc_before),
+                   f"before {sorted(rc_theme_vars(rc_before).items())}, "
+                   f"after {sorted(rc_theme_vars(rc_after).items())}")
+        spec_now = read_text(spec_path)
+        step.check("hand entry and wizard entries coexist (no clobber)",
+                   spec_entry(spec_now, "tinysh") is not None
+                   and spec_entry(spec_now, "oh-my-bash") is not None
+                   and spec_entry(spec_now, "bash-completion") is not None)
+        step.check("the sync left the spec file byte-identical",
+                   read_bytes(spec_path) == spec_before)
+        session.send_line("niu plugin sync", anchor_timeout=120)
+        step.check("second sync: rc byte-identical (hand entry stays "
+                   "hand-added, not re-merged)",
+                   read_bytes(rc_path) == rc_after_bytes)
+        step.check("second sync: spec byte-identical",
+                   read_bytes(spec_path) == spec_before)
+        omb_entry = spec_entry(read_text(spec_path), "oh-my-bash") or ""
+        step.check("the hand-added item was not absorbed into the spec's own "
+                   "set", "enable = ['git']" not in omb_entry,
+                   (["line matches enable = ['git']"] if
+                    "enable = ['git']" in omb_entry else []))
+    except AssertionError as err:
+        step.check("P7-S2 completed", False, str(err))
+    step.finish()
+
+    # ── P7-S3 — corrupt the spec (truncated file): sync fails SOFT with a
+    # readable error, the default floor session still boots bounded, the rc
+    # is never destroyed. A wedged startup here would brick every terminal.
+    step = verdict.step("P7-S3", "corrupt spec (truncated TOML): sync fails "
+                                 "soft, floor session still boots, no panic, "
+                                 "rc not destroyed")
+    try:
+        rc_stable = read_bytes(rc_path)
+        spec_good = read_bytes(spec_path)
+        spec_path.write_bytes(spec_good[:40])
+        session.send_line("niu plugin sync", anchor_timeout=30)
+        raw = session.raw_stripped()
+        step.check("the failed sync printed a readable error",
+                   "niu:" in raw or "TOML" in raw or "toml" in raw)
+        step.check("no panic anywhere in the session",
+                   "panicked" not in raw)
+        step.check("the failed sync did not touch the rc",
+                   read_bytes(rc_path) == rc_stable)
+        started = time.time()
+        terminal = fresh_terminal(exe, home, env, verdict, "P7-S3-terminal")
+        try:
+            alive = prompt_alive(terminal, "P7S3_ALIVE")
+            elapsed = time.time() - started
+            step.check(f"the corrupt-spec startup still reaches a prompt "
+                       f"(bounded; {elapsed:.1f}s)",
+                       alive and elapsed <= 10.0, f"{elapsed:.1f}s")
+            boot_raw = terminal.raw_stripped()
+            step.check("the boot printed the soft error (never a silent "
+                       "wrong shell)", "niu:" in boot_raw
+                       or "TOML" in boot_raw or "toml" in boot_raw)
+            step.check("no panic in the boot", "panicked" not in boot_raw)
+            verdict.capture("P7-S3-corrupt-boot", terminal)
+        finally:
+            terminal.close()
+        step.check("the failed startup did not touch the rc either",
+                   read_bytes(rc_path) == rc_stable)
+        # Restore the good spec; the explicit verb recovers cleanly.
+        spec_path.write_bytes(spec_good)
+        session.send_line("niu plugin sync && echo P7S3_RECOVERED",
+                          anchor_timeout=120)
+        try:
+            session.wait_for("P7S3_RECOVERED", timeout=60)
+            step.check("restoring the spec: explicit sync recovers", True)
+        except TimeoutError as err:
+            step.check("restoring the spec: explicit sync recovers", False,
+                       str(err))
+        step.check("rc still byte-stable after recovery",
+                   read_bytes(rc_path) == rc_stable)
+    except AssertionError as err:
+        step.check("P7-S3 completed", False, str(err))
+    step.finish()
+
+    # ── P7-S4 — unknown keys in the spec are tolerated (no failure, no
+    # destructive rewrite) and the rc stays byte-stable.
+    step = verdict.step("P7-S4", "unknown spec keys are tolerated; rc "
+                                 "byte-stable")
+    try:
+        rc_stable = read_bytes(rc_path)
+        spec_before = read_bytes(spec_path)
+        hand_key = b"\nnote_field = 'hand-added by the journey'\n"
+        spec_path.write_bytes(spec_before + hand_key)
+        session.send_line("niu plugin sync && echo P7S4_SYNC_OK",
+                          anchor_timeout=120)
+        try:
+            session.wait_for("P7S4_SYNC_OK", timeout=60)
+            step.check("sync succeeds with an unknown key in the spec", True)
+        except TimeoutError as err:
+            step.check("sync succeeds with an unknown key in the spec", False,
+                       str(err))
+        step.note("observed behavior: unknown keys are tolerated silently "
+                  "(the spec parser ignores unrecognized fields; the known "
+                  "fields are documented in plugins-guide.md 'The spec')")
+        step.check("the unknown key survives the sync (spec not rewritten)",
+                   read_bytes(spec_path) == spec_before + hand_key)
+        step.check("rc byte-identical across the sync",
+                   read_bytes(rc_path) == rc_stable)
+    except AssertionError as err:
+        step.check("P7-S4 completed", False, str(err))
+    finally:
+        if session is not None:
+            session.close()
+    step.finish()
 
 
 def main() -> int:
@@ -1280,6 +2178,14 @@ def main() -> int:
     parser.add_argument("--keep-sandbox", type=Path, default=None,
                         help="create the sandbox under this directory "
                              "(kept on failure for diagnosis)")
+    # Phase composition (journey-spec.md §7 lane split): comma-separated
+    # spec phase ids to run AFTER the base J1–J6 gate on the same sandbox.
+    # 'base' alone is the release gate, unchanged; 'all' adds every
+    # registered phase. Lanes register phases in PHASE_RUNNERS.
+    parser.add_argument("--phases", type=str, default="base",
+                        help="comma-separated spec phases to compose after "
+                             "the base gate (e.g. --phases P4,P7; 'all' = "
+                             "every registered phase; default: base = J1-J6)")
     # Hidden stress harness (owner-approved validation shape, not a user
     # knob): a randomized 0..N ms pause before every send's settle check,
     # simulating runner slowness — the shape that broke release runs
@@ -1290,6 +2196,17 @@ def main() -> int:
 
     global STRESS_DELAY_MS
     STRESS_DELAY_MS = max(0, args.stress_delay_ms)
+    selected = [p.strip() for p in args.phases.split(",") if p.strip()]
+    if not selected:
+        selected = ["base"]
+    unknown = [p for p in selected
+               if p not in ("base", "all") and p not in PHASE_RUNNERS]
+    if unknown:
+        print(f"SKIP: unknown phase id(s) {unknown}; registered phases: "
+              f"{sorted(PHASE_RUNNERS) or '(none)'}")
+        return 2
+    phases = sorted(PHASE_RUNNERS) if "all" in selected \
+        else [p for p in selected if p in PHASE_RUNNERS]
     exe = args.niu.resolve()
     if not exe.is_file():
         print(f"SKIP: niu binary not found: {exe}")
@@ -1317,12 +2234,13 @@ def main() -> int:
     (artifacts / "run.json").write_text(
         json.dumps({"niu": str(exe), "sandbox": str(sandbox),
                     "started_utc": now_utc(), "pid": os.getpid(),
-                    "stress_delay_ms": STRESS_DELAY_MS},
+                    "stress_delay_ms": STRESS_DELAY_MS,
+                    "phases": ["base"] + phases},
                    indent=2) + "\n",
         encoding="utf-8", newline="\n")
 
     try:
-        result = journey(exe, sandbox, verdict)
+        result = journey(exe, sandbox, verdict, phases=phases)
     finally:
         # Sandbox hygiene: the sources trees are heavy clones; keep them
         # only when a red gate (or a crash) needs diagnosis.
