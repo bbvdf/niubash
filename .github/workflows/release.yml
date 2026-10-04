@@ -723,26 +723,84 @@ jobs:
       # Bumping these pins changes every measured number and MUST come with
       # a re-recorded baseline in the same change. Fetch-by-SHA so the pin
       # stays honest even after the upstream branches move on.
+      #
+      # The pins are FULL 40-char object ids: a fetch REFSPEC is resolved
+      # server-side as a ref NAME, so the old abbreviated form died before
+      # measuring ("couldn't find remote ref abf8461", release run
+      # 37224044818). TLS-resilient (wt87): 5 attempts with backoff; a
+      # local operator whose git points at a dead proxy can set
+      # GIT_PERF_FALLBACK_PROXY, tried as the final attempt (CI leaves it
+      # unset — direct, like every other job). On total transport failure
+      # the gate FAILS OPEN with a loud label: the missing source is
+      # skipped (asset-timing.py measures the remaining tree; empty arg =
+      # source disabled) and the verdict artifact carries
+      # SKIPPED-<source>.txt — a flap must not kill the gate before it
+      # measures, and a skip must never look like a measurement.
       - name: Checkout pinned asset sources
         shell: pwsh
         run: |
-          git init ..\oh-my-bash
-          git -C ..\oh-my-bash remote add origin https://github.com/ohmybash/oh-my-bash
-          git -C ..\oh-my-bash fetch --depth 1 origin abf8461
-          git -C ..\oh-my-bash checkout --quiet FETCH_HEAD
-          git init ..\bash-it
-          git -C ..\bash-it remote add origin https://github.com/Bash-it/bash-it
-          git -C ..\bash-it fetch --depth 1 origin 4725d29
-          git -C ..\bash-it checkout --quiet FETCH_HEAD
+          $ErrorActionPreference = "Stop"
+          function Fetch-Pinned([string]$owner, [string]$repo,
+                                [string]$fullSha, [string]$dest) {
+            # The fetch feeding the measurement was historically invisible
+            # (that invisibility is how the 6s incident shipped): record
+            # the wall time + attempt count per source into the verdict.
+            $script:FetchLatency[$repo] = @{
+              pin          = $fullSha
+              started_utc  = (Get-Date).ToUniversalTime().ToString("o")
+            }
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            git init $dest
+            git -C $dest remote add origin "https://github.com/$owner/$repo"
+            $usedAttempts = 0
+            foreach ($attempt in 1..5) {
+              $usedAttempts = $attempt
+              git -C $dest fetch --depth 1 origin $fullSha
+              if ($LASTEXITCODE -eq 0) { break }
+              if ($env:GIT_PERF_FALLBACK_PROXY -and $attempt -eq 5) {
+                git -C $dest -c http.proxy="$env:GIT_PERF_FALLBACK_PROXY" `
+                  fetch --depth 1 origin $fullSha
+              }
+              Start-Sleep -Seconds (5 * $attempt)
+            }
+            $sw.Stop()
+            $script:FetchLatency[$repo].seconds = [math]::Round($sw.Elapsed.TotalSeconds, 2)
+            $script:FetchLatency[$repo].attempts = $usedAttempts
+            $script:FetchLatency[$repo].ok = ($LASTEXITCODE -eq 0)
+            if ($LASTEXITCODE -ne 0) { return $false }
+            git -C $dest checkout --quiet FETCH_HEAD
+            return $true
+          }
+          function Note-Skipped([string]$source, [string]$pin) {
+            "source $source @ $pin could not be fetched after retries " +
+              "(TLS/transport) - the budget gate runs WITHOUT it; this is " +
+              "a SKIP, not a measurement" |
+              Set-Content "perfbudget-artifacts\SKIPPED-$source.txt"
+            Write-Host "::warning::perfbudget skipped $source @ $pin after retries (transport); see perfbudget-artifacts/SKIPPED-$source.txt"
+          }
+          $script:FetchLatency = @{}
+          New-Item -ItemType Directory -Force -Path perfbudget-artifacts | Out-Null
+          if (Fetch-Pinned "ohmybash" "oh-my-bash" `
+                "abf846186ab0a8a41ec5888e827ece6277dfe446" "..\oh-my-bash") {
+            git -C ..\oh-my-bash checkout --quiet FETCH_HEAD
+          } else { Note-Skipped "oh-my-bash" "abf8461" }
+          if (Fetch-Pinned "Bash-it" "bash-it" `
+                "4725d29db8c0ac8c21df47664b28539f3b8fce94" "..\bash-it") {
+            git -C ..\bash-it checkout --quiet FETCH_HEAD
+          } else { Note-Skipped "bash-it" "4725d29" }
+          $script:FetchLatency | ConvertTo-Json |
+            Set-Content perfbudget-artifacts\fetch-latency.json
 
       - name: Run the per-asset timing budget gate
         shell: pwsh
         run: |
           git checkout origin/master -- scripts/perf
+          $ombArg = if (Test-Path ..\oh-my-bash\.git) { (Resolve-Path ..\oh-my-bash).Path } else { "" }
+          $bashitArg = if (Test-Path ..\bash-it\.git) { (Resolve-Path ..\bash-it).Path } else { "" }
           python scripts/perf/asset-timing.py `
             --niu (Resolve-Path target/release/niu.exe) `
-            --omb (Resolve-Path ..\oh-my-bash) `
-            --bash-it (Resolve-Path ..\bash-it) `
+            --omb $ombArg `
+            --bash-it $bashitArg `
             --run-dir "$env:RUNNER_TEMP\perfbudget-run" `
             --compare-baseline scripts/perf/baselines/asset-timing-baseline.json `
             --out perfbudget-artifacts/asset-timing.json
