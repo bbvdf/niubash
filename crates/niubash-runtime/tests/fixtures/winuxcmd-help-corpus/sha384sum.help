@@ -1,0 +1,29 @@
+Usage: sha384sum [OPTION]... [FILE]...
+
+Compute and check SHA384 message digest.
+
+With no FILE, or when FILE is -, read standard input.
+
+SHA384 produces a 384-bit (48-byte) hash value, typically rendered as a 96-digit hexadecimal number.
+Uses WinuxCmd's portable SHA-384 implementation with the FIPS-180-2 initial state and digest length.
+
+OPTIONS:
+  -b, --binary          read in binary mode (default)
+  -c, --check           read SHA384 sums from the FILEs and check them
+      --ignore-missing  don't fail or report status for missing files
+  -t, --text            read in text mode
+      --quiet           don't print OK for each successfully verified file
+      --status          don't output anything, status code shows success
+  -w, --warn            warn about improperly formatted checksum lines
+      --tag             create a BSD-style checksum
+  -z, --zero            end each output line with NUL, not newline
+      --strict          with --check, exit non-zero for any invalid input
+      --help            display this help and exit
+  -V, --version         output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

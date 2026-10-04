@@ -1,0 +1,109 @@
+Usage: kill [OPTION]... [FILE]...
+
+Send signals to processes, or list signals.
+
+The default signal for kill is TERM. Use -l or -L/-t to list available signals.
+Particularly useful signals include HUP, INT, KILL, STOP, CONT, and 0.
+Alternate signals may be specified in three ways: -9, -SIGKILL or -KILL.
+
+Note: On Windows, most signals are mapped to process termination,
+except SIGTERM which attempts graceful shutdown first.
+
+OPTIONS:
+  -s, --signal ARG  specify the signal to send
+  -n ARG            specify the signal to send
+  -q, --queue ARG   queue an integer signal payload (unsupported on Windows)
+  -l, --list[=ARG]  list signal names, or convert one signal
+  -L, --table       list signal names in a table
+  -t                list signal names in a table
+  -f, --force       force using Win32 termination if necessary; accepted no-op
+                    because WinuxCmd already uses Win32 process handles
+  -W, --winpid      treat pids as Windows PIDs; accepted no-op because WinuxCmd
+                    pids are already Windows PIDs
+  -NUM              send signal number
+  -0                check whether a process exists
+  -9                send SIGKILL (force kill)
+  -15               send SIGTERM (graceful termination)
+  -HUP              send SIGHUP
+  -SIGHUP           send SIGHUP
+  -INT              send SIGINT
+  -SIGINT           send SIGINT
+  -QUIT             send SIGQUIT
+  -SIGQUIT          send SIGQUIT
+  -ILL              send SIGILL
+  -SIGILL           send SIGILL
+  -TRAP             send SIGTRAP
+  -SIGTRAP          send SIGTRAP
+  -ABRT             send SIGABRT
+  -SIGABRT          send SIGABRT
+  -IOT              send SIGIOT
+  -SIGIOT           send SIGIOT
+  -EMT              send SIGEMT
+  -SIGEMT           send SIGEMT
+  -FPE              send SIGFPE
+  -SIGFPE           send SIGFPE
+  -KILL             send SIGKILL
+  -SIGKILL          send SIGKILL
+  -BUS              send SIGBUS
+  -SIGBUS           send SIGBUS
+  -SEGV             send SIGSEGV
+  -SIGSEGV          send SIGSEGV
+  -SYS              send SIGSYS
+  -SIGSYS           send SIGSYS
+  -PIPE             send SIGPIPE
+  -SIGPIPE          send SIGPIPE
+  -ALRM             send SIGALRM
+  -SIGALRM          send SIGALRM
+  -TERM             send SIGTERM
+  -SIGTERM          send SIGTERM
+  -URG              send SIGURG
+  -SIGURG           send SIGURG
+  -STOP             send SIGSTOP
+  -SIGSTOP          send SIGSTOP
+  -TSTP             send SIGTSTP
+  -SIGTSTP          send SIGTSTP
+  -CONT             send SIGCONT
+  -SIGCONT          send SIGCONT
+  -CHLD             send SIGCHLD
+  -SIGCHLD          send SIGCHLD
+  -CLD              send SIGCLD
+  -SIGCLD           send SIGCLD
+  -TTIN             send SIGTTIN
+  -SIGTTIN          send SIGTTIN
+  -TTOU             send SIGTTOU
+  -SIGTTOU          send SIGTTOU
+  -IO               send SIGIO
+  -SIGIO            send SIGIO
+  -POLL             send SIGPOLL
+  -SIGPOLL          send SIGPOLL
+  -XCPU             send SIGXCPU
+  -SIGXCPU          send SIGXCPU
+  -XFSZ             send SIGXFSZ
+  -SIGXFSZ          send SIGXFSZ
+  -VTALRM           send SIGVTALRM
+  -SIGVTALRM        send SIGVTALRM
+  -PROF             send SIGPROF
+  -SIGPROF          send SIGPROF
+  -WINCH            send SIGWINCH
+  -SIGWINCH         send SIGWINCH
+  -PWR              send SIGPWR
+  -SIGPWR           send SIGPWR
+  -LOST             send SIGLOST
+  -SIGLOST          send SIGLOST
+  -USR1             send SIGUSR1
+  -SIGUSR1          send SIGUSR1
+  -USR2             send SIGUSR2
+  -SIGUSR2          send SIGUSR2
+  -RTMIN            send SIGRTMIN
+  -SIGRTMIN         send SIGRTMIN
+  -RTMAX            send SIGRTMAX
+  -SIGRTMAX         send SIGRTMAX
+      --help        display this help and exit
+  -V, --version     output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

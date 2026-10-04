@@ -1,0 +1,31 @@
+Usage: basenc ENCODING [OPTION]... [FILE]
+
+Encode or decode FILE, or standard input, using the selected encoding.
+With no FILE, or when FILE is -, read standard input. ENCODING is one of
+--base64, --base64url, --base32, --base32hex, --base16, --base2lsbf,
+--base2msbf, --base58, or --z85.
+
+OPTIONS:
+  -d, --decode          decode data
+  -i, --ignore-garbage  when decoding, ignore non-alphabet characters
+  -w, --wrap ARG        wrap encoded lines after COLS character (default 76).
+                        Use 0 to disable line wrapping
+  -b ARG                legacy baseN selector
+      --base64          same as base64 program
+      --base64url       file- and URL-safe base64
+      --base58          base58 encoding
+      --base32          same as base32 program
+      --base32hex       extended hex alphabet base32
+      --base16          hexadecimal encoding
+      --base2lsbf       bit string, least significant bit first
+      --base2msbf       bit string, most significant bit first
+      --z85             Z85 encoding
+      --help            display this help and exit
+  -V, --version         output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

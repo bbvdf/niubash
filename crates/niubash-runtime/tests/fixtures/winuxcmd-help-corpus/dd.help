@@ -1,0 +1,29 @@
+Usage: dd [OPTION]...
+
+Convert and copy a file with specified block size and count.
+
+OPTIONS:
+  if ARG         read from FILE instead of stdin
+  of ARG         write to FILE instead of stdout
+  ibs ARG        read up to BYTES bytes at a time
+  obs ARG        write BYTES bytes at a time
+  bs ARG         read and write up to BYTES bytes at a time
+  cbs ARG        convert BYTES bytes at a time
+  count ARG      copy only N input blocks
+  skip ARG       skip N ibs-sized input blocks
+  seek ARG       skip N obs-sized output blocks
+  iseek ARG      same as skip=N
+  oseek ARG      same as seek=N
+  conv ARG       convert as per comma-separated symbol list
+  status ARG     control diagnostic output
+  iflag ARG      read as per comma-separated symbol list
+  oflag ARG      write as per comma-separated symbol list
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

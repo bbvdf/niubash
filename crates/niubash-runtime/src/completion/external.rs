@@ -40,7 +40,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
@@ -317,18 +317,27 @@ impl ExternalCompletionPlugin {
         }
     }
 
-    /// Create a plugin with no compiled completion assets.
+    /// Create a plugin seeded with the embedded WinuxCmd applet definitions.
     ///
-    /// First-party static command definitions live in the active
-    /// `oh-my-niu` bundle. The runtime only owns the completion engine and
-    /// user/plugin loading paths, so bundle assets can update independently of
-    /// the shell binary.
+    /// These defaults are the compiled fallback layer (layer 0): they are
+    /// loaded at construction time, before bundle definitions
+    /// (`replace_definitions` overwrites per command), translated definitions
+    /// (`load_definitions` merges) and user completion dirs (`load_dir`
+    /// overwrites per command) — so a user TOML always wins, matching the
+    /// documented load order. The definitions themselves are generated from
+    /// `winuxcmd --help` by `scripts/generate-winuxcmd-completions.py` and
+    /// embedded from `assets/completions/winuxcmd/` via
+    /// [`crate::completion::winuxcmd_assets`].
     pub fn new() -> Self {
-        Self {
+        static EMBEDDED_DEFS: LazyLock<Vec<CommandDef>> =
+            LazyLock::new(|| crate::completion::winuxcmd_assets::definitions().collect());
+        let mut plugin = Self {
             definitions: HashMap::new(),
             mem_cache: Mutex::new(HashMap::new()),
             cache_dir: resolve_cache_dir(),
-        }
+        };
+        plugin.load_definitions(EMBEDDED_DEFS.iter().cloned());
+        plugin
     }
 
     /// Load all `*.toml` and `*.bash` definition files from `dir`.

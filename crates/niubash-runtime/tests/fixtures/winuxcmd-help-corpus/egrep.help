@@ -1,0 +1,66 @@
+Usage: egrep [OPTION]... PATTERNS [FILE]...
+
+Search for PATTERNS in each FILE using extended regular expressions.
+This compatibility entry point is equivalent to grep -E.
+
+OPTIONS:
+  -E, --extended-regexp        PATTERNS are extended regular expressions
+  -F, --fixed-strings          PATTERNS are strings
+  -G, --basic-regexp           PATTERNS are basic regular expressions
+  -P, --perl-regexp            PATTERNS are Perl regular expressions
+  -e, --regexp ARG             use PATTERNS for matching
+  -f, --file ARG               take PATTERNS from FILE
+  -i, --ignore-case            ignore case distinctions in patterns and data
+      --no-ignore-case         do not ignore case distinctions (default)
+  -w, --word-regexp            match only whole words
+  -x, --line-regexp            match only whole lines
+  -z, --null-data              a data line ends in 0 byte, not newline
+  -s, --no-messages            suppress error messages
+  -v, --invert-match           select non-matching lines
+  -m, --max-count NUM          stop after NUM selected lines
+  -b, --byte-offset            print the byte offset with output lines
+  -n, --line-number            print line number with output lines
+      --line-buffered          flush output on every line
+  -H, --with-filename          print file name with output lines
+  -h, --no-filename            suppress the file name prefix on output
+      --label ARG              use LABEL as the standard input file name prefix
+  -o, --only-matching          show only nonempty parts of lines that match
+  -q, --quiet                  suppress all normal output
+      --silent                 suppress all normal output
+      --binary-files ARG       assume that binary files are TYPE
+  -a, --text                   equivalent to --binary-files=text
+  -I                           equivalent to --binary-files=without-match
+  -d, --directories ARG        how to handle directories: read, recurse, skip
+  -D, --devices ARG            how to handle devices/FIFOs/sockets: read, skip
+  -r, --recursive              like --directories=recurse
+  -R, --dereference-recursive  like -r but follow symlinks
+      --include ARG            search only files that match GLOB
+      --exclude ARG            skip files that match GLOB
+      --exclude-from ARG       skip files from patterns in FILE
+      --exclude-dir ARG        skip directories that match GLOB
+  -L, --files-without-match    print only names of FILEs with no selected lines
+  -l, --files-with-matches     print only names of FILEs with selected lines
+  -c, --count                  print only a count of selected lines per FILE
+  -T, --initial-tab            make tabs line up (if needed)
+  -Z, --null                   print 0 byte after FILE name
+  -B, --before-context NUM     print NUM lines of leading context
+  -A, --after-context NUM      print NUM lines of trailing context
+  -C, --context NUM            print NUM lines of output context
+  -NUM                         same as --context=NUM
+      --group-separator ARG    print separator between groups
+      --no-group-separator     do not print group separator
+      --color[=ARG]            highlight matching strings; WHEN can be 'always',
+                               'never', or 'auto'
+      --colour[=ARG]           highlight matching strings; WHEN can be 'always',
+                               'never', or 'auto'
+  -u, --unix-byte-offsets      report Unix-style byte offsets
+  -U, --binary                 do not strip CR at EOL
+      --help                   display this help and exit
+  -V, --version                output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

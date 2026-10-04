@@ -1,0 +1,15 @@
+Usage: pldd [OPTION]... PID
+
+List DLLs and executable modules loaded by a process.
+
+OPTIONS:
+  -n, --name     print module basenames instead of paths
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

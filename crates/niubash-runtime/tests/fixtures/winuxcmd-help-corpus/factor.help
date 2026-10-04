@@ -1,0 +1,23 @@
+Usage: factor [OPTION]... [NUMBER]...
+
+Print the prime factors of each specified integer NUMBER.
+
+If no NUMBER is specified, read from standard input.
+
+  -h, --exponents   print repeated factors in form p^e unless e is 1
+  -e                same as --exponents
+      --help        display this help and exit
+      --version     output version information and exit
+
+OPTIONS:
+  -e, --exponents  print repeated factors in form p^e unless e is 1
+  -h, --exponents  print repeated factors in form p^e unless e is 1
+      --help       display this help and exit
+  -V, --version    output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

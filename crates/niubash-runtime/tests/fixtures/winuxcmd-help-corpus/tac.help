@@ -1,0 +1,24 @@
+Usage: tac [OPTION]... [FILE]...
+
+Concatenate and print files in reverse.
+
+Write each FILE to standard output, last line first.
+With no FILE, or when FILE is -, read standard input.
+
+Records are separated by newline by default. Use -s to choose another separator,
+-b to attach separators before records, and -r to treat the separator as a regex.
+
+
+OPTIONS:
+  -b, --before         attach the separator before instead of after each record
+  -r, --regex          treat the separator as a regular expression
+  -s, --separator ARG  use STRING as the record separator
+      --help           display this help and exit
+  -V, --version        output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

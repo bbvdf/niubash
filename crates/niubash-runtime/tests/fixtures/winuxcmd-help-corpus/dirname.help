@@ -1,0 +1,16 @@
+Usage: dirname [OPTION] NAME...
+
+Output each NAME with its last non-slash component and trailing slashes
+removed; if NAME contains no /'s, output '.' (meaning the current directory).
+
+OPTIONS:
+  -z, --zero     separate output with NUL rather than newline
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

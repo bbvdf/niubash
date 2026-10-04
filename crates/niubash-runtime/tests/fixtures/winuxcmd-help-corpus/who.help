@@ -1,0 +1,35 @@
+Usage: who [OPTION]... [ FILE | ARG1 ARG2 ]
+
+Print information about users who are currently logged in.
+
+Note: This is a Windows implementation. Windows doesn't have
+the same multi-user concept as Unix, so this command mainly
+displays the current interactive user.
+
+OPTIONS:
+  -a, --all       same as -b -d --login -p -r -t -T -u
+  -b, --boot      time of last system boot
+  -d, --dead      print dead processes
+  -H, --heading   print line of column headings
+  -l, --login     print system login processes
+  -m              only hostname and user associated with stdin
+  -p, --process   print active processes spawned by init
+  -q, --count     all login names and number of users logged on
+  -r, --runlevel  print current runlevel
+  -s, --short     print only name, line, and time
+  -t, --time      print last system clock change
+  -T              add user's message status as +, - or ?
+  -u, --users     list users logged in
+  -w, --mesg      add user's message status as +, - or ?
+      --lookup    attempt to canonicalize hostnames via DNS
+      --message   same as --mesg
+      --writable  list only users with a writable terminal
+      --help      display this help and exit
+  -V, --version   output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

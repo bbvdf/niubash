@@ -1,0 +1,16 @@
+Usage: mkgroup [OPTION]...
+
+Generate group-like entries from Windows groups.
+
+OPTIONS:
+  -c, --current  print groups from the current process token
+  -l, --local    enumerate local machine groups (default)
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

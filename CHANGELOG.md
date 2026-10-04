@@ -2,6 +2,27 @@
 
 All notable changes to Niubash are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- WinuxCmd applet completions are compiled into the shell (niubash#172 L1):
+  `grep --col<Tab>` offers `--color`/`--colour` with descriptions, `ls --color`
+  offers `always`/`auto`/`never`, `wpm <Tab>` lists its 20 subcommands, and
+  every one of the 178 WinuxCmd 1.1.5 applets (including `[`) carries its real
+  flag set with no plugin enabled. Definitions are generated from
+  `winuxcmd --help` transcripts by `scripts/generate-winuxcmd-completions.py`,
+  embedded from `crates/niubash-runtime/assets/completions/winuxcmd/`, and
+  load as the base layer: bundle/pack and user-dir TOMLs still override per
+  command. Generator fixes en route: bracket command names (`[`), headerless
+  help (`top`), multi-alias specs (`pr -F, -f`), `EXIT STATUS:`/footer
+  pollution of descriptions, optional-value flags (`--color[=WHEN]`) no longer
+  swallow filename completion, path-valued flags decided by spec hints instead
+  of description prose, and wpm `Commands:` parsing. Golden coverage:
+  `crates/niubash-runtime/tests/winuxcmd_completions.rs` plus
+  `scripts/test-winuxcmd-completions.py` (corpus replay must be
+  byte-identical).
+
 ## [1.3.3] - 2026-10-04
 
 ### Fixed (engine rubash 1.3.3)

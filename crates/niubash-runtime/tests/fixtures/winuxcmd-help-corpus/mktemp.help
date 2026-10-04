@@ -1,0 +1,31 @@
+Usage: mktemp [OPTION]... [TEMPLATE]
+
+Create a temporary file or directory, safely, and print its name.
+
+TEMPLATE must contain at least 3 consecutive 'X's in last component.
+If TEMPLATE is not specified, use tmp.XXXXXXXXXX instead.
+
+Mandatory arguments to long options are mandatory for short options too.
+
+Note: This implementation uses Windows GetTempFileName API.
+Custom templates are partially supported.
+
+OPTIONS:
+  -d, --directory   make a directory instead of a file
+  -u, --dry-run     do not actually create anything
+  -q, --quiet       suppress diagnostics
+      --suffix ARG  append SUFFIX to TEMPLATE; SUFFIX must not contain a path
+                    separator
+  -t                interpret TEMPLATE as a single file name component, relative
+                    to a directory
+  -p, --tmpdir ARG  interpret TEMPLATE relative to DIR; if DIR is not specified,
+                    use $TMPDIR
+      --help        display this help and exit
+  -V, --version     output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

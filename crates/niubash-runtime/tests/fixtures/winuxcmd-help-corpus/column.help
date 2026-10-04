@@ -1,0 +1,57 @@
+Usage: column [options] [file...]
+
+Columnate lists.
+
+The column utility formats its input into multiple columns.
+Rows are filled before columns. Input is taken from file,
+or from standard input by default.
+
+OPTIONS:
+  -c, --columns NUM              output is formatted for a display width
+  -t, --table                    determine the number of columns the input
+                                 contains
+  -s, --separator ARG            specify the possible input item delimiters
+      --output-separator ARG     specify the columns separator for table output
+  -o, --output-separator ARG     specify the columns separator for table output
+      --table-name ARG           specify the table name for JSON or XML output
+  -n, --table-name ARG           specify the table name for JSON or XML output
+      --output-fields ARG        specify which columns to include in JSON or XML
+                                 output
+  -x, --output-fields ARG        specify which columns to include in JSON or XML
+                                 output
+      --table-right ARG          columns to right align in table output
+  -R, --table-right-columns ARG  columns to right align in table output
+      --table-hide ARG           columns to hide in table output
+  -H, --table-hide ARG           columns to hide in table output
+      --table-empty              don't use empty lines in table output
+  -e, --table-empty              don't use empty lines in table output
+      --table-no-trunc           don't truncate text in table output
+      --table-noescape           don't escape newline, tab, backslash in table
+                                 output
+  -E, --table-noescape           don't escape newline, tab, backslash in table
+                                 output
+      --json                     use JSON output format for table
+  -J, --json                     use JSON output format for table
+      --output-width NUM         maximum display width
+      --version                  output version information and exit
+  -V, --version                  output version information and exit
+  -d, --table-noheadings         don't print header in table output
+  -l, --table-columns-limit ARG  maximal number of input columns
+  -m, --table-maxout             fill all available space
+  -T, --table-truncate ARG       truncate text in the columns when necessary
+  -W, --table-wrap ARG           wrap text in the columns when necessary
+  -L, --keep-empty-lines         don't ignore empty lines
+  -C, --table-column ARG         define column properties
+  -r, --tree ARG                 column to use tree-like output for the table
+  -i, --tree-id ARG              line ID to specify child-parent relation
+  -p, --tree-parent ARG          parent to specify child-parent relation
+  -O, --table-order ARG          specify order of output columns
+  -N, --table-columns ARG        comma separated column names
+      --help                     display this help and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

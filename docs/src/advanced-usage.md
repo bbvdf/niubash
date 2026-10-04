@@ -101,6 +101,33 @@ Flag completions (`ls --a<Tab>` → `--all` with its description) come from the
 bundle's generated completion assets and work in every style; `ide` and
 `list` show the descriptions inline.
 
+## WinuxCmd Applet Completions
+
+Every WinuxCmd applet ships with flag completion built into the `niu` binary:
+`grep --col<Tab>` offers `--color` / `--colour` with descriptions,
+`ls --color <Tab>` offers `always` / `auto` / `never`, and `wpm <Tab>`
+lists the package-manager subcommands (`install`, `search`, `uninstall`,
+...).
+
+These definitions are generated from `winuxcmd --help` (WinuxCmd 1.1.5
+transcripts) by `scripts/generate-winuxcmd-completions.py`, stored as one
+TOML per applet under `crates/niubash-runtime/assets/completions/winuxcmd/`,
+and compiled into the runtime — so they work on a fresh install with no
+plugin enabled. When WinuxCmd gains applets or options, regenerate against
+the new binary:
+
+```bash
+python scripts/generate-winuxcmd-completions.py --winuxcmd <path-to-winuxcmd.exe>
+python scripts/test-winuxcmd-completions.py   # golden check: corpus vs committed assets
+```
+
+Priority is layered: the embedded applet defaults are the base layer, and
+completion definitions loaded later override them per command — a
+bundle/pack TOML or a user completion-dir TOML whose file stem (or `command`
+key) matches the applet name replaces the built-in definition entirely, so
+trimming or extending an applet's flags is a plain file drop, not a fight
+with the defaults.
+
 ## Prompt And Themes
 
 Defaults are a floor, not an identity. The built-in prompt (a reedline

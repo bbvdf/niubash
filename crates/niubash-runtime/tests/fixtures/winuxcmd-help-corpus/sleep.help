@@ -1,0 +1,23 @@
+Usage: sleep NUMBER[SUFFIX]...
+
+Pause for NUMBER seconds.
+
+SUFFIX may be 's' for seconds (the default), 'm' for minutes,
+'h' for hours or 'd' for days.
+
+Unlike most implementations that require NUMBER be an integer,
+here NUMBER may be an arbitrary floating point number.
+
+Note: This implementation supports floating point numbers.
+
+OPTIONS:
+                 pause for NUMBER seconds
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

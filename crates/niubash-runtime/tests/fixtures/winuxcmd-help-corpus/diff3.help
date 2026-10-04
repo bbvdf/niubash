@@ -1,0 +1,22 @@
+Usage: diff3 [OPTION] MINE OLDER YOURS
+
+Compare three files.
+Compare three files line by line and report differences.
+MINE is your file, OLDER is the common ancestor, YOURS is the other file.
+By default, outputs conflicts between MINE and YOURS.
+
+OPTIONS:
+  -e             output ed script
+  -E             output ed script with bracketed conflicts
+  -m             output in merged format
+  -A             like -E, but overwrite overlapping changes
+  -a             treat all files as text
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

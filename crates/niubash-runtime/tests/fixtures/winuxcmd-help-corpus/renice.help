@@ -1,0 +1,19 @@
+Usage: renice [-n] PRIORITY [-p] PID...  # also: -g PGRP, -u USER [DIFFERS]
+
+Alter the scheduling priority of running processes.
+Windows priority classes are mapped to Unix-like niceness values from -20 to 19.
+
+OPTIONS:
+  -n, --priority ARG  set niceness value
+  -p, --pid           interpret operands as process IDs
+  -g, --pgrp          interpret operands as process group IDs
+  -u, --user          interpret operands as usernames or UIDs
+      --help          display this help and exit
+  -V, --version       output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

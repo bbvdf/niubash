@@ -1,0 +1,50 @@
+Usage: du [OPTION]... [FILE]...
+
+The du command displays the amount of disk space used by the specified
+files and for each subdirectory (of directory arguments). If no path
+is given, the current directory is used.
+
+On Windows, it calculates the total size of all files in a directory
+tree recursively.
+
+OPTIONS:
+  -a, --all               write counts for all files, not just directories
+  -A, --apparent-size     print apparent sizes
+  -B, --block-size ARG    scale sizes by SIZE before printing them
+  -b, --bytes             equivalent to '--apparent-size --block-size=1'
+  -c, --total             produce a grand total
+  -d, --max-depth NUM     print the total for a directory only if it is N or
+                          fewer levels below
+  -h, --human-readable    print sizes in powers of 1024 (e.g., 1023M)
+  -H, --dereference-args  dereference only symlinks that are command line
+                          arguments
+      --si                print sizes in powers of 1000 (e.g., 1.1G)
+  -k                      like --block-size=1K
+  -L, --dereference       dereference all symbolic links
+  -P, --no-dereference    don't follow any symbolic links (default)
+  -s, --summarize         display only a total for each argument
+  -t, --threshold ARG     exclude entries smaller/greater than SIZE
+      --exclude ARG       exclude files that match PATTERN
+  -x, --one-file-system   skip directories on different file systems
+      --inodes            list inode usage information instead of block usage
+      --time[=ARG]        show time of the last modification of any file in the
+                          directory; see --time-style
+      --time-style ARG    show timestamps using STYLE
+  -0, --null              end each output line with NUL, not newline
+  -D, --dereference-args  dereference only symlinks that are command line
+                          arguments
+      --files0-from ARG   summarize disk usage of the NUL-terminated file names
+                          specified in file F
+  -l, --count-links       count sizes many times if hard linked
+  -m                      like --block-size=1M
+  -S, --separate-dirs     for directories, do not include size of subdirectories
+  -X, --exclude-from ARG  exclude files that match any pattern in FILE
+      --help              display this help and exit
+  -V, --version           output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

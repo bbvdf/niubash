@@ -1,0 +1,29 @@
+Usage: csplit [OPTION]... FILE PATTERN...
+
+Output pieces of FILE separated by PATTERN(s) to files 'xx00', 'xx01', ...
+
+Mandatory arguments to long options are mandatory for short options too.
+
+PATTERN is a line number, or a /regex/ pattern.
+
+Note: This implementation supports common GNU line-number, regex,
+skip, repeat, suppress-matched, and empty-file behavior.
+
+OPTIONS:
+  -f, --prefix ARG         use PREFIX instead of 'xx'
+  -b, --suffix-format ARG  use sprintf FORMAT instead of %02d
+  -n, --digits ARG         use specified number of digits
+  -k, --keep-files         do not remove output files on errors
+  -s, --quiet              do not print counts of output file sizes
+  -q, --silent             do not print counts of output file sizes
+  -z, --elide-empty-files  remove empty output files
+      --suppress-matched   suppress lines matching PATTERN from output
+      --help               display this help and exit
+  -V, --version            output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

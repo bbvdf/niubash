@@ -1,0 +1,33 @@
+Usage: getfacl [OPTION]... FILE...
+
+Print Windows file ACLs in a stable text format.
+
+Options:
+  -a, --access       display the access ACL (default)
+  -d, --default      display the default ACL
+  -R, --recursive    list ACLs recursively
+  -p, --absolute-names  do not strip leading path separators
+  -n, --numeric      print numeric IDs instead of account names
+  -c, --omit-header  do not display the comment header
+  -s, --skip-base    skip files with base ACL
+  -t, --tabular      use a tabular output format
+
+OPTIONS:
+  -a, --access          display the access ACL
+  -d, --default         display the default ACL
+  -R, --recursive       list the ACLs of all files and directories recursively
+  -p, --absolute-names  do not strip leading path separators
+  -n, --numeric         print numeric IDs instead of account names
+  -c, --omit-header     do not display the comment header
+  -s, --skip-base       skip files that have all ACL entries equal to the base
+                        ACL
+  -t, --tabular         use a tabular output format
+      --help            display this help and exit
+  -V, --version         output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

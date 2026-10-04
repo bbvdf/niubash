@@ -1,0 +1,21 @@
+Usage: mknod [OPTION]... NAME TYPE [MAJOR MINOR]
+
+Create the special file NAME of the given TYPE.
+
+Type 'p' creates a FIFO: on Windows this is an on-disk marker file
+that WinuxCmd commands bridge to a named pipe. Block and character
+device nodes have no Windows equivalent and report an error.
+
+OPTIONS:
+  -m, --mode ARG       set file permission bits
+  -Z                   set the SELinux security context to default type
+      --context[=ARG]  set the SELinux security context
+      --help           display this help and exit
+  -V, --version        output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

@@ -1,0 +1,22 @@
+Usage: watch [OPTION]... COMMAND
+
+Execute a program periodically, showing output fullscreen.
+
+Runs COMMAND repeatedly, displaying its output and errors.
+This allows you to watch the program output change over time.
+
+OPTIONS:
+  -n, --interval NUM  seconds to wait between updates
+  -d, --differences   highlight changes between updates
+  -t, --no-title      turn off header showing interval and command
+  -b, --beep          beep if command has a non-zero exit
+  -c, --count NUM     number of times to run the command (for testing)
+      --help          display this help and exit
+  -V, --version       output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

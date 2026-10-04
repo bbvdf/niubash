@@ -1,0 +1,22 @@
+Usage: chroot [OPTION] NEWROOT [COMMAND [ARG]...]
+
+Run COMMAND with root directory set to NEWROOT.
+
+WinuxCmd accepts the GNU-compatible command line surface for chroot, but
+Windows does not provide a safe equivalent to POSIX chroot semantics.
+This command therefore acts as a compatibility placeholder and reports
+that changing the root directory is not supported on Windows.
+
+OPTIONS:
+  -g, --groups ARG    specify supplementary groups
+  -u, --userspec ARG  specify user and group
+      --skip-chdir    do not change working directory to '/'
+      --help          display this help and exit
+  -V, --version       output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

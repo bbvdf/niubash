@@ -1,0 +1,46 @@
+Usage: date [OPTION]... [FILE]...
+
+Display the current time in the given FORMAT, or set the system date.
+
+FORMAT controls the output. Interpreted sequences are:
+  %Y   Year (4 digits)
+  %y   Year (2 digits)
+  %m   Month (01-12)
+  %d   Day (01-31)
+  %H   Hour (00-23)
+  %I   Hour (01-12)
+  %M   Minute (00-59)
+  %S   Second (00-60)
+  %F   Full date; same as %Y-%m-%d
+  %T   Time; same as %H:%M:%S
+  %z   Numeric time zone offset
+  %p   AM/PM
+  %a   Abbreviated weekday name
+  %A   Full weekday name
+  %b   Abbreviated month name
+  %B   Full month name
+
+OPTIONS:
+  -d, --date ARG        display time described by STRING, not 'now'
+  -u, --utc             Coordinated Universal Time (UTC)
+  -R, --rfc-email       output RFC 5322 compliant date string
+      --rfc-2822        output RFC 2822 compliant date string
+  -I, --iso-8601[=ARG]  output ISO 8601 date/time
+      --rfc-3339 ARG    output RFC 3339 date/time
+  -r, --reference ARG   display the last modification time of FILE
+  -f, --file ARG        display date strings from DATEFILE, one per line
+      --universal       alias for --utc
+      --debug           annotate the parsed date, and warn about dubious usage
+                        to stderr
+      --resolution      output the available resolution of timestamps
+      --set ARG         set time described by STRING
+  -s ARG                set time described by STRING
+      --help            display this help and exit
+  -V, --version         output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

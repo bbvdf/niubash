@@ -1,0 +1,36 @@
+Usage: chmod [OPTION]... [FILE]...
+
+Change the mode of each FILE to MODE.
+
+Each MODE is of the form '[ugoa]*([-+=]([rwxXst]*|[ugo]))+'.
+
+  -H  traverse command-line symlinks to directories
+  -L  traverse every symlink to a directory
+  -P  do not traverse any symbolic links (default)
+
+Note: On Windows, this command simulates Unix permissions using
+file attributes. Write permission is mapped to the read-only attribute.
+
+OPTIONS:
+  -c, --changes           like verbose but report only when a change is made
+  -f, --silent            suppress most error messages
+  -v, --verbose           output a diagnostic for every file processed
+  -R, --recursive         change files and directories recursively
+      --quiet             suppress most error messages
+      --reference ARG     use RFILE's mode instead of MODE values
+  -H                      traverse command-line symlinks to directories
+  -L                      traverse every symlink to a directory
+  -P                      do not traverse any symbolic links (default)
+      --dereference       affect the referent of each symbolic link
+  -h, --no-dereference    affect symbolic links instead of referenced files
+      --preserve-root     fail to operate recursively on '/'
+      --no-preserve-root  do not treat '/' specially
+      --help              display this help and exit
+  -V, --version           output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

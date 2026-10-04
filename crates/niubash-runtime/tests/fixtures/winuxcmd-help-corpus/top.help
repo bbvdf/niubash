@@ -1,0 +1,17 @@
+Usage: top [options]
+  -b, --batch        Batch mode
+  -c, --command      Show command line instead of process name
+  -d, --delay DELAY  Update interval (default: 3s)
+  -H, --threads      Show threads as if they were processes
+  -n, --iterations N Exit after N iterations
+  -o, --field-sort F Sort by CPU|MEM|TIME|PID|NAME
+  -p, --pid PIDS     Monitor only comma-separated PIDs
+  -s, --secure-mode  Secure mode (disables kill/renice)
+  -u, --user USER    Monitor only processes with given user
+  -U, --User USER    Monitor only by real user ID/name
+  -w, --width WIDTH  Override output width
+      --rows N       Limit number of displayed processes
+      --help         Show help
+  -v, --version      Show version
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

@@ -1,0 +1,43 @@
+Usage: install [OPTION]... [-T] SOURCE DEST
+  install [OPTION]... SOURCE... DIRECTORY
+  install [OPTION]... -t DIRECTORY SOURCE...
+
+Copy files and set attributes.
+
+Note: This Windows implementation supports copying, compare-and-skip,
+timestamp preservation, and selected destination handling. Ownership,
+group, strip, and SELinux context handling remain limited on Windows.
+
+OPTIONS:
+  -b, --backup                make a backup of each existing destination file
+  -c                          (ignored)
+  -C, --compare               compare source and destination and skip copy if
+                              identical
+  -d, --directory             treat all arguments as directory names
+  -D                          create all leading components of DEST except the
+                              last
+  -g, --group ARG             set group ownership
+  -m, --mode ARG              set permission mode
+  -o, --owner ARG             set ownership
+  -p, --preserve-timestamps   apply access/modification times of SOURCE files
+  -s, --strip                 strip symbol tables
+      --debug                 print debugging information
+      --strip-program ARG     program used to strip binaries
+  -S, --suffix ARG            override the usual backup suffix
+  -t, --target-directory ARG  specify the destination directory
+  -T, --no-target-directory   do not treat the last operand specially when it is
+                              a directory
+  -v, --verbose               print the name of each directory as it is created
+      --preserve-context      preserve SELinux security context
+  -Z                          set SELinux security context of destination files
+                              to default
+      --context[=ARG]         set SELinux security context of destination files
+      --help                  display this help and exit
+  -V, --version               output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

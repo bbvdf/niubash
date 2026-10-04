@@ -1,0 +1,46 @@
+Usage: tail [OPTION]... [FILE]...
+
+Print the last 10 lines of each FILE to standard output.
+With more than one FILE, precede each with a header giving the file name.
+
+With no FILE, or when FILE is -, read standard input.
+
+OPTIONS:
+  -c, --bytes ARG                output the last NUM bytes; or use -c +NUM to
+                                 output
+                                 starting with byte NUM of each file
+      --debug                    output extra follow diagnostics to stderr
+  -f                             output appended data as the file grows
+      --follow[=ARG]             output appended data as the file grows; with
+                                 --follow=name,
+                                 follow the file name rather than the descriptor
+  -F                             same as --follow=name --retry
+  -n, --lines ARG                output the last NUM lines, instead of the last
+                                 10; or
+                                 use -n +NUM to skip NUM-1 lines at the start
+      --max-unchanged-stats NUM  with --follow=name, reopen a FILE which has not
+                                 changed
+                                 size after N iterations to see if it has been
+                                 renamed
+                                 [IMPLEMENTED]
+      --pid NUM                  with -f, terminate after process ID, PID dies
+                                 [IMPLEMENTED]
+  -q, --quiet                    never output headers giving file names
+      --silent                   never output headers giving file names
+      --retry                    keep trying to open a file if it is
+                                 inaccessible
+      --use-polling              disable native directory change watching and
+                                 use polling instead
+  -s, --sleep-interval ARG       with -f, sleep for approximately N seconds
+                                 between iterations
+  -v, --verbose                  always output headers giving file names
+  -z, --zero-terminated          line delimiter is NUL, not newline
+      --help                     display this help and exit
+  -V, --version                  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

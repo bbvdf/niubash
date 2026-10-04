@@ -1,0 +1,24 @@
+Usage: fold [OPTION]... [FILE]...
+
+Wrap input lines to fit specified width.
+
+Write each FILE to standard output, wrapping input lines to fit in width columns.
+With no FILE, or when FILE is -, read standard input.
+
+Note: This implementation supports basic folding.
+Some locale-specific character-width details remain approximate on Windows.
+
+OPTIONS:
+  -b, --bytes       count bytes rather than columns
+  -c, --characters  count characters rather than columns
+  -s, --spaces      break at spaces
+  -w, --width ARG   use WIDTH columns instead of 80
+      --help        display this help and exit
+  -V, --version     output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

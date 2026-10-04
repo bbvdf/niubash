@@ -1,0 +1,52 @@
+Usage: pr [OPTION]... [FILE]...
+
+Convert text files for printing.
+
+Note: This is a simplified implementation. Advanced features
+like multi-column layout and complex pagination are not fully
+supported.
+
+OPTIONS:
+  +PAGE ARG                    begin printing with page PAGE [default 1]
+  -COLUMN ARG                  produce COLUMN-column output
+  -a                           produce multi-column output
+  -d                           double-space the output
+  -e, --expand[=ARG]           expand input TABs
+  -f, --form-feed              use form feeds instead of newlines
+  -h, --header ARG             use a centered HEADER
+  -l, --length ARG             set page length
+  -n, --number-lines[=ARG]     number lines
+  -o, --indent ARG             offset each line
+  -r, --no-file-warnings       omit warning when a file cannot be opened
+  -s, --separator[=ARG]        separate columns by characters
+  -t, --omit-header            omit page headers and trailers
+  -T, --omit-pagination        omit page headers and trailers
+  -w, --width ARG              set page width
+  -W, --page-width ARG         set page width (default 72)
+  -b, --balance-columns        balance columns on the last page
+  -c, --show-control-chars     use hat notation (^G) and octal backslash
+                               notation
+  -D, --date-format ARG        use FORMAT for the date in the header
+  -F, -f                       use form feeds instead of newlines (same as -f)
+  -i, --output-tabs[=ARG]      replace spaces with TABs where possible
+  -J, --join-lines             merge full lines (ignore --column warnings)
+  -m, --merge                  print all files in parallel, one in each column
+  -N, --first-line-number ARG  start counting with NUMBER at line 1 of first
+                               page
+  -S, --sep-string[=ARG]       separate columns by STRING (default single space)
+  -v, --show-nonprinting       use octal backslash notation for non-printing
+                               characters
+      --across                 print across pages
+      --columns ARG            output COLUMN-column output
+      --double-space           double-space the output
+      --expand-tabs[=ARG]      expand input TABs
+      --pages ARG              begin printing with page PAGE
+      --help                   display this help and exit
+  -V, --version                output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

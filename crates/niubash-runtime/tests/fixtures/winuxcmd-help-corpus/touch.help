@@ -1,0 +1,25 @@
+Usage: touch [OPTION]... FILE...
+
+Update the access and modification times of each FILE to the current time.
+A FILE argument that does not exist is created empty, unless -c or -h is supplied.
+
+OPTIONS:
+  -a                    change only the access time
+  -c, --no-create       do not create any files
+  -d, --date ARG        parse STRING and use it instead of current time
+  -f                    (ignored)
+  -h, --no-dereference  affect symbolic link instead of referenced file
+  -m                    change only the modification time
+  -r, --reference ARG   use this file's times instead of current time
+  -t ARG                use [[CC]YY]MMDDhhmm[.ss] instead of current time
+      --time ARG        change the specified time
+                        (access/atime/use/modify/mtime)
+      --help            display this help and exit
+  -V, --version         output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

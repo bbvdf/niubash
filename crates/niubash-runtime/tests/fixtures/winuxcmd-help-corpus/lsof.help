@@ -1,0 +1,27 @@
+Usage: lsof [options]
+
+List open files for running processes on Windows.
+This command enumerates kernel handles and prints entries that map to files.
+Some handles may require elevated privileges and some object queries can timeout.
+
+OPTIONS:
+  -p, --pid NUM              list files opened by process id
+  -a, --all                  include non-file handles and unnamed entries
+  -d, --descriptor NUM       filter by file descriptor number
+  -i, --internet[=ARG]       show internet connections; optional spec ':PORT',
+                             'PROTO', 'PROTO:PORT'
+  -F, --field                machine-readable field output
+  -n, --numeric              do not convert native paths to DOS paths
+      --no-headers           print no header line
+  -P, --no-port-translation  do not translate port numbers
+  -t, --timeout-ms NUM       NtQueryObject timeout in milliseconds
+  -u, --user ARG             filter by user (UID or name)
+      --help                 display this help and exit
+  -V, --version              output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

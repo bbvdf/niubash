@@ -1,0 +1,15 @@
+Usage: yes [STRING]...
+
+Repeatedly output a line with all specified STRING(s), or y.
+
+OPTIONS:
+                 output a string repeatedly
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

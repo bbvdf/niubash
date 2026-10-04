@@ -1,0 +1,19 @@
+Usage: ldd [OPTION]... FILE...
+
+Print PE import dependencies for Windows executables.
+
+OPTIONS:
+  -d, --data-relocs      process data relocations
+  -r, --function-relocs  process data and function relocations
+  -n, --name             print only imported DLL names
+  -u, --unused           print unused direct dependencies
+  -v, --verbose          print all information
+      --help             display this help and exit
+  -V, --version          output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

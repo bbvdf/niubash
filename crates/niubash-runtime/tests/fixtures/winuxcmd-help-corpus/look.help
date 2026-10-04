@@ -1,0 +1,18 @@
+Usage: look [OPTION]... STRING [FILE]
+
+Display lines beginning with STRING.  Performs a binary search, so FILE must be sorted.  With no FILE, a default dictionary is used (not available on Windows, so an explicit FILE is required).
+
+OPTIONS:
+  -d, --alphanum       compare only alphanumeric and blanks
+  -f, --ignore-case    ignore case when comparing
+  -a, --alternative    use alternative dictionary order
+  -t, --terminate ARG  terminate string at CHAR
+      --version        output version information and exit
+      --help           display this help and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

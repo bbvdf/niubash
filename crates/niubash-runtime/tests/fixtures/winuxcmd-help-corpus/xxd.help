@@ -1,0 +1,24 @@
+Usage: xxd [OPTION]... [FILE]...
+
+Make a hexdump or do the reverse.
+
+OPTIONS:
+  -r, --reverse     reverse: convert hex to binary
+  -p, --plain       plain hexdump
+  -c, --cols NUM    set bytes per line
+  -l, --len NUM     limit input to LEN bytes
+  -s, --seek NUM    start at SEEK bytes into input
+  -o, --offset NUM  add OFFSET to displayed file position
+  -u, --upper-case  use upper-case hex digits
+  -g, --group NUM   set bytes per hex group
+  -i, --include     output in C include file style
+  -n, --name ARG    set the variable name used in C include output
+      --help        display this help and exit
+  -V, --version     output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

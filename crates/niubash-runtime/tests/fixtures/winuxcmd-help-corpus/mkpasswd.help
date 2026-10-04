@@ -1,0 +1,20 @@
+Usage: mkpasswd [-c] [-l] [-p PREFIX] [-s SHELL] [-P FD] [-S METHOD]
+
+Generate passwd-like entries from Windows accounts.
+
+OPTIONS:
+  -c, --current          print only the current process user
+  -l, --local            enumerate local machine users (default)
+  -p, --path-prefix ARG  home directory prefix
+  -s, --shell ARG        login shell path
+  -P, --password-fd ARG  read password from file descriptor
+  -S, --method ARG       encrypt method (not supported on Windows)
+      --help             display this help and exit
+  -V, --version          output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

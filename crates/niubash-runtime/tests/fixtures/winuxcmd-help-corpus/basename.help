@@ -1,0 +1,22 @@
+Usage: basename NAME [SUFFIX]
+basename OPTION... NAME...
+
+Print NAME with any leading directory components removed.
+If specified, also remove a trailing SUFFIX.
+
+OPTIONS:
+  -a, --multiple    support multiple arguments and treat each as a NAME
+      --mul         alias for --multiple
+  -s, --suffix ARG  remove a trailing SUFFIX; implies -a
+      --suf ARG     alias for --suffix
+  -z, --zero        end each output line with NUL, not newline
+      --ze          alias for --zero
+      --help        display this help and exit
+  -V, --version     output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

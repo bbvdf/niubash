@@ -1,0 +1,22 @@
+Usage: expand [OPTION]... [FILE]...
+
+Convert tabs to spaces.
+
+Convert each tab character to one or more spaces.
+By default, tabs are converted to 8 spaces.
+
+Supports GNU tab lists, including /N and +N repeat tab stops.
+
+OPTIONS:
+  -t, --tabs ARG  specify tab stop positions (default: 8)
+  -i, --initial   only convert tabs at the beginning of lines
+  -NUM            same as --tabs=NUM
+      --help      display this help and exit
+  -V, --version   output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

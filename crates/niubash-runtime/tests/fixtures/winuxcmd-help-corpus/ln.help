@@ -1,0 +1,42 @@
+Usage: ln [OPTION]... [FILE]...
+
+Create links between files. By default, make hard links.
+
+  -s, --symbolic         make symbolic links instead of hard links
+  -f, --force            remove existing destination files
+  -i, --interactive      prompt whether to remove destinations
+  -b, --backup           make a backup of each existing destination
+  -S, --suffix=SUFFIX    override the usual backup suffix
+  -t, --target-directory=DIRECTORY  specify the target directory
+  -T, --no-target-directory  treat LINK_NAME as a normal file
+  -r, --relative         create links relative to link location
+
+On Windows, hard links and symbolic links are supported.
+Note: Creating symbolic links may require administrator privileges.
+
+OPTIONS:
+  -s, --symbolic              make symbolic links instead of hard links
+  -f, --force                 remove existing destination files
+  -v, --verbose               print name of each linked file
+  -n, --no-dereference        treat LINK_NAME as a normal file if it is a
+                              symbolic link to a directory
+  -i, --interactive           prompt whether to remove destinations
+  -L, --logical               dereference TARGETs that are symbolic links
+  -P, --physical              make hard links directly to symbolic links
+      --dereference           dereference TARGETs that are symbolic links
+  -b, --backup                make a backup of each existing destination file
+  -S, --suffix ARG            override the usual backup suffix
+  -r, --relative              with -s, create links relative to link location
+  -t, --target-directory ARG  specify the DIRECTORY in which to create the links
+  -T, --no-target-directory   treat LINK_NAME as a normal file always
+  -d, --directory             allow the hard link to be a directory (privileged)
+  -F                          allow hard link to directory (alias for -d)
+      --help                  display this help and exit
+  -V, --version               output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

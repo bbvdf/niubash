@@ -1,0 +1,30 @@
+Usage: col [OPTION]...
+
+Filter reverse line feeds from standard input.
+
+col filters out reverse (and half-reverse) line feeds so that the output
+is in the correct order with only forward and half-forward line feeds.
+
+Mandatory arguments to long options are mandatory for short options too.
+
+  -b    do not output backspaces
+  -f    permit forward half line feeds
+  -p    pass unknown control sequences
+  -x    output spaces instead of tabs
+  -l    buffer at least NUM lines (default 128)
+
+OPTIONS:
+  -b             do not output backspaces
+  -f             permit forward half line feeds
+  -p             pass unknown control sequences
+  -x             output spaces instead of tabs
+  -l ARG         buffer at least NUM lines (default 128)
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

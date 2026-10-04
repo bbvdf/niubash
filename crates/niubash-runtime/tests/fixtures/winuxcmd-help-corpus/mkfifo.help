@@ -1,0 +1,22 @@
+Usage: mkfifo [OPTION]... NAME...
+
+Create named pipes (FIFOs) with the given NAMEs.
+
+Windows has no filesystem FIFO node type, so WinuxCmd emulates one with
+an on-disk marker file. WinuxCmd commands opening the marker for
+reading or writing are bridged to a Windows named pipe with blocking
+POSIX open() semantics; other tools see a small marker file.
+
+OPTIONS:
+  -m, --mode ARG          set file permission bits
+  -Z, --security-context  set the SELinux security context to default type
+      --context           set the SELinux security context
+      --help              display this help and exit
+  -V, --version           output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

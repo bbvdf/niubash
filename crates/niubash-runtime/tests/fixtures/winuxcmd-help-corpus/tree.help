@@ -1,0 +1,37 @@
+Usage: tree [OPTION]... [FILE]...
+
+tree is a recursive directory listing program that produces a depth indented
+listing of files. Color is supported ala dircolors if the LS_COLORS environment
+variable is set, outputting to tty.
+
+With no arguments, tree lists the files in the current directory. When directory
+arguments are given, tree lists all the files and/or directories found in the
+given directories each in turn. Upon completion of listing all files/directories
+found, tree returns the total number of files and/or directories listed.
+
+By default, when a symbolic link is encountered, the path that the symbolic link
+refers to is printed after the name of the link in the format:
+    name -> real-path
+
+If the -f option is given, then each entry is printed with its full path prefix.
+
+OPTIONS:
+  -a, --all      all files are listed
+  -d             list directories only
+  -L NUM         max display depth of the directory tree
+  -f             print the full path prefix for each file
+  -I ARG         do not list files that match the given pattern
+  -P ARG         list only those files that match the given pattern
+  -C             colorize the output
+  -s             print the size in bytes of each file
+  -t             sort files by last modification time
+  -o ARG         output to file instead of stdout
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

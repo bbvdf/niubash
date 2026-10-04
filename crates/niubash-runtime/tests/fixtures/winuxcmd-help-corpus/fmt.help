@@ -1,0 +1,32 @@
+Usage: fmt [OPTION]... [FILE]...
+
+Reformat paragraphs.
+
+With no FILE, or when FILE is -, read standard input.
+
+Note: This is a simplified implementation. Advanced features
+like crown margin and tagged paragraphs are not fully supported.
+
+OPTIONS:
+  -c, --crown-margin       preserve indentation of the first two lines
+  -m, --preserve-headers   attempt to detect and preserve mail headers
+  -p, --prefix ARG         reformat only lines beginning with STRING
+  -P, --skip-prefix ARG    do not reformat lines beginning with STRING
+  -s, --split-only         split long lines, but do not refill
+  -t, --tagged-paragraph   expect indentation in first 2 lines
+  -u, --uniform-spacing    one space between words, two after sentences
+  -x, --exact-prefix       do not ignore leading whitespace for -p
+  -X, --exact-skip-prefix  do not ignore leading whitespace for -P
+  -T, --tab-width ARG      treat tabs as TABWIDTH spaces when measuring line
+                           length
+  -w, --width ARG          maximum line width (default 75)
+  -g, --goal ARG           goal width (default 93% of width)
+      --help               display this help and exit
+  -V, --version            output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

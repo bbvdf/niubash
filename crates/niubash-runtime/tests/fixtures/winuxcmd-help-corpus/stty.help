@@ -1,0 +1,40 @@
+Usage: stty [-a|--all] [-g|--save] [SETTING...]
+
+Print or change terminal characteristics.
+
+With no arguments, prints all terminal settings in human-readable form.
+
+Mandatory arguments to long options are mandatory for short options too.
+
+  -a, --all     print all current settings in human-readable form
+  -g, --save    print all current settings in a stty-readable form
+  -F, --file    open and use the specified device instead of stdin
+
+Settings:
+  sane          reset all settings to reasonable defaults
+  raw           disable all input processing
+  cooked        enable standard input processing
+  cbreak        like -icanon with min=1
+  echo          echo input characters
+  -echo         do not echo input characters
+  icanon        enable canonical (line) mode
+  -icanon       disable canonical mode
+  isig          enable interrupt/quit signals
+  -isig         disable interrupt/quit signals
+
+Note: On Windows, only echo/icanon/isig settings have actual effect.
+Other settings are accepted but silently ignored.
+
+OPTIONS:
+  -a, --all       print all current settings in human-readable form
+  -g, --save      print all current settings in a stty-readable form
+  -F, --file ARG  open and use the specified device instead of stdin
+      --help      display this help and exit
+  -V, --version   output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

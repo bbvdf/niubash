@@ -1,0 +1,41 @@
+Usage: realpath [OPTION]... [FILE]...
+
+Print the resolved absolute path for each FILE. If no FILE is given,
+print the resolved absolute path of the current directory.
+
+All components of the path must exist (no symlinks are followed).
+The last component may be non-existent.
+
+Options:
+  -E, --canonicalize           all but the last component must exist
+  -m, --canonicalize-missing   no path components need to exist
+  -e, --canonicalize-existing   all components must exist
+  -L, --logical                 resolve '..' before symlinks (accepted)
+  -P, --physical                resolve symlinks before '..' (accepted)
+  -q, --quiet                   suppress most error messages
+  -s, --strip, --no-symlinks    do not expand symlinks
+      --relative-to=DIR         print the resolved path relative to DIR
+      --relative-base=DIR       print relative paths below DIR
+  -z, --zero                    end output with NUL instead of newline
+
+OPTIONS:
+  -e, --canonicalize-existing  all components of the path must exist
+  -E, --canonicalize           all components but the last must exist
+  -m, --canonicalize-missing   no path components need to exist
+  -L, --logical                resolve '..' and '.' before symlinks
+  -P, --physical               resolve symlinks before '..' and '.'
+  -q, --quiet                  suppress error messages
+  -s, --strip                  do not expand symlinks
+      --no-symlinks            do not expand symlinks
+      --relative-to ARG        print the resolved path relative to DIR
+      --relative-base ARG      print relative paths below DIR
+  -z, --zero                   end output with NUL byte instead of newline
+      --help                   display this help and exit
+  -V, --version                output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

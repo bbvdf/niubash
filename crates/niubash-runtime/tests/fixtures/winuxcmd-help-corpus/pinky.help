@@ -1,0 +1,24 @@
+Usage: pinky [OPTION]... [USER]...
+
+A lightweight finger-compatible user information tool.
+
+OPTIONS:
+  -l             produce long format output
+  -b             omit the user home directory and shell in long format
+  -f             omit the line of column headings in short format
+  -w             omit the user full name in short format
+  -i             omit the user full name and remote host in short format
+  -q             omit the user full name, remote host, and idle time
+  -h             omit the user project file in long format
+  -p             omit the user plan file in long format
+  -s             do short format output
+      --lookup   attempt to canonicalize hostnames
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

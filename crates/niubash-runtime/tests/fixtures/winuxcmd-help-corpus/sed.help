@@ -1,0 +1,33 @@
+Usage: sed [OPTION]... {script} [FILE]...
+
+Apply basic sed scripts (s///, p, d, a, i, c) to each line of input.
+
+OPTIONS:
+  -n, --quiet            suppress automatic printing of pattern space
+      --silent           alias for -n
+  -s, --separate         consider files as separate rather than as a single
+                         continuous long stream
+  -z, --null-data        separate lines by NUL characters
+      --zero-terminated  alias for -z
+  -u, --unbuffered       buffer input and output minimally
+  -b, --binary           open files in binary mode
+  -i, --in-place[=ARG]   edit files in place
+  -e, --expression ARG   add the script to the commands to be executed
+  -f, --file ARG         add the script from FILE
+  -l, --line-length NUM  specify line-wrap length for the l command
+  -E, --regexp-extended  use extended regular expressions
+      --debug            annotate program execution (accepted, no output)
+      --follow-symlinks  follow symlinks when processing in place (accepted,
+                         no-op)
+      --sandbox          restrict file system access in the script
+      --posix            disable GNU extensions and follow POSIX sed
+  -r                     alias for -E
+      --help             display this help and exit
+  -V, --version          output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

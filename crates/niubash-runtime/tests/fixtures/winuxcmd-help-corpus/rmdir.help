@@ -1,0 +1,19 @@
+Usage: rmdir [OPTION]... DIRECTORY...
+
+Remove the DIRECTORY(ies), if they are empty.
+
+OPTIONS:
+      --ignore-fail-on-non-empty  ignore each failure to remove a non-empty
+                                  directory
+  -p, --parents                   remove DIRECTORY and its ancestors
+  -v, --verbose                   output a diagnostic for every directory
+                                  processed
+      --help                      display this help and exit
+  -V, --version                   output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

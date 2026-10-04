@@ -1,0 +1,31 @@
+Usage: file [OPTION]... [FILE]...
+
+The file command tests each argument in an attempt to classify it.
+There are three sets of tests, performed in this order:
+filesystem tests, magic number tests, and language tests.
+
+The first test that succeeds causes the file type to be printed.
+On Windows, file type detection is based on file extensions and
+attributes (directory, symlink, regular file).
+
+OPTIONS:
+  -b, --brief              do not prepend filenames to output lines
+  -c, --checking-printout  print the checking format
+  -f, --files-from ARG     read the filenames from FILE
+  -k, --keep-going         don't stop at first match
+  -m, --magic-file ARG     use FILE as magic file
+  -h, --no-dereference     don't follow symlinks
+  -i, --mime               output MIME type strings
+  -L, --dereference        follow symlinks
+  -n, --no-buffer          do not buffer output
+  -N, --no-pad             do not pad output
+  -z, --uncompress         try to decompress compressed files
+      --help               display this help and exit
+  -V, --version            output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

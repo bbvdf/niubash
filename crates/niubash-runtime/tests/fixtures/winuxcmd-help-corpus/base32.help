@@ -1,0 +1,21 @@
+Usage: base32 [OPTION]... [FILE]
+
+Base32 encode or decode FILE, or standard input, to standard output.
+With no FILE, or when FILE is -, read standard input.
+The input may contain newlines when decoding. Use --ignore-garbage to
+attempt to recover from any other non-alphabet bytes.
+
+OPTIONS:
+  -d, --decode          decode data
+  -i, --ignore-garbage  when decoding, ignore non-alphabet characters
+  -w, --wrap ARG        wrap encoded lines after COLS character (default 76).
+                        Use 0 to disable line wrapping
+      --help            display this help and exit
+  -V, --version         output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

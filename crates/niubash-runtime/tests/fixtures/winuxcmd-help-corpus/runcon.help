@@ -1,0 +1,25 @@
+Usage: runcon CONTEXT COMMAND [ARG]...
+  or:  runcon [-c] [-u USER] [-r ROLE] [-t TYPE] [-l RANGE] [COMMAND [ARG]...]
+
+Run a program in a different SELinux security context.
+
+WinuxCmd accepts the GNU-compatible command line surface for runcon, but
+Windows does not provide SELinux process contexts. This command therefore
+acts as a compatibility command and reports that the operation is not
+supported on Windows.
+
+OPTIONS:
+  -c, --compute    compute process transition context before modifying
+  -u, --user ARG   set user component of the context
+  -r, --role ARG   set role component of the context
+  -t, --type ARG   set type component of the context
+  -l, --range ARG  set range component of the context
+      --help       display this help and exit
+  -V, --version    output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

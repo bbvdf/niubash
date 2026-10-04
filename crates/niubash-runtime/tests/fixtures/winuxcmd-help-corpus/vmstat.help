@@ -1,0 +1,24 @@
+Usage: vmstat [OPTION]...
+
+Report virtual memory statistics.
+On Windows, reports memory, swap, and CPU utilization.
+
+OPTIONS:
+  -a, --active     split into active and inactive memory
+  -d               show memory statistics
+  -f, --forks      show boot/forks counts
+  -n, --oneline    print headings only once
+  -p, --pid ARG    show statistics for a specific PID
+  -s, --summary    print summary information only
+  -t, --timestamp  include timestamp
+  -w, --wide       wide output
+  -m, --slab       show slab information (not supported on Windows)
+  -v, --version    print version and exit
+      --help       display this help and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

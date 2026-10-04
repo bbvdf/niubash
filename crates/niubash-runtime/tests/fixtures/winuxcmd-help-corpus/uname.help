@@ -1,0 +1,27 @@
+Usage: uname [OPTION]...
+
+Print certain system information.
+
+With no OPTION, same as -s.
+
+Note: This implementation provides Windows-specific information.
+
+OPTIONS:
+  -a, --all                print all information
+  -s, --kernel-name        print the kernel name
+  -n, --nodename           print the network node hostname
+  -r, --kernel-release     print the kernel release
+  -v, --kernel-version     print the kernel version
+  -m, --machine            print the machine hardware name
+  -p, --processor          print the processor type
+  -i, --hardware-platform  print the hardware platform
+  -o, --operating-system   print the operating system
+      --help               display this help and exit
+  -V, --version            output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

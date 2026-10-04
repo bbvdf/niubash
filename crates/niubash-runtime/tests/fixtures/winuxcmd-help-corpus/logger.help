@@ -1,0 +1,29 @@
+Usage: logger [OPTION]... [MESSAGE]
+
+Write messages to the Windows event/logging facilities.
+
+OPTIONS:
+  -i, --id            log the logger command's PID
+  -f, --file ARG      log the contents of this file
+  -e, --skip-empty    do not log empty lines when processing files
+  -p, --priority ARG  message priority
+  -s, --stderr        also write the message to standard error
+  -t, --tag ARG       mark every line with this tag
+  -n, --server ARG    write to this remote syslog server
+  -P, --port ARG      use this port for UDP or TCP connection
+  -T, --tcp           use TCP only
+  -d, --udp           use UDP only
+      --prio-prefix   look for a prefix on every line read from stdin
+      --no-act        do everything except the write the log
+  -S, --size ARG      maximum size for a single message
+      --rfc3164       use the obsolete BSD syslog protocol
+      --rfc5424       use the syslog protocol (default for remote)
+      --help          display this help and exit
+  -V, --version       output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

@@ -1,0 +1,18 @@
+Usage: tzset [OPTION]
+
+Print POSIX-compatible timezone ID from current Windows timezone setting
+
+Options:
+      --help               output usage information and exit.
+  -V, --version            output version information and exit.
+
+Use tzset to set your TZ variable. In POSIX-compatible shells like bash,
+dash, mksh, or zsh:
+
+      export TZ=$(tzset)
+
+In csh-compatible shells like tcsh:
+
+      setenv TZ `tzset`
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

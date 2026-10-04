@@ -1,0 +1,48 @@
+Usage: xargs [OPTION]... [FILE]...
+
+Build and execute command lines from standard input.
+
+Items are separated by blanks. The result command line is executed
+after each group of max-args items is read.
+
+OPTIONS:
+  -n, --max-args NUM          use at most max-args arguments per command line
+  -I ARG                      replace occurrences of replace-str in the
+                              initial-arguments with names
+  -i, --replace[=ARG]         deprecated alias for -I; replace occurrences of
+                              replace-str
+  -0, --null                  input items are terminated by a null character
+  -d, --delimiter ARG         input items are terminated by the specified
+                              character
+  -o, --open-tty              reopen standard input as the console in the child
+                              process
+  -t, --verbose               print the command line on the standard error
+                              before executing it
+  -p, --interactive           prompt before running each command line
+  -r, --no-run-if-empty       if no arguments were read from standard input, do
+                              not run the command
+  -P, --max-procs NUM         run up to max-procs processes at a time
+  -s, --max-chars NUM         use at most max-chars chars per command line
+  -x, --exit                  exit if the size (see -s) is exceeded
+  -L NUM                      use at most max-lines nonblank input lines per
+                              command line
+      --max-lines[=NUM]       use at most max-lines nonblank input lines per
+                              command line
+  -l[=NUM]                    deprecated alias for -L; use max-lines nonblank
+                              input lines
+  -a, --arg-file ARG          read items from file instead of standard input
+  -E ARG                      set the logical EOF string
+      --eof[=ARG]             set or disable the logical EOF string
+  -e[=ARG]                    deprecated alias for --eof
+      --show-limits           display command-line length limits
+      --process-slot-var ARG  set an environment variable to the child process
+                              slot
+      --help                  display this help and exit
+  -V, --version               output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

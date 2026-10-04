@@ -1,0 +1,26 @@
+Usage: reset [options] [terminal]
+
+Reset terminal to its default state.
+
+OPTIONS:
+  -I             no initialization strings
+  -c             set control characters
+  -e ARG         erase character
+  -i ARG         interrupt character
+  -k ARG         kill character
+  -m ARG         map identifier to type
+  -q             display term only, do no changes
+  -Q             do not output control key settings
+  -r             display term on stderr
+  -s             output TERM set command
+  -V             print curses-version
+  -w             set window-size
+      --help     display this help and exit
+      --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

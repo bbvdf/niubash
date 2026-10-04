@@ -1,0 +1,28 @@
+Usage: w [OPTION]...
+
+Show who is logged on and what they are doing.
+On Windows, shows active terminal sessions with user, TTY, idle time.
+
+OPTIONS:
+  -a, --all      same as -b -d -u -t
+  -b             omit process id from output
+  -d             omit host and display fields from output
+  -f, --from     print from fields
+  -i             do not show idle time
+  -q, --quiet    quiet output, no headings, just data
+  -r             omit remote host from output
+  -s             show session id instead of process id
+  -t             include a header with uptime
+  -u             omit user name from output
+  -w             print user's tty and pid only
+  -h, --heading  print heading line
+  -c, --count    just print the number of logged-in users
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

@@ -1,0 +1,23 @@
+Usage: whereis [OPTION]... NAME...
+
+Locate the binary, source, and manual-page files for each NAME.  By default all categories are searched in the standard locations (PATH for binaries).
+
+OPTIONS:
+  -b             search only for binaries
+  -m             search only for manual sections
+  -s             search only for sources
+  -u             search for unusual entries
+  -B ARG         define a binary lookup directory
+  -M ARG         define a manual lookup directory
+  -S ARG         define a source lookup directory
+  -f             terminate the last directory list
+  -l             list the effective lookup paths
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

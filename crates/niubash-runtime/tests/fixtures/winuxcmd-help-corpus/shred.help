@@ -1,0 +1,24 @@
+Usage: shred [OPTION]... FILE...
+
+Overwrite the specified FILE(s) repeatedly to help prevent data recovery.
+
+OPTIONS:
+  -f, --force              ignore write-protection
+  -n, --iterations NUM     overwrite N times (default 3)
+  -u                       truncate and remove file after overwriting
+  -z, --zero               add a final overwrite with zeros to hide shredding
+  -v, --verbose            show progress
+      --random-source ARG  use FILE as the source of random data
+  -s, --size ARG           shred only BYTES bytes instead of the whole file
+  -x, --exact              do not round file size up to the next full block
+      --remove[=ARG]       truncate and remove FILE after overwriting; HOW can
+                           be 'unlink', 'wipe', or 'wipesync'
+      --help               display this help and exit
+  -V, --version            output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

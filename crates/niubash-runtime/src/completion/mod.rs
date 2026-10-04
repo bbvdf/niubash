@@ -8,6 +8,7 @@ pub mod external;
 pub mod path;
 pub mod runtime;
 pub mod variables;
+pub mod winuxcmd_assets;
 
 pub use completer::{CompletionState, NiubashCompleter};
 

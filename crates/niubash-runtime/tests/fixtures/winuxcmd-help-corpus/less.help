@@ -1,0 +1,37 @@
+Usage: less [OPTION]... [FILE]...
+
+A pager for viewing files, similar to more but with more features.
+Allows backward movement in the file as well as forward movement.
+
+Interactive commands include SPACE/f, ENTER/j/e, k/y, b, d/u, g/G, NUMg, NUM%, /, ?, n, N, :n, :p, :f, =, Ctrl-G, r/R, and q.
+
+OPTIONS:
+  -e, --quit-at-eof         quit after second EOF
+  -E, --QUIT-AT-EOF         quit after first EOF
+  -F, --quit-if-one-screen  quit if entire file fits on first screen
+  -i, --ignore-case         ignore case in searches that do not contain
+                            uppercase
+  -I, --IGNORE-CASE         ignore case in all searches
+  -K, --quit-on-intr        exit less in response to Ctrl+C
+  -n, --line-numbers        display line number at start of each line
+  -N, --LINE-NUMBERS        display line number at start of each line
+  -S, --chop-long-lines     chop long lines (do not wrap)
+  -q, --quiet               accepted placeholder; terminal bell is not used
+  -Q, --QUIET               accepted placeholder; terminal bell is not used
+  -r, --raw-control-chars   accepted placeholder; control chars are passed
+                            through
+  -R, --RAW-CONTROL-CHARS   accepted placeholder; ANSI SGR color sequences are
+                            passed through
+      --no-init             accepted placeholder; terminal init/deinit sequences
+                            are not used
+  -z, --window NUM          set scrolling window size
+  -NUM                      same as -z NUM
+      --help                display this help and exit
+  -V, --version             output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

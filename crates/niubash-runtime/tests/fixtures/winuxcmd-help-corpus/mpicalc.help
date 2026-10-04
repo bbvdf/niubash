@@ -1,0 +1,4 @@
+mpicalc 2.0
+libgcrypt-compatible WinuxCmd implementation
+Syntax: mpicalc [options]
+Simple interactive big integer RPN calculator

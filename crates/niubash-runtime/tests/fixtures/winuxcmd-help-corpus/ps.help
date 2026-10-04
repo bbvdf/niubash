@@ -1,0 +1,29 @@
+Usage: ps [options]
+
+Report a snapshot of the current processes.
+Shows information about running processes on Windows.
+
+OPTIONS:
+  -e                select all processes (same as -A)
+  -A                select all processes
+  -a                select all processes except session leaders and not
+                    associated with a terminal
+  -f                do full-format listing
+  -l                long format
+  -u                display user-oriented format
+  -p, --pid ARG     select processes by process ID
+  -o, --format ARG  select output fields
+      --user ARG    filter processes by user name
+  -x                lift the BSD-style "must have a tty" restriction
+  -w                wide output (do not truncate command lines)
+      --no-headers  print no header line
+      --sort ARG    sort by column (e.g., +pid, -rss)
+      --help        display this help and exit
+  -V, --version     output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

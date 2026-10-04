@@ -1,0 +1,19 @@
+Usage: nproc [OPTION]...
+
+Print the number of processing units available.
+
+This is useful for scripts that need to know how many parallel
+processes can be started.
+
+OPTIONS:
+      --all         print number of all installed processors
+      --ignore ARG  ignore N processors
+      --help        display this help and exit
+  -V, --version     output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

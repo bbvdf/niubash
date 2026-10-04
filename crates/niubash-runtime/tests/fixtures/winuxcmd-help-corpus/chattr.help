@@ -1,0 +1,19 @@
+Usage: chattr [-RVf] MODE FILE...
+
+Change Windows file attributes.
+Supported flags are R,H,S,A,I,T,O for readonly, hidden, system, archive, not indexed, temporary, and offline.
+[DIFFERS] Attribute flags differ from GNU chattr (Linux ext4).
+
+OPTIONS:
+  -R, --recursive  recursively change attributes of directories
+  -V, --verbose    print changed files
+  -f, --force      suppress most error messages
+      --help       display this help and exit
+      --version    output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

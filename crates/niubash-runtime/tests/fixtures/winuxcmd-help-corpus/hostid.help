@@ -1,0 +1,17 @@
+Usage: hostid [OPTION]
+
+Print the numeric identifier of the current host.
+Print a 32-bit identifier, in hexadecimal, for the current host.
+On Windows, this is derived from the machine GUID.
+
+OPTIONS:
+                 print machine identifier
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

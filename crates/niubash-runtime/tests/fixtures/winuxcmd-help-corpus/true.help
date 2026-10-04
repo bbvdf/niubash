@@ -1,0 +1,19 @@
+Usage: true
+
+Do nothing, successfully.
+
+Exit with a status code indicating success.
+This command is often used in shell scripts where a command is required
+but no action is needed.
+
+OPTIONS:
+  --help         display this help and exit
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

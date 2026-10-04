@@ -1,0 +1,21 @@
+Usage: sum [OPTION]... [FILE]...
+
+Checksum and count the blocks in a file.
+
+With no FILE, or when FILE is -, read standard input.
+
+The BSD algorithm is used by default (1024-byte blocks).
+
+
+OPTIONS:
+  -r, --bsd      use BSD sum algorithm (1024-byte blocks)
+  -s, --sysv     use System V sum algorithm (512-byte blocks)
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

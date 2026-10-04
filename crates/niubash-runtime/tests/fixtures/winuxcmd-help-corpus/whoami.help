@@ -1,0 +1,21 @@
+Usage: whoami [OPTION]
+
+Print effective userid.
+
+Print the user name associated with the current effective user ID.
+Same as id -un.
+
+Note: This implementation only supports basic username printing.
+Advanced features are not implemented.
+
+OPTIONS:
+                 print effective userid
+      --help     display this help and exit
+  -V, --version  output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

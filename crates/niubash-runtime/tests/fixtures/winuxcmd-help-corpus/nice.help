@@ -1,0 +1,18 @@
+Usage: nice [OPTION] [COMMAND [ARG]...]
+
+Run a program with modified scheduling priority.
+Run COMMAND with an adjusted niceness, which affects process scheduling.
+With no COMMAND, print the current niceness. Niceness values range from
+-20 (most favorable) to 19 (least favorable). Default is 10.
+
+OPTIONS:
+  -n, --adjustment ARG  adjust increment
+      --help            display this help and exit
+  -V, --version         output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.

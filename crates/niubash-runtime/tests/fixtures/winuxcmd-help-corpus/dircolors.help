@@ -1,0 +1,31 @@
+Usage: dircolors [OPTION]... [FILE]
+
+Output commands to set the LS_COLORS environment variable.
+
+Determine format of output:
+  -b, --sh           output Bourne shell code to set LS_COLORS (default)
+  -c, --csh          output C shell code to set LS_COLORS
+  -p, --print-database  output defaults
+      --print-ls-colors  output fully escaped colors for display
+
+If FILE is specified, read it to determine which colors to use for which
+file types and extensions.  Otherwise, a precompiled database is used.
+
+Note: On Windows, dircolors outputs color codes compatible with ls --color.
+
+OPTIONS:
+  -b, --sh               output Bourne shell code to set LS_COLORS
+      --bourne-shell     output Bourne shell code to set LS_COLORS
+  -c, --csh              output C shell code to set LS_COLORS
+      --c-shell          output C shell code to set LS_COLORS
+  -p, --print-database   output defaults
+      --print-ls-colors  output fully escaped colors for display
+      --help             display this help and exit
+  -V, --version          output version information and exit
+
+EXIT STATUS:
+  0  if OK,
+  1  if minor problems,
+  2  if serious trouble.
+
+WinuxCmd is a Windows implementation of GNU CoreUtils for Linux-Windows developers and AI coding assistants.
