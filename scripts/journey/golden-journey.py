@@ -2102,31 +2102,45 @@ def phase_p7(exe, home, env, verdict):
         started = time.time()
         terminal = fresh_terminal(exe, home, env, verdict, "P7-S3-terminal")
         try:
-            # The boot bound a human sees: the first REPL prompt rendered at
-            # the bottom of the screen (default floor prompt or themed —
-            # either proves startup completed). Observed, not typed: the
-            # keystroke-delivery retries are the driver's latency, never the
-            # product's, and must not inflate the wedge detection (run
-            # 20261004-173006: the boot rendered in <1s while an echo-confirm
-            # retry burned 10s).
-            booted = None
-            while time.time() - started < 10.0:
-                if PROMPTISH_LAST_ROW.match(terminal.last_nonempty_row()):
-                    booted = time.time() - started
+            # The boot bound a human sees, measured from the FIRST BYTE (the
+            # banner): the spawn/scheduling lag before it is this machine's,
+            # never the product's — under a loaded box the banner itself can
+            # take many seconds to arrive (observed 2026-10-04: the corrupt
+            # boot rendered banner + 'niu: TOML parse error' + the default
+            # floor prompt within ONE second, both full runs, while a loaded
+            # probe saw the banner alone stall for 12s). The wedge class this
+            # step guards (niu#145 via the plugin path) never renders at all;
+            # 10s from first byte catches it without punishing a loaded
+            # machine. The echo-alive probe still must pass, outside the
+            # bound (its delivery retries are driver latency too).
+            first_byte = None
+            while time.time() - started < 60.0:
+                if terminal.last_nonempty_row():
+                    first_byte = time.time() - started
                     break
                 time.sleep(0.1)
+            booted = None
+            if first_byte is not None:
+                while time.time() - started < first_byte + 10.0:
+                    if PROMPTISH_LAST_ROW.match(terminal.last_nonempty_row()):
+                        booted = time.time() - started
+                        break
+                    time.sleep(0.1)
             alive = prompt_alive(terminal, "P7S3_ALIVE")
             if booted is not None:
                 bound_name = (f"the corrupt-spec startup still reaches a "
                               f"prompt (bounded; prompt rendered at "
-                              f"{booted:.1f}s)")
-                bound_detail = (f"prompt rendered at {booted:.1f}s, "
-                                f"echo-alive={alive}")
+                              f"{booted - first_byte:.1f}s after the banner)")
+                bound_detail = (f"first byte at {first_byte:.1f}s, prompt at "
+                                f"{booted:.1f}s, echo-alive={alive}")
             else:
                 bound_name = ("the corrupt-spec startup still reaches a "
-                              "prompt (bounded; no prompt-ish row within "
-                              "10s)")
-                bound_detail = f"echo-alive={alive}"
+                              "prompt (bounded; no prompt-ish row within 10s "
+                              "of the banner)")
+                bound_detail = (f"first byte at "
+                                f"{first_byte:.1f}s" if first_byte is not None
+                                else "no output within 60s"
+                                f", echo-alive={alive}")
             step.check(bound_name, booted is not None and alive,
                        bound_detail)
             boot_raw = terminal.raw_stripped()
