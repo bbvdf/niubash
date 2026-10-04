@@ -1,0 +1,291 @@
+{
+  "schema": "niubash:ecosystem-form-factors@0.1.0",
+  "generated": "2026-10-02",
+  "lane": "wt94/ecosystem-forms",
+  "feeds_issues": ["niubash#171", "niubash#172", "niubash#183", "niubash#186"],
+  "prose_doc": "docs/audit/ecosystem-form-factors.md",
+  "method": {
+    "clones_root": "/d/repo/_ecforms-refs (scratch, not in repo)",
+    "repos": {
+      "ohmyzsh": "4d4cfc2",
+      "zsh": "8cc5ead",
+      "fish-shell": "35c2902",
+      "oh-my-fish": "043699a",
+      "fisher": "791da64",
+      "zinit": "8682ebe",
+      "zplug": "cc6906e",
+      "bash-it": "4725d29",
+      "oh-my-bash": "abf8461",
+      "basher": "7c3d238",
+      "bpkg": "c7f5a46",
+      "bash-completion": "00c3461",
+      "fzf": "b1be3a8",
+      "starship": "f5641f7",
+      "zoxide": "86b443c",
+      "direnv": "b00e451"
+    },
+    "engine": "rubash 1.3.4 chain (D:/repo/rubash, niubash [patch] target)",
+    "product": "crates/niubash-runtime @ wt94/ecforms (master b4b87f1)"
+  },
+  "summary": {
+    "form_count": 13,
+    "works": 6,
+    "partial": 2,
+    "missing": 4,
+    "not_applicable": 1,
+    "top_gaps": [
+      "F03 interactive -F/-C completion execution + complete -D lazy-loader fallback",
+      "F05 bind/-x into the real line editor (current bind is a validate-only stub)",
+      "F02+F06 directory contract: functions/ autoload dirs + conf.d drop-ins"
+    ]
+  },
+  "forms": [
+    {
+      "id": "F01",
+      "name": "rc-sourced entry file",
+      "sub_forms": ["init-only monolith", "framework plugin file via manager loader loop", "composure metadata-annotated function file"],
+      "examples": [
+        {"repo": "bash-sensible (mrzool)", "path": "sensible.bash"},
+        {"repo": "ohmyzsh", "path": "oh-my-zsh.sh:316-317 (_omz_source plugins/$plugin/$plugin.plugin.zsh)"},
+        {"repo": "ohmyzsh", "path": "plugins/git/git.plugin.zsh (370 plugins, 143 themes)"},
+        {"repo": "oh-my-bash", "path": "oh-my-bash.sh:111-118 (_omb_init_files); plugins/<n>/<n>.plugin.sh (37)"},
+        {"repo": "bash-it", "path": "bash_it.sh:47-52 (enabled/ reloader); plugins/available (81); base.plugin.bash:1-10 (composure metadata)"}
+      ],
+      "load_trigger": "startup, synchronous, manager order",
+      "shell_requirements": ["source", "functions", "aliases", "arrays"],
+      "niu_status": "works",
+      "niu_evidence": [
+        "docs/plugins-guide.md (managed guarded source block, three layers, no shims)",
+        "niu: crates/niubash-runtime/src/plugins/{sources,spec,sync}.rs",
+        "niu: src/shell.rs:37,538-544,765-796 (~/.niubashrc primary, expand_aliases on)"
+      ]
+    },
+    {
+      "id": "F02",
+      "name": "function autoload directory",
+      "sub_forms": ["zsh fpath + autoload", "fish functions/*.fish per-function files"],
+      "examples": [
+        {"repo": "ohmyzsh", "path": "oh-my-zsh.sh:66-79,88-94 (functions/completions + plugin dirs on fpath)"},
+        {"repo": "zsh", "path": "Functions/Zftp/zfcd, Functions/Prompts/prompt_*_setup (one file per function)"},
+        {"repo": "fish-shell", "path": "share/functions (277 files), e.g. trap.fish"},
+        {"repo": "oh-my-fish", "path": "docs/en-US/Packages.md:51 (per-function file required by fish autoloading)"},
+        {"repo": "fisher", "path": "functions/fisher.fish:165-170 (copies plugin functions/ into $fisher_path)"}
+      ],
+      "load_trigger": "first invocation of the function name",
+      "shell_requirements": ["function search path", "per-name file lookup", "unknown-name deferral"],
+      "niu_status": "missing",
+      "niu_evidence": ["grep: zero hits for autoload/fpath in D:/repo/rubash/src"]
+    },
+    {
+      "id": "F03",
+      "name": "completion registry (file-per-command)",
+      "sub_forms": ["eagerly sourced completion scripts", "lazy loader via complete -D default compspec", "zsh #compdef/$_comps registry", "fish complete -c files"],
+      "examples": [
+        {"repo": "bash-it", "path": "completion/available/*.completion.bash (90)"},
+        {"repo": "bash-completion", "path": "bash_completion:3615-3617 (complete -D -F _comp_complete_load); :3548-3549 (completions/$cmd.bash on demand); completions-core (453) + completions-fallback (88)"},
+        {"repo": "zsh", "path": "Completion/Unix/Command/_git:1 (#compdef header; 391 files)"},
+        {"repo": "fish-shell", "path": "share/completions (1095 files), e.g. git.fish"}
+      ],
+      "load_trigger": "startup (eager) or first completion attempt (lazy)",
+      "shell_requirements": ["compspec registry", "-F function execution with COMP_*/COMPREPLY", "-C command actions", "complete -D default compspec fallback", "retry after loader sources file"],
+      "niu_status": "partial",
+      "niu_evidence": [
+        "engine: src/builtins/complete.rs:897-927 (static actions/globpat/wordlist/-X filter/prefix-suffix work)",
+        "engine: src/builtins/complete.rs:894 + executor/public_accessors.rs:270-273 (-F/-C not wired into interactive path; 'merged here in a follow-up')",
+        "engine: src/executor/job_builtins.rs:2364-2392 (compgen -F runs functions and collects COMPREPLY — machinery exists, not wired to Tab)",
+        "engine: src/executor/job_builtins.rs:2042-2046 (complete -D/-E/-I stored under pseudo keys) vs complete.rs:908-922 (no -D fallback lookup)",
+        "niu: src/completion/completer.rs:244-258 (REPL gates on has_compspec -> executor.complete_line)"
+      ]
+    },
+    {
+      "id": "F04",
+      "name": "prompt/theme system",
+      "sub_forms": ["PS1/PROMPT themes", "PROMPT_COMMAND-registered prompt functions", "right-prompt emulation", "async prompt"],
+      "examples": [
+        {"repo": "ohmyzsh", "path": "themes/agnoster.zsh-theme:366-380 (build_prompt + PROMPT=); 143 themes; lib/async_prompt.zsh"},
+        {"repo": "bash-it", "path": "themes/bobby/bobby.theme.bash:26-40 (safe_append_prompt_command; lib/preexec.bash:40); 87 themes; bash_it.sh:58-74 (BASH_IT_THEME)"},
+        {"repo": "oh-my-bash", "path": "themes/agnoster/agnoster.theme.sh:125-132 (right-prompt caveats in bash)"},
+        {"repo": "fish-shell", "path": "share/prompts (13 .fish prompt functions)"}
+      ],
+      "load_trigger": "startup; re-evaluated every prompt",
+      "shell_requirements": ["PS1/PROMPT re-expansion per prompt", "prompt escapes", "array-capable PROMPT_COMMAND"],
+      "niu_status": "works",
+      "niu_evidence": [
+        "engine: src/executor/prompt_command.rs:22-50 (PROMPT_COMMAND per eval.c:305, array-aware)",
+        "niu: src/prompt.rs:47,318-341 (themes render through PS1/PROMPT_COMMAND channel; right-align split)",
+        "docs/plugins-guide.md (theme ownership/pick; niu: src/plugins/theme_preview.rs)"
+      ]
+    },
+    {
+      "id": "F05",
+      "name": "key-binding pack",
+      "examples": [
+        {"repo": "ohmyzsh", "path": "lib/key-bindings.zsh:19-43 (bindkey)"},
+        {"repo": "fzf", "path": "shell/key-bindings.bash:145-147 (bind -x widgets)"},
+        {"repo": "zoxide", "path": "templates/bash.txt:169-199 (bind -x '\"\\e[0n\": __zoxide_z_complete_helper')"},
+        {"repo": "fish-shell", "path": "share/functions/fish_default_key_bindings.fish:9-28; fish_vi_key_bindings pack"}
+      ],
+      "load_trigger": "startup (or on demand)",
+      "shell_requirements": ["keymap consulted by line editor", "bind -x executing shell commands", "READLINE_LINE/READLINE_POINT in/out"],
+      "niu_status": "missing",
+      "niu_evidence": [
+        "engine: src/builtins/bind.rs:24-93 (validates option syntax, installs nothing; -x accepted and discarded)",
+        "grep: no READLINE_LINE/READLINE_POINT anywhere in engine",
+        "niu: src/repl.rs:471 (reedline owns the line editor, private widget map)",
+        "risk: binding packs load clean and no-op — includes fzf-git.sh in niu's recommended collection (docs/plugins-guide.md:129)"
+      ]
+    },
+    {
+      "id": "F06",
+      "name": "startup drop-in directory (conf.d)",
+      "examples": [
+        {"repo": "fisher", "path": "README.md:117-135 (plugin conf.d/ copy-in; :135 event handlers must live in conf.d); functions/fisher.fish:165-170"},
+        {"repo": "bash-it", "path": "bash_it.sh:43-52,85-97 (custom/ + enabled/ globs)"},
+        {"repo": "oh-my-bash", "path": "custom/"}
+      ],
+      "load_trigger": "every startup, file order",
+      "shell_requirements": ["multi-directory startup scan"],
+      "niu_status": "missing",
+      "niu_evidence": [
+        "niu: src/shell.rs:37,957 (single primary rc ~/.niubashrc; no conf.d scan)",
+        "driver approximation: managed rc block materialized from spec (docs/plugins-guide.md); per-file enable is the only granularity"
+      ]
+    },
+    {
+      "id": "F07",
+      "name": "CLI-emitted integration snippet (tool IS the plugin)",
+      "examples": [
+        {"repo": "starship", "path": "src/init/starship.bash:1-2,19-33,61-62 (PROMPT_COMMAND append + DEBUG trap + precmd user hook)"},
+        {"repo": "direnv", "path": "internal/cmd/shell_bash.go:19-23 (prepend _direnv_hook, array/string aware)"},
+        {"repo": "zoxide", "path": "templates/bash.txt:65-72 (append __zoxide_hook, bash-5.1 array + string branches)"},
+        {"repo": "basher", "path": "libexec/basher-init (eval \"$(basher init - bash)\")"}
+      ],
+      "load_trigger": "rc eval; hooks fire per-prompt/per-exec thereafter",
+      "shell_requirements": ["eval \"$(...)\"", "array-capable PROMPT_COMMAND", "DEBUG trap firing per command", "trap builtin"],
+      "niu_status": "works",
+      "niu_evidence": [
+        "engine: src/builtins/trap.rs:520-522 (DEBUG/RETURN/ERR), DEBUG firing sites: executor/ast_exec.rs:494, pipeline_exec.rs:828/1076/1556/1617, function_calls.rs:467, command_substitution.rs:725",
+        "niu: src/shell.rs:538 (product expects starship init / oh-my-bash / nvm inside ~/.niubashrc)",
+        "engine: src/executor/parameter_core.rs:320 (starship ${var:$((var=\"$(cmd)\",0)):0} idiom handled)",
+        "caveat: PS0 not expanded (grep: no \"PS0\" lookup); zoxide's bind -x piece dies with F05"
+      ]
+    },
+    {
+      "id": "F08",
+      "name": "event-handler functions (fish-native event system)",
+      "sub_forms": ["--on-event named events", "--on-variable watchers", "--on-signal", "--on-job-exit"],
+      "examples": [
+        {"repo": "fish-shell", "path": "share/functions/fish_vi_cursor.fish:23-27 (--on-event fish_preexec/fish_postexec/fish_focus_in/fish_read/fish_exit; --on-variable fish_bind_mode)"},
+        {"repo": "fish-shell", "path": "share/functions/__fish_config_interactive.fish:149 (--on-variable=PWD --on-event=fish_prompt)"},
+        {"repo": "fish-shell", "path": "share/functions/trap.fish:3-56 (bash trap compat function over events; :55 --on-event fish_exit)"},
+        {"repo": "fisher", "path": "README.md:135 (handlers must be in conf.d to load when events fire)"}
+      ],
+      "load_trigger": "registration at function definition; fires on event",
+      "shell_requirements": ["event bus (named events, variable-watch, signal, job-exit)", "registration on definition"],
+      "niu_status": "missing",
+      "niu_evidence": [
+        "no event bus in engine/product; bash-family analogues only cover the prompt cycle: PROMPT_COMMAND ~= fish_prompt, DEBUG trap ~= fish_preexec, ERR trap (engine: src/builtins/trap.rs:521) ~= error-only postexec",
+        "driver stance: tag fish-layout trees as port-required, not emulation"
+      ]
+    },
+    {
+      "id": "F09",
+      "name": "zsh machine forms (native modules, compiled caches)",
+      "sub_forms": ["zmodload .so modules", "zrecompile .zwc", "zcompdump cache"],
+      "examples": [
+        {"repo": "zsh", "path": "Src/Modules/*.mdd (attr, cap, clone, curses, datetime, db_gdbm, files, ...)"},
+        {"repo": "ohmyzsh", "path": "plugins/bgnotify/bgnotify.plugin.zsh:8 (zmodload zsh/datetime)"},
+        {"repo": "ohmyzsh", "path": "oh-my-zsh.sh:79,215-256 (zrecompile + zcompdump)"}
+      ],
+      "load_trigger": "zmodload at runtime; caches read by compinit/zrecompile",
+      "shell_requirements": ["dynamic module loading (ELF .so)", "zwc bytecode"],
+      "niu_status": "not_applicable",
+      "niu_evidence": [
+        "engine: src/builtins/enable.rs:101,153-181 (enable -f refused: 'dynamic loading not supported')",
+        "driver guidance: recognize and skip *.zwc/next-to-source cache artifacts; never treat as the plugin"
+      ]
+    },
+    {
+      "id": "F10",
+      "name": "lazy-load stubs (deferred loading)",
+      "examples": [
+        {"repo": "zinit", "path": "README.md:244-261 (turbo: zinit ice wait\"2\")"},
+        {"repo": "ohmyzsh", "path": "plugins/nvm/nvm.plugin.zsh:74-77 (zstyle ':omz:plugins:nvm' lazy; shadow commands load nvm on first use)"}
+      ],
+      "load_trigger": "timer (turbo) or first invocation of shadowed commands",
+      "shell_requirements": ["plugin-supplied stubs: none (plain bash)", "manager-side deferral: scheduler or shadow-command mechanism"],
+      "niu_status": "partial",
+      "niu_evidence": [
+        "plugin-supplied stubs work (F01 semantics)",
+        "no manager-side deferral: plugins.toml has no wait/defer equivalent (niu: crates/niubash-runtime/src/plugins/spec.rs); enabled assets load eagerly at startup"
+      ]
+    },
+    {
+      "id": "F11",
+      "name": "PATH-integrated package (binaries + assets)",
+      "examples": [
+        {"repo": "basher", "path": "libexec/basher-_link-bins / -_link-completions / -_link-man (cellar symlink layout)"},
+        {"repo": "bpkg", "path": "bpkg.json:1-16 (name/version/repo/install/commands/global); bpkg-install, bpkg-source"},
+        {"repo": "fisher", "path": "README.md:129 (non-.fish files copied through to $fisher_path)"}
+      ],
+      "load_trigger": "PATH lookup at invocation; assets via their form (F01/F03)",
+      "shell_requirements": ["nothing beyond PATH; assets reduce to other forms"],
+      "niu_status": "works",
+      "niu_evidence": [
+        "binaries need only PATH; sourcing side is F01",
+        "install is out of scope by download retraction: docs/plugins-guide.md (wpm/winget/scoop/apt/brew; niu plugin add fzf prints commands)"
+      ]
+    },
+    {
+      "id": "F12",
+      "name": "data-only assets (alias packs, abbreviations, theme vars)",
+      "examples": [
+        {"repo": "bash-it", "path": "aliases/available/*.aliases.bash (50 packs)"},
+        {"repo": "oh-my-bash", "path": "aliases/"},
+        {"repo": "fish-shell", "path": "share/themes (config-var packs for fish_config theme)"}
+      ],
+      "load_trigger": "startup source",
+      "shell_requirements": ["aliases", "abbreviations require an abbr subsystem"],
+      "niu_status": "partial",
+      "niu_evidence": [
+        "aliases work (core engine feature)",
+        "abbreviations missing: engine grep only a doc comment (engine: src/executor/external_file_builtins.rs:1466); carried by separate lane wt93/abbr"
+      ]
+    },
+    {
+      "id": "F13",
+      "name": "manager manifests and registries (metadata form)",
+      "examples": [
+        {"repo": "fisher", "path": "README.md:56,104-113 (fishfile, one owner/repo per line)"},
+        {"repo": "bpkg", "path": "bpkg.json:1-16"},
+        {"repo": "zinit", "path": "README.md:206-220 (ice depth/pick/src/as\"command\"/from\"gh-r\"); zinit.zsh:17 (ZINIT_ICES)"},
+        {"repo": "bash-it", "path": "bash_it.sh:47-74 (enabled/ + BASH_IT_THEME)"},
+        {"repo": "lazy.nvim (contrast)", "path": "spec + lockfile pair (adopted by niu)"}
+      ],
+      "load_trigger": "manager commands; materializes into other forms",
+      "shell_requirements": ["none beyond the forms the manifest drives"],
+      "niu_status": "works",
+      "niu_evidence": [
+        "docs/plugins-guide.md (plugins.toml spec @0.1.0 + sources/registry.toml lock @0.3.0 + sync reconciliation)",
+        "niu: crates/niubash-runtime/src/plugins/{spec,sync,trust}.rs",
+        "limitation: enable vocabulary addresses F01-style assets; F03/F05/F06/F10 need form-aware fields"
+      ]
+    }
+  ],
+  "tui_mapping_issue186": [
+    {"form": "F01", "surface": "per-file enable/disable candidate lists with tags", "tui_status": "exists", "cite": "niu: src/plugins/ui.rs + sources.rs"},
+    {"form": "F04", "surface": "theme gallery + exclusive theme claim", "tui_status": "exists", "cite": "niu: src/plugins/theme_preview.rs"},
+    {"form": "F13", "surface": "trust review, sync rows, distro apply", "tui_status": "exists", "cite": "niu: src/plugins/{trust,spec,sync,distros}.rs"},
+    {"form": "F03", "surface": "completion registry browser (per-command enable/disable, lazy-load hint)", "tui_status": "new (needs F03 engine work)"},
+    {"form": "F05", "surface": "key-binding pack cards + dead-binding warning until F05 lands", "tui_status": "new (warning cheap and honest now)"},
+    {"form": "F06", "surface": "conf.d directory toggles", "tui_status": "new (needs F06)"},
+    {"form": "F08/F09", "surface": "'not supported in niu' explainer rows (port-required / skip cache artifacts)", "tui_status": "new (copy only)"},
+    {"form": "F10", "surface": "defer/wait column in enable view", "tui_status": "new (needs manager support)"}
+  ],
+  "honesty_notes": [
+    "All ecosystem line numbers read from the pinned shallow clones listed in method.repos.",
+    "niu/engine line numbers grep-verified against the 1.3.4-chain sources this worktree builds against.",
+    "WORKS claims for F04/F07 rest on cited code paths + product docs (plugins-guide.md, shell.rs:538); no end-to-end behavioral runs executed in this audit lane (no product changes).",
+    "bash-completion per-command counts use the 2.17 layout (completions-core 453 + completions-fallback 88; completions/ is the external drop-in dir)."
+  ]
+}
