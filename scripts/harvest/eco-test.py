@@ -118,6 +118,8 @@ def norm_signature(s: str) -> str:
     s = strip_ansi(s)
     s = re.sub(r"[A-Za-z]:[\\/][^\s:'\"]+", "<path>", s)
     s = re.sub(r"/mnt/[a-z]/\S+", "<path>", s)
+    s = re.sub(r"(?<!\w)/[a-z]/\S+", "<path>", s)   # MSYS-style /e/...
+    s = re.sub(r"[\x00-\x1f]", "", s)               # wake bytes etc.
     s = re.sub(r"\b\d+\b", "N", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s[:200]
@@ -489,14 +491,19 @@ def syntax_signature(rubash_err: str, work: Path) -> str:
         except OSError:
             pass
     core = re.sub(r"[A-Za-z]:[\\/][^\s:]+", "<path>", rubash_err or "unknown")
+    core = re.sub(r"(?<!\w)/[a-z]/\S+", "<path>", core)
+    core = re.sub(r"[\x00-\x1f]", "", core)
     core = re.sub(r"\b\d+\b", "N", core)
     core = re.sub(r"\s+", " ", core).strip()
     return f"{core} @ `{line_txt}`" if line_txt else core
 
 
 def hang_signature(phase: str, tail: list[str]) -> str:
-    last = tail[-1] if tail else ""
-    err = next((ln for ln in tail
+    # Probe echoes (`command echo ECO...`) are harness input, not output —
+    # never a hang signature.
+    sig_tail = [ln for ln in tail if "command echo ECO" not in ln]
+    last = sig_tail[-1] if sig_tail else (tail[-1] if tail else "")
+    err = next((ln for ln in sig_tail
                 if any(p in ln.lower() for p in ERROR_PATTERNS)), "")
     return f"hang:{phase}:" + norm_signature(err or last)[:140]
 
@@ -690,10 +697,12 @@ def report(results_path: Path, top: int, include_storms: bool,
         ms = [r["ms"] for r in rows if isinstance(r.get("ms"), int)]
         workers_env = os.environ.get("ECO_WORKERS")
         if ms and workers_env:
-            rate = sum(ms) / 1000 / int(workers_env)
-            per_hour = 3600 / rate if rate else 0
-            print(f"throughput: mean {sum(ms)/len(ms):.0f} ms/asset "
-                  f"~ {per_hour:.0f} assets/hour at {workers_env} workers")
+            w = int(workers_env)
+            mean_serial = sum(ms) / len(ms) / 1000
+            per_hour = 3600 / mean_serial * w if mean_serial else 0
+            print(f"throughput: mean {mean_serial:.1f} s/asset latency "
+                  f"~ {per_hour:.0f} assets/hour at {w} workers "
+                  f"(observed wall rate for this run: see test-mode summary)")
     print(f"\n== gold groups ({len(groups)} signatures; "
           f"{sum(len(v) for v in groups.values())} assets) ==")
     ranked = sorted(groups.items(), key=lambda kv: -len(kv[1]))
@@ -764,7 +773,11 @@ def main(argv=None):
 
     done = set()
     # Transient verdicts are NOT "done": a resume must retry them.
-    transient = {"FETCH-FAILED", "HARNESS-ERROR"}
+    # EXITED included: the first pass showed EXITED clusters under high
+    # worker concurrency (16/16 oh-my-bash completions "exited" at
+    # workers=8, all 16 pass serially) — a real exit reproduces; a
+    # concurrency artifact clears on the serial retry.
+    transient = {"FETCH-FAILED", "HARNESS-ERROR", "EXITED"}
     if results_path.exists() and not args.redo:
         with open(results_path, encoding="utf-8") as fh:
             for ln in fh:

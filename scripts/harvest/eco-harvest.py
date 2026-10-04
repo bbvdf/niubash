@@ -543,6 +543,10 @@ def harvest_repo_tree(gh: Github, man: Manifest, tier: str, repo: str,
     if basename_filter is not None:
         blobs = [e for e in blobs
                  if basename_filter.match(Path(e["path"]).name)]
+    # Control characters in a path would poison the raw URL later
+    # (urllib: "URL can't contain control characters").
+    blobs = [e for e in blobs
+             if all(ch.isprintable() for ch in e["path"])]
     # Entry-point preference: root-level first, then shortest path (the
     # entry point of a plugin repo is its shallowest .sh/.bash, not docs).
     blobs.sort(key=lambda e: (e["path"].count("/"), len(e["path"]),
