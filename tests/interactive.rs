@@ -665,6 +665,55 @@ fn default_theme_prompt_renders_with_ansi_escapes() {
 // Matrix 6: robustness
 // ---------------------------------------------------------------------------
 
+/// niubash#167: keystrokes typed while the prompt rebuilds must survive
+/// into the edit line.
+///
+/// Between two prompts the console sits in the cooked baseline while
+/// `PROMPT_COMMAND` machinery runs children that inherit the console;
+/// some runtimes (observed: Git-for-Windows MSYS2 `git`/`awk`/`grep`/
+/// `date` under a themed prompt) probe the shared console input buffer
+/// and consume one pending key record — the PRESS of the first key typed
+/// during the window, so `echo` executed as `cho` (wt67 drv-run1,
+/// 11/11 resends). The typeahead guard sweeps the queue for the shell
+/// during the rebuild and reinjects it before the editor reads.
+///
+/// The eater models the probe deterministically: PowerShell waits, then
+/// reads ONE console key only when one is pending, without blocking.
+/// Where PowerShell is unavailable the eater silently no-ops and this
+/// test degrades to a plain pass (it can never fail spuriously).
+#[test]
+fn typeahead_survives_prompt_rebuild_window() {
+    if !require_pty_or_skip("typeahead_survives_prompt_rebuild_window") {
+        return;
+    }
+    let rc = concat!(
+        "PS1='P1> '\n",
+        "NIU_DISABLE_DEFAULT_PLUGINS=1\n",
+        "__eat(){ C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        " -NoProfile -Command 'Start-Sleep -m 500;",
+        " if([Console]::KeyAvailable){[void][Console]::ReadKey($true)}'",
+        " >/dev/null 2>&1; }\n",
+        "__p(){ __eat; PS1='P1> '; }\n",
+        "PROMPT_COMMAND=__p\n",
+    );
+    let mut s = NiuSession::spawn_custom("wt167-typeahead", rc, &[], (120, 30), HEAVY_TIMEOUT);
+    s.wait_ready();
+    // One sacrificial cycle so the first PROMPT_COMMAND (eater) runs.
+    s.send_line("true");
+    s.expect_prompt();
+    for marker in ["W167A", "W167B"] {
+        // Submit a command, then type the next line while the rebuild
+        // window (the eater child) is still running: without the guard
+        // the first byte of `echo` is the eaten key and the line runs as
+        // `cho <marker>`.
+        s.send("true\r");
+        std::thread::sleep(Duration::from_millis(450));
+        s.send_line(&format!("echo {marker}"));
+        s.expect(marker);
+        s.expect_prompt();
+    }
+}
+
 /// A rapid burst of input lines is executed completely and in order.
 #[test]
 fn rapid_input_burst_all_lines_execute() {

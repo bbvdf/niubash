@@ -83,6 +83,7 @@ pub mod startup_trace;
 pub mod syntax_highlighting;
 pub mod terminal;
 pub mod text_style;
+pub mod typeahead_guard;
 #[cfg(windows)]
 pub mod windows_terminal;
 pub mod winuxcmd;
