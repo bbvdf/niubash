@@ -318,6 +318,24 @@ else
     fi
 fi
 
+# d3 — the theme gallery's live preview golden (niubash#170): the pane below
+# the gallery highlight renders that theme's real PS1 (single-line, two-line,
+# colored, right-aligned, powerline) and a hung/degraded theme degrades to
+# "(preview unavailable: …)" within the time bound instead of freezing the
+# gallery. Offline ConPTY probe, representative fixture themes; writes the
+# journey-format verdict (verdict.json/verdict.txt + transcripts). Exit 2 =
+# environment skip.
+if python scripts/smoke-theme-gallery-preview.py "$NIU" "$SB" >"$SB/d3.out" 2>&1; then
+    record PASS d3-gallery-live-preview "gallery preview renders each theme's real PS1; degraded themes degrade bounded"
+else
+    d3_rc=$?
+    if [ "$d3_rc" = "2" ]; then
+        record SKIP d3-gallery-live-preview "$(tail -1 "$SB/d3.out")"
+    else
+        record FAIL d3-gallery-live-preview "$(tail -3 "$SB/d3.out" | tr '\n' ' ')"
+    fi
+fi
+
 # ── E. basics ────────────────────────────────────────────────────────────────
 section "E. basics"
 

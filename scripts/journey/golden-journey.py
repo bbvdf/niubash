@@ -32,6 +32,11 @@ this product, a known pitfall, so both point at the sandbox):
   J6 trust + activate bash-completion (the owner's exact flow)
      `niu plugin trust bash-completion` -> `source ~/.niubashrc` -> a
      fresh terminal -> ZERO syntax errors (bash_completion included).
+  J7 gallery live preview (niubash#170)
+     re-run `niu setup` -> the pane below the gallery highlight renders
+     that theme's real PS1 (header follows the highlight; a hung theme
+     degrades bounded instead of freezing); Esc fast-forwards, Cancel
+     writes nothing.
 
 Unlike scripts/smoke-wizard-journey.py (offline, mirror-seeded, one
 question path), this is the ONLINE journey: the clones come from the real
@@ -836,7 +841,7 @@ def journey(exe: Path, root: Path, verdict: Verdict) -> str:
     step.finish()
 
     def block_rest(reason):
-        for later in ("J2", "J3", "J4", "J5", "J6"):
+        for later in ("J2", "J3", "J4", "J5", "J6", "J7"):
             verdict.step(later, f"{later} (blocked: {reason})").finish(
                 status="blocked")
 
@@ -1260,6 +1265,85 @@ def journey(exe: Path, root: Path, verdict: Verdict) -> str:
             step.check("bash_completion functions are loaded", False, str(err))
     finally:
         s6b.close()
+    step.finish()
+
+    # ── J7: the theme gallery's live prompt preview (niubash#170). When the
+    # highlight moves, the pane below the menu renders that theme's ACTUAL
+    # prompt — the real PS1 expanded with that theme's config — in place of
+    # the old static sentence. Bounded: a hung theme degrades to
+    # "(preview unavailable: …)" within the render bound instead of
+    # freezing the gallery.
+    step = verdict.step(
+        "J7", "gallery live preview: the pane renders the highlighted theme's real PS1")
+    s7 = Session([str(exe), "setup"], home, env,
+                 raw_log=verdict.transcripts / "J7.raw.ansi", label="J7",
+                 delivery_log=verdict.delivery_events)
+    try:
+        try:
+            s7.wait_for("Pick a theme", timeout=120)
+            step.check("re-run wizard opens the theme gallery", True)
+        except TimeoutError as err:
+            raise AssertionError(f"gallery never appeared: {err}")
+        s7.wait_quiescent()
+
+        def preview_pane():
+            """The fixed preview pane: the rows below the menu hint."""
+            rows = s7.text().splitlines()
+            hint = max(i for i, row in enumerate(rows) if "navigate" in row)
+            pane = rows[hint + 2:hint + 7]
+            while pane and not pane[-1].strip():
+                pane.pop()
+            return pane
+
+        # The old preview was a static sentence; the live pane replaces it.
+        step.check("static sentence replaced by the live pane",
+                   "renders via the bash-compatible PS1 channel"
+                   not in s7.text())
+
+        seen_headers = []
+        rendered_any = False
+        for position, key in enumerate(("2", "5", "9")):
+            s7.answer(key)  # digit jump: the highlight moves, no confirm
+            pane = preview_pane()
+            header = pane[0].strip() if pane else ""
+            body = "\n".join(pane[1:])
+            seen_headers.append(header)
+            # A real oh-my-bash theme renders its face within the render
+            # bound; a placeholder still on screen after the settle means
+            # the pane is not keeping up. Degraded rows are honest, but at
+            # least one of the first themes must show a real prompt.
+            if "rendering preview" not in body and body.strip():
+                rendered_any = True
+            (verdict.transcripts /
+             f"J7-preview-{position + 1}.txt").write_text(
+                f"header: {header}\npane:\n" + body, encoding="utf-8")
+            # A pane that shows a theme header line (`· oh-my-bash`) proves
+            # the preview follows THIS highlight.
+            step.check(f"preview follows highlight {position + 1}",
+                       "· oh-my-bash" in header, f"header={header!r}")
+        step.check("preview header changes as the highlight moves",
+                   len(set(seen_headers)) == len(seen_headers),
+                   f"{seen_headers!r}")
+        step.check("at least one theme's real PS1 rendered in the pane",
+                   rendered_any, f"panes={seen_headers!r}")
+        verdict.capture("J7-preview-pane", s7)
+
+        # Esc = use defaults everywhere; the wizard fast-forwards to the
+        # Apply gate, Cancel leaves everything untouched — the preview never
+        # blocks the flow it decorates.
+        s7.answer("\x1b")
+        try:
+            s7.wait_for("Apply this configuration?", timeout=60)
+            step.check("Esc fast-forwards past the gallery", True)
+            s7.answer("2\r")  # 2 = Cancel: nothing was written
+            step.check("cancel leaves the run side-effect free", True)
+        except TimeoutError as err:
+            step.check("Esc fast-forwards past the gallery", False, str(err))
+    except AssertionError as err:
+        step.check("gallery live preview verified", False, str(err))
+        verdict.capture("J7-stalled", s7)
+    finally:
+        s7.close()
     step.finish()
 
     return verdict.seal()
