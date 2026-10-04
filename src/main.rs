@@ -2190,7 +2190,7 @@ fn print_sync_rows(rows: &[niubash_runtime::plugins::sync::SyncRow]) {
             "installed" | "activated" | "removed" => {
                 niubash_runtime::text_style::green(&row.action)
             }
-            "awaiting-trust" | "deactivated" | "unchanged" | "merged" => {
+            "awaiting-trust" | "deactivated" | "unchanged" | "merged" | "reconciled" => {
                 niubash_runtime::text_style::yellow(&row.action)
             }
             "degraded" => niubash_runtime::text_style::yellow(&row.action),

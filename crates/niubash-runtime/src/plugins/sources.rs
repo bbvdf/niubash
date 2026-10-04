@@ -966,6 +966,21 @@ pub fn rollback_source(id: &str) -> anyhow::Result<SourceUpdateSummary> {
     Ok(summary)
 }
 
+/// Priority tier of a theme source for same-name theme resolution (lower
+/// wins): 0 = oh-my-bash — niu's primary external framework (the base of
+/// every built-in collection, the rc template's default theme channel) —
+/// 1 = everything else. The single authority for the ranking: the setup
+/// wizard's gallery dedupe (the wt61 G2 fix) and the spec-layer theme-claim
+/// reconciliation (niubash#168) must never disagree about who owns a shared
+/// theme name.
+pub fn primary_theme_source_rank(source_id: &str) -> u8 {
+    if source_id == "oh-my-bash" {
+        0
+    } else {
+        1
+    }
+}
+
 /// Flip the execution gate for a source: its assets start contributing to
 /// the catalog/loader (§12.2). The gate is only flipped on a healthy tree —
 /// a missing directory (degraded) or a checksum mismatch refuses trust
