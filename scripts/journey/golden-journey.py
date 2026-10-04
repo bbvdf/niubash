@@ -52,16 +52,25 @@ bash-completion — and P8-S4 restores what it removes):
      marker file a PREVIOUS session wrote (the wake-flag capability:
      a session detects "a previous session mutated state"), proving the
      sandbox HOME wiring survives process boundaries.
-  P3-S2 rc byte-stability + theme identity across terminals (niu#168)
+  P3-S2 theme-block byte-stability + theme identity across terminals
+  (niu#168)
      snapshot rc bytes after the wizard; `source ~/.niubashrc` in a live
-     session; two fresh terminals; snapshot after each. (a) bytes
-     identical after every open; (b) the picked theme's variable still
-     present, unchanged, on the same framework; (c) the string
-     `selection materialized` (the #168 rewrite tell) never appears
-     during an unchanged-spec source/startup; (d) terminal 2's first
-     prompt row equals terminal 1's modulo clock digits. Expected-red
-     until niu#168 lands -> registered KNOWN-FAIL
-     `wt73-168-theme-rebound` (labeling, never waiving).
+     session; two fresh terminals; snapshot after each. (a) the THEME
+     block bytes (the oh-my-bash managed guard region — the #168
+     battleground) identical after every open, present exactly once,
+     with no activated/deactivated flip of the theme source; the
+     WHOLE-rc comparison stays as an informational note only, because
+     other managed blocks may legally materialize between snapshots once
+     their spec declaration goes trusted/declared (release run
+     37218948432: the bash-completion block J6 trusted) — materializing
+     it is sync's job, not a stability break; (b) the picked theme's
+     variable still present, unchanged, on the same framework; (c) the
+     string `selection materialized` (the #168 rewrite tell) never
+     appears during an unchanged-spec source/startup; (d) terminal 2's
+     first prompt row equals terminal 1's modulo clock digits. Green
+     expected since wt72/themeback landed (release 1.3.4): the retired
+     `wt73-168-theme-rebound` label no longer swallows this class, so a
+     red here is a plain #168 regression.
   P3-S3 first-key integrity as product behavior (niu#167 anti-masking)
      after the themed prompt idles >=1.2s (>=1 clock repaint), send
      `echo NIU167KEY` with the driver's Ctrl-U wake DISABLED for this
@@ -291,26 +300,6 @@ KNOWN_FAILS = [
         "note": "the 'full' collection's bash-preexec recipe names entry "
                 "'bash-preexec' but upstream rcaloras/bash-preexec ships "
                 "'bash-preexec.sh' — the apply reports '1 entries failed'",
-    },
-    {
-        "id": "wt73-168-theme-rebound",
-        "ticket": "niu#168 (fix lane wt72/themeback): wizard/sync leave the rc "
-                  "and the spec disagreeing about the picked theme",
-        "pattern": r"wt73-168-theme-rebound|theme re-?bound|theme ownership "
-                   r"disagrees|selection materialized",
-        "note": "the OPEN #168 P0: the wizard's re-run pick (or the sync's "
-                "'selection materialized' rewrite) never reaches the spec, "
-                "so the next sync re-materializes the stale claim over it — "
-                "the pick reverts or the framework flips across source/new "
-                "terminals. Evidence shapes this pattern labels (wt73's "
-                "matrix + wt79's P3-S2 grid): rc bytes not identical across "
-                "session opens, the picked theme's variable "
-                "(OSH_THEME/BASH_IT_THEME) re-pointed or flipped to the "
-                "other framework, the literal rewrite tell printed during an "
-                "unchanged-spec source/startup, or the pick sticking "
-                "assertions after a wizard re-run. expected-red until wt72 "
-                "lands; labeling, never waiving — when the fix lands the "
-                "assertions go green without edits (journey-spec P3-S2)",
     },
     {
         "id": "wt80-undo-receipt-ambiguous-theme",
@@ -1088,6 +1077,24 @@ def sync_row_keys(body: str, action: str):
     }
 
 
+def untrusted_registry_ids(home: Path):
+    """The source ids the sandbox registry still marks untrusted — the
+    documented awaiting-trust bound. Since wt78 expanded the `full`
+    collection to nine entries, a literal cap goes stale on every
+    entry-set change (six-plus untrusted at J4 is the documented new
+    normal), so the bound derives from the registry — the same state
+    sync --bootstrap reads (the J4 derivation, shared with P3-S4)."""
+    registry_path = home / ".niubash" / "sources" / "registry.toml"
+    if not registry_path.is_file():
+        return set()
+    registry = tomllib.loads(registry_path.read_text(encoding="utf-8"))
+    ids = {record.get("id", "")
+           for record in registry.get("sources", [])
+           if not record.get("trusted", False)}
+    ids.discard("")
+    return ids
+
+
 def first_diff_lines(old: bytes, new: bytes, limit=8):
     """The first changed lines between two rc snapshots — the verdict
     detail for a P3-S2 byte-stability red."""
@@ -1101,11 +1108,13 @@ def first_diff_lines(old: bytes, new: bytes, limit=8):
 
 def check_theme_stability(recorder: "StepRecorder", name: str, ok: bool,
                           evidence_shape: str, detail: str = "") -> bool:
-    """Record one P3-S2 assertion (the #168 assertion class: rc
+    """Record one P3-S2 assertion (the #168 assertion class: theme-block
     byte-stability, theme identity, no-rewrite-tell, prompt identity).
-    A red carries the evidence shape so the registered KNOWN-FAIL
-    `wt73-168-theme-rebound` can label it expected-red (labeling, never
-    waiving) — the raw diff stays in the detail and the artifacts."""
+    A red carries the evidence shape and routes through the KNOWN-FAIL
+    registry: a registered label keeps the red expected-red (labeling,
+    never waiving). With wt72/themeback landed (release 1.3.4) the #168
+    label is retired, so a red here is a plain regression red — the raw
+    diff stays in the detail and the artifacts."""
     ok = bool(ok)
     if ok:
         recorder.check(name, True)
@@ -1308,13 +1317,20 @@ def p3_s1_reopen(exe, home, env, verdict, seed, state):
     step.finish()
 
 
+# The themed source whose guard block P3-S2 guards (the wizard's pick
+# lives in its managed region; the P4 helpers name it the same way).
+THEMED_SOURCE_ID = "oh-my-bash"
+
+
 def p3_s2_rc_stability(exe, home, env, verdict, seed, state):
-    """P3-S2: rc byte-stability + theme identity across terminals — the
-    niu#168 killer. Expected-red until niu#168 lands; registered
-    KNOWN-FAIL wt73-168-theme-rebound (labeling, never waiving)."""
+    """P3-S2: theme-block byte-stability + theme identity across
+    terminals — the niu#168 regression gate. Green expected since
+    wt72/themeback landed (release 1.3.4): a red is a regression, not an
+    expected-red (the wt73-168-theme-rebound label retired with the
+    fix)."""
     step = verdict.step(
-        "P3-S2", "rc byte-stability + theme identity across terminals "
-        "(niu#168)")
+        "P3-S2", "theme-block byte-stability + theme identity across "
+        "terminals (niu#168)")
     theme_line = state.get("theme_line") or ""
     theme_var = state.get("theme_var") or "OSH_THEME"
     other_var = "BASH_IT_THEME" if theme_var == "OSH_THEME" else "OSH_THEME"
@@ -1365,19 +1381,83 @@ def p3_s2_rc_stability(exe, home, env, verdict, seed, state):
             finally:
                 term.close()
 
-        # (a) rc bytes identical after every source/terminal.
+        # (a) the THEME block bytes — the oh-my-bash managed guard region,
+        # the #168 battleground — identical after every source/terminal,
+        # present exactly once, with no activated/deactivated flip of the
+        # theme source. The WHOLE-rc equality the pre-wt78 gate asserted
+        # is informational only: another managed block may legally
+        # materialize between snapshots once its spec declaration goes
+        # trusted/declared (release run 37218948432: the bash-completion
+        # block J6 trusted landed here and was mislabeled a stability
+        # break) — materializing it is sync's job (wt87 recalibration).
         for milestone in ("after-reopen", "after-source", "after-term1",
                           "after-term2"):
             snap = state["rc_bytes"].get(milestone)
-            stable = bool(snap) and snap == baseline
-            diff = "" if stable else " | ".join(
-                first_diff_lines(baseline, snap or b""))
+            snap_text = (snap or b"").decode("utf-8", errors="replace")
+            base_text = baseline.decode("utf-8", errors="replace")
+            base_block = rc_managed_block(base_text, THEMED_SOURCE_ID)
+            snap_block = rc_managed_block(snap_text, THEMED_SOURCE_ID)
+            stable = (bool(snap) and base_block is not None
+                      and snap_block == base_block)
+            diff = "" if stable else " | ".join(first_diff_lines(
+                (base_block or "").encode("utf-8"),
+                (snap_block or "").encode("utf-8")))
             check_theme_stability(
-                step, f"rc bytes identical after {milestone}",
-                stable, f"rc bytes diverged at {milestone}",
+                step,
+                f"theme block bytes identical after {milestone} (niu#168)",
+                stable,
+                "the theme block diverged across session opens",
                 diff or ("snapshot missing — the earlier step carrying it "
                          "failed" if snap is None else
+                         "the theme block is missing after the open"
+                         if snap_block is None else
+                         "the theme block is missing in the wizard baseline"
+                         if base_block is None else
                          "no line-level diff (mode/length change)"))
+            # No activated/deactivated flip: the guarded region survives
+            # every open exactly once. A flip (an enable/disable life
+            # cycle across sessions) adds a second block or drops this
+            # one — that IS a theme-state change, in either direction.
+            blocks_now = rc_managed_block_count(snap_text, THEMED_SOURCE_ID)
+            check_theme_stability(
+                step,
+                f"theme block present exactly once after {milestone} "
+                "(no activated/deactivated flip)",
+                blocks_now == 1,
+                "the theme source's managed block count changed across "
+                "session opens",
+                f"count = {blocks_now}")
+            # Informational: the whole-rc comparison. Legal spec-driven
+            # materialization shows up here without failing the gate.
+            if snap == baseline and snap:
+                step.note(f"whole rc byte-identical after {milestone} "
+                          "(informational)")
+            else:
+                whole_diff = first_diff_lines(baseline, snap or b"")
+                step.note(
+                    f"whole rc changed after {milestone} outside the theme "
+                    "block (informational — spec-driven materialization is "
+                    "sync's job): "
+                    + (" | ".join(whole_diff) or
+                       "no line-level diff (mode/length change)"))
+
+        # (a2) no activated/deactivated flip of the THEME source in any
+        # P3 session stream: the enable/disable life cycle would print
+        # `niu plugin sync: activated|deactivated oh-my-bash`.
+        for label in sorted(raws):
+            if not label.startswith(("P3-S1", "P3-S2")):
+                continue
+            raw = raws[label]
+            flips = (sync_row_keys(raw, "activated")
+                     | sync_row_keys(raw, "deactivated"))
+            check_theme_stability(
+                step,
+                f"the theme source is never activated/deactivated during "
+                f"{label}",
+                THEMED_SOURCE_ID not in flips,
+                "the theme source's activation flipped during an "
+                "unchanged-spec source/startup",
+                f"flip rows name: {sorted(flips)}")
 
         # (b) the picked theme's variable still present, unchanged, on
         # the SAME framework (the rebound re-points or flips it).
@@ -1546,9 +1626,21 @@ def p3_s4_aged_state(exe, home, env, verdict, seed, state):
                        f"deferred={sorted(deferred)} failed={sorted(failed)} "
                        f"degraded={sorted(degraded)}; first: "
                        f"{first.strip()[:140]}")
-            step.check("awaiting-trust notices stay documented (<=2)",
-                       len(nags) <= 2,
-                       f"{len(nags)} source(s): {sorted(nags)}")
+            # The documented nag: one line per still-untrusted declared
+            # source. The bound derives from the sandbox registry (the
+            # J4 derivation): since wt78 expanded `full` to nine entries
+            # the literal "<=2" went stale — five untrusted remain after
+            # J6 trusted bash-completion, and every one of them must be
+            # allowed to name itself.
+            untrusted = untrusted_registry_ids(home)
+            unexpected = nags - untrusted
+            step.check("awaiting-trust notices stay documented (one per "
+                       "untrusted source)",
+                       not unexpected and len(nags) <= len(untrusted),
+                       f"{len(nags)} source(s) vs {len(untrusted)} "
+                       f"untrusted in the registry: {sorted(nags)}"
+                       + (f"; unexpected: {sorted(unexpected)}"
+                          if unexpected else ""))
             storm = {line.strip()[:120] for line in body.splitlines()
                      if "command not found" in line}
             step.check("guarded loader no-ops silently (no error storm)",
@@ -1632,9 +1724,14 @@ def p3_s4_aged_state(exe, home, env, verdict, seed, state):
                        f"{len(bad)} line(s), first: "
                        f"{bad[0].strip()[:140] if bad else ''}")
             nags = sync_row_keys(body, "awaiting-trust")
+            untrusted = untrusted_registry_ids(home)
+            unexpected = nags - untrusted
             step.check("only the documented awaiting-trust lines remain",
-                       len(nags) <= 2,
-                       f"{len(nags)} source(s): {sorted(nags)}")
+                       not unexpected and len(nags) <= len(untrusted),
+                       f"{len(nags)} source(s) vs {len(untrusted)} "
+                       f"untrusted in the registry: {sorted(nags)}"
+                       + (f"; unexpected: {sorted(unexpected)}"
+                          if unexpected else ""))
             verdict_for_syntax_errors(
                 step, "zero syntax errors after repair",
                 all_syntax_errors(healed))
@@ -2739,8 +2836,8 @@ def hop_terminal_asserts(step, verdict: Verdict, exe, home, env, tag: str,
     fresh-terminal leg: rc guard block rewritten to the pick, exactly one
     framework's theme variable, journal + backup receipts, and — the niu#168
     gate — the pick STICKING across the terminal (rc block + spec agree).
-    Red stickiness labels wt73-168-theme-rebound (expected-red until
-    wt72/themeback lands); it never passes silently."""
+    Green expected since wt72/themeback landed (1.3.4); a red is a plain
+    #168 regression — the wt73 label retired with the fix."""
     rc = read_text(rc_path)
     block = rc_managed_block(rc, "oh-my-bash")
     step.check(f"{tag}: the rc guard block carries the pick",
@@ -2779,7 +2876,7 @@ def hop_terminal_asserts(step, verdict: Verdict, exe, home, env, tag: str,
         else:
             check_with_known_fail(
                 step, f"{tag}: fresh terminal renders a themed prompt",
-                f"niu#168 theme rebound (wt73-168-theme-rebound): the fresh "
+                f"niu#168 theme rebound: the fresh "
                 f"terminal's prompt fell back to the default shape because "
                 f"the pick was already re-materialized away")
         drain_notices(terminal)
@@ -2803,7 +2900,7 @@ def hop_terminal_asserts(step, verdict: Verdict, exe, home, env, tag: str,
     else:
         check_with_known_fail(
             step, f"{tag}: the pick sticks (rc block + spec agree)",
-            f"niu#168 theme ownership disagrees (wt73-168-theme-rebound): "
+            f"niu#168 theme ownership disagrees: "
             f"after the fresh terminal the rc carries "
             f"{sorted(rc_theme_vars(rc).items())} while the spec's oh-my-bash "
             f"entry declares theme = {declared!r} (picked {picked!r}) — the "
@@ -2873,7 +2970,7 @@ def phase_p4(exe, home, env, verdict, seed=None, state=None):
         else:
             check_with_known_fail(
                 step, "one theme state: rc block and spec agree on A",
-                f"niu#168 theme rebound (wt73-168-theme-rebound): rc block "
+                f"niu#168 theme rebound: rc block "
                 f"theme vars {sorted(rc_theme_vars(read_text(rc_path)).items())}, "
                 f"spec declares {declared!r} — expected both to agree on "
                 f"{theme_a!r}")
@@ -3021,9 +3118,8 @@ def phase_p4(exe, home, env, verdict, seed=None, state=None):
     # ── P4-S4 — dual-framework same-name theme routing: with BOTH frameworks
     # trusted, pick the name both ship; the gallery priority must route it
     # through oh-my-bash, exactly one guard block may activate it, and the
-    # attribution must stick across a second terminal. Expected RED until
-    # #168 lands (KNOWN-FAIL wt73-168-theme-rebound, registered, never
-    # waived).
+    # attribution must stick across a second terminal. Green expected since
+    # wt72/themeback landed (1.3.4); a red is a plain #168 regression.
     step = verdict.step("P4-S4", "dual-framework same-name theme routing "
                                  f"({dual_theme} in oh-my-bash AND bash-it)")
     try:
@@ -3072,7 +3168,7 @@ def phase_p4(exe, home, env, verdict, seed=None, state=None):
             check_with_known_fail(
                 step, "spec framework attribution agrees with the rc guard "
                       "block",
-                f"niu#168 theme ownership disagrees (wt73-168-theme-rebound): "
+                f"niu#168 theme ownership disagrees: "
                 f"the rc guard block carries OSH_THEME='{dual_theme}' but the "
                 f"spec's oh-my-bash entry declares theme = {declared_omb!r} "
                 f"and the bash-it entry {declared_bashit!r} — the wizard's "
@@ -3104,7 +3200,7 @@ def phase_p4(exe, home, env, verdict, seed=None, state=None):
             check_with_known_fail(
                 step, "second terminal does not flip the framework or lose "
                       "the pick",
-                f"niu#168 theme rebound (wt73-168-theme-rebound): after the "
+                f"niu#168 theme rebound: after the "
                 f"second terminal the rc carries "
                 f"{sorted(vars_later.items())} — expected "
                 f"OSH_THEME='{dual_theme}' in the oh-my-bash guard block only")

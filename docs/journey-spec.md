@@ -140,9 +140,9 @@ Guards: **#168**, **#167**, the 6s-source family (kept green by J4), F5 ledger.
 | Step | The user's move | Assertions | Feasibility | Priority |
 | --- | --- | --- | --- | --- |
 | P3-S1 *(=J4)* | three fresh terminals | no `Cloning into`, no `not declared`, ≤ documented `awaiting-trust` lines, prompt renders | `conpty` | — |
-| P3-S2 | **rc byte-stability + theme identity across terminals** (the #168 killer): snapshot `~/.niubashrc` bytes after J2; `source ~/.niubashrc` in a live session; open two fresh terminals; snapshot bytes after each | (a) rc bytes identical after every source/terminal; (b) the picked theme's variable (`OSH_THEME`/`BASH_IT_THEME` = `powerline-multiline`) still present and unchanged; (c) the string `selection materialized` NEVER appears during an unchanged-spec source/startup (it is the #168 rewrite tell); (d) terminal 2's first prompt row equals terminal 1's modulo clock digits | `conpty` | **1** |
+| P3-S2 | **theme-block byte-stability + theme identity across terminals** (#168): snapshot `~/.niubashrc` bytes after J2; `source ~/.niubashrc` in a live session; open two fresh terminals; snapshot bytes after each | (a) the theme block bytes (the oh-my-bash managed guard region) identical after every source/terminal, present exactly once, no `activated`/`deactivated` flip of the theme source — the whole-rc comparison is an informational note only (a spec-declared block may legally materialize once trusted, e.g. the bash-completion block J6 trusts; wt87 calibration); (b) the picked theme's variable (`OSH_THEME`/`BASH_IT_THEME` = `powerline-multiline`) still present and unchanged; (c) the string `selection materialized` NEVER appears during an unchanged-spec source/startup (it is the #168 rewrite tell); (d) terminal 2's first prompt row equals terminal 1's modulo clock digits | `conpty` | **1** |
 | P3-S3 | **first-key integrity as product behavior** (the #167 anti-masking step): after the themed prompt idles ≥1.2 s (≥1 clock repaint), send `echo` with the driver's Ctrl-U wake DISABLED for this one probe | the full word executes (`echo: usage`-class output or silent success) — never `cho: command not found`; one labeled probe per session; the general wake stays for everything else | `conpty+wake-flag` | **1** |
-| P3-S4 | **aged state**: between sessions, damage one installed tree (rename a file inside a trusted source) and seed a `bootstrap-failures.toml` entry for a declared-but-missing origin | next terminal reaches a prompt bounded ≤10 s with at most the documented one-line notices (`deferred`, `tree missing — repair with niu plugin restore <id>`); the guarded loader no-ops silently (no error storm); `niu plugin sync` (explicit) retries and repairs; the terminal after that is silent | `conpty+seed` | **1** |
+| P3-S4 | **aged state**: between sessions, damage one installed tree (rename a file inside a trusted source) and seed a `bootstrap-failures.toml` entry for a declared-but-missing origin | next terminal reaches a prompt bounded ≤10 s with at most the documented one-line notices (`deferred`, `tree missing — repair with niu plugin restore <id>`; awaiting-trust notices name only still-untrusted sources, at most one per — the bound derived from the sandbox registry, wt78 expanded `full` to nine entries so no literal cap); the guarded loader no-ops silently (no error storm); `niu plugin sync` (explicit) retries and repairs; the terminal after that is silent | `conpty+seed` | **1** |
 
 ### P4 — re-running setup + switching themes  *(nothing exists today)*
 
@@ -153,7 +153,7 @@ Guards: **#168** (owner's entry door: "向导重选后"), #157/#159 (the rc writ
 | P4-S1 | re-run `niu setup` on the P3-state sandbox (`rerun_wizard()` is a supported flow: "Re-run the setup wizard even if the user already has a startup rc") | wizard completes; ends with exactly one theme state: the freshly picked theme active in rc AND spec AND rendered prompt — never a third state; zero syntax errors | `conpty` | **1** |
 | P4-S2 | theme switch A→B→A through the wizard gallery: `powerline-multiline` → a second theme (e.g. `edsonarios`) → back to A | after each pick: new terminal renders THAT theme (prompt shape + rc variable agree); returning to A restores the managed block byte-identically to its original | `conpty` | **1** |
 | P4-S3 | execute the undo receipts the finish screen printed (per-entry undo commands; `niu plugin rollback` family — read the exact verbs from `~/.niubash/setup-journal.toml`) | after undo: rc/spec/registry return to the pre-wizard state (files restored or absent); re-running the wizard afterwards succeeds; nothing resurrects on the next sync (F4) | `conpty` | 2 |
-| P4-S4 | dual-framework same-name theme: with `full` (OMB + bash-it both installed) pick `powerbash10k` (exists in both frameworks — #168's exact shape) | exactly ONE framework's block activates it; spec's framework attribution agrees with the rc guard block; a second terminal does not flip the framework; expected RED until #168 lands → register KNOWN-FAIL `wt73-168-theme-rebound` | `conpty` | **1** |
+| P4-S4 | dual-framework same-name theme: with `full` (OMB + bash-it both installed) pick `powerbash10k` (exists in both frameworks — #168's exact shape) | exactly ONE framework's block activates it; spec's framework attribution agrees with the rc guard block; a second terminal does not flip the framework; green since wt72/themeback landed (1.3.4) — a red is a plain #168 regression | `conpty` | **1** |
 | P4-S5 | theme breadth smoke: source ~8 gallery themes (one per family: `edsonarios`, `hawaii50`, `brainy`, `iterate`, `powerbash10k`, …), one throwaway session each | zero syntax errors; prompt renders per theme; known-bad themes register as KNOWN-FAILs with their rubash issue numbers (guards the rubash#416/#417/#418/#420/#421/#422 family instead of one theme forever) | `conpty` | 2 |
 
 ### P5 — the daily battery under adversarial conditions  *(base exists: J5)*
@@ -287,9 +287,10 @@ top-10 blast radii.
 
 Wave 1 = W1 + W2 (the P0 class: #168, #167, setup re-run). Wave 2 = W3 + W4.
 Each lane lands its steps as J7… gate blocks per journey-gate.md's rules, one
-verdict paste per PR; P4-S4 registers KNOWN-FAIL `wt73-168-theme-rebound`
-until #168's fix lane lands, at which point the pattern stops matching and
-the step goes green without edits.
+verdict paste per PR; P4-S4's `wt73-168-theme-rebound` KNOWN-FAIL was
+retired when wt72/themeback landed (1.3.4) — the #168 assertions (P3-S2,
+P4-S4) are plain regression reds now, per the wt87 calibration in
+journey-gate.md.
 
 ## 8. Standing rules inherited unchanged
 
