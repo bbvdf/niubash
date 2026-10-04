@@ -1,5 +1,12 @@
 # The Golden User Journey Gate
 
+> **Successor spec:** [journey-spec.md](journey-spec.md) (+ the
+> machine-readable [journey-steps.json](journey-steps.json)) — the phased
+> P1–P10 expansion covering the blind spots J1–J6 cannot see (state
+> persistence, setup re-runs, network failure, trust/spec lifecycle,
+> upgrade, drift). J1–J6 below stay the release gate; the P-phases extend
+> it lane by lane.
+
 The owner's directive (2026-10-04, verbatim intent):
 
 > 你现在的测试逻辑完完全全不是按照用户使用来的!交互式你根本不测!…必须改革测试方式
