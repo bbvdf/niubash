@@ -1760,7 +1760,8 @@ def phase_p4(exe, home, env, verdict):
         step.check("returning to A restores the managed block byte-identically",
                    block_restored == block_a_original,
                    "the oh-my-bash guard block bytes differ from the "
-                   "pre-phase snapshot")
+                   "pre-phase snapshot"
+                   if block_restored != block_a_original else "")
     except AssertionError as err:
         step.check("P4-S2 completed", False, str(err))
     step.finish()
@@ -2008,6 +2009,7 @@ def phase_p7(exe, home, env, verdict):
                    read_bytes(rc_path) == rc_stable)
         step.check("second sync: spec byte-identical (no-op)",
                    read_bytes(spec_path) == spec_after)
+        step.finish()
     except AssertionError as err:
         step.check("P7-S1 completed", False, str(err))
         step.finish()
@@ -2100,11 +2102,33 @@ def phase_p7(exe, home, env, verdict):
         started = time.time()
         terminal = fresh_terminal(exe, home, env, verdict, "P7-S3-terminal")
         try:
+            # The boot bound a human sees: the first REPL prompt rendered at
+            # the bottom of the screen (default floor prompt or themed —
+            # either proves startup completed). Observed, not typed: the
+            # keystroke-delivery retries are the driver's latency, never the
+            # product's, and must not inflate the wedge detection (run
+            # 20261004-173006: the boot rendered in <1s while an echo-confirm
+            # retry burned 10s).
+            booted = None
+            while time.time() - started < 10.0:
+                if PROMPTISH_LAST_ROW.match(terminal.last_nonempty_row()):
+                    booted = time.time() - started
+                    break
+                time.sleep(0.1)
             alive = prompt_alive(terminal, "P7S3_ALIVE")
-            elapsed = time.time() - started
-            step.check(f"the corrupt-spec startup still reaches a prompt "
-                       f"(bounded; {elapsed:.1f}s)",
-                       alive and elapsed <= 10.0, f"{elapsed:.1f}s")
+            if booted is not None:
+                bound_name = (f"the corrupt-spec startup still reaches a "
+                              f"prompt (bounded; prompt rendered at "
+                              f"{booted:.1f}s)")
+                bound_detail = (f"prompt rendered at {booted:.1f}s, "
+                                f"echo-alive={alive}")
+            else:
+                bound_name = ("the corrupt-spec startup still reaches a "
+                              "prompt (bounded; no prompt-ish row within "
+                              "10s)")
+                bound_detail = f"echo-alive={alive}"
+            step.check(bound_name, booted is not None and alive,
+                       bound_detail)
             boot_raw = terminal.raw_stripped()
             step.check("the boot printed the soft error (never a silent "
                        "wrong shell)", "niu:" in boot_raw
