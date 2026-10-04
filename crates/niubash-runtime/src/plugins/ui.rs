@@ -747,6 +747,7 @@ mod tests {
                 expected_checksum: None,
                 id: None,
                 entry: None,
+                fetch_budget: None,
             })
             .expect("fixture source add must succeed");
             crate::plugins::sources::trust_source("oh-my-bash").expect("fixture trust");
