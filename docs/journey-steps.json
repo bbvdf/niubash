@@ -1,0 +1,155 @@
+{
+  "schema": "niubash:journey-spec@0.1.0",
+  "generated": "2026-10-02",
+  "lane": "wt73/journeyscope",
+  "doc": "docs/journey-spec.md",
+  "predecessor": "docs/journey-gate.md (J1-J6, unchanged)",
+  "consumer_notes": [
+    "Each step lands as a J7... block in scripts/journey/golden-journey.py per journey-gate.md 'How to add a step'.",
+    "feasibility marks: conpty (drivable today), conpty+env, conpty+wake-flag, conpty+seed, conpty+netfail, subproc, sibling, out-of-scope, feature-pending.",
+    "priority: 1 = wave 1 (P0 class), 2 = wave 2, 3 = wave 3.",
+    "expected_today 'red' steps must register a KNOWN_FAIL with known_fail_id; labeling, never waiving."
+  ],
+  "driver_capabilities": [
+    {"id": "wake-flag", "kind": "conpty+wake-flag", "summary": "send_line(..., wake=False) so one labeled probe asserts the product's first-key behavior instead of masking it", "needed_by": ["P3-S3"], "owner_lane": "W1"},
+    {"id": "seed", "kind": "conpty+seed", "summary": "seed_sandbox() helper: write/modify files under the sandbox home between sessions (aged state, old-version state, damaged trees)", "needed_by": ["P3-S4", "P6-S4", "P9-S1", "P9-S2", "P9-S3"], "owner_lane": "W1 (W4 reuses)"},
+    {"id": "netfail", "kind": "conpty+netfail", "summary": "break_network()/heal_network(): sandbox gitconfig insteadOf rewrite of https://github.com/ to http://127.0.0.1:1/ (or dead proxy env)", "needed_by": ["P5-S7"], "owner_lane": "W3"},
+    {"id": "env-per-session", "kind": "conpty+env", "summary": "parameterized build_env variants (PATH/TZ/PS1/MSYSTEM) per Session; env dict is already per-Session", "needed_by": ["P2-S3", "P10-S1", "P10-S2", "P10-S4"], "owner_lane": "W4"},
+    {"id": "subproc", "kind": "subproc", "summary": "plain child spawn (no ConPTY) for -c / flag-mode probes reusing the sandbox env", "needed_by": ["P2-S2", "P5-S5"], "owner_lane": "W4"}
+  ],
+  "phases": [
+    {
+      "id": "P1",
+      "title": "install + wizard first contact",
+      "current_gate_status": "covered (J1-J2) with gaps",
+      "steps": [
+        {"id": "P1-S1", "alias": "J1", "title": "fresh-install first contact", "guards": [], "priority": null, "feasibility": "conpty", "expected_today": "green", "known_fail_id": null, "script": ["fresh sandbox HOME", "run niu"], "assertions": ["v-banner + wizard: welcome block, environment panel, 'No external themes installed yet'"]},
+        {"id": "P1-S2", "alias": "J2", "title": "wizard full run", "guards": ["niu#157", "niu#159"], "priority": null, "feasibility": "conpty", "expected_today": "green", "known_fail_id": null, "script": ["collection full -> Apply", "watch clones", "Trust now", "gallery -> powerline-multiline"], "assertions": ["clone progress lines", "rc + plugins.toml + setup-journal.toml written", "undo receipts listed", ">60 themes on disk", "REPL alive"]},
+        {"id": "P1-S3", "title": "wizard trust DECLINE path", "guards": ["plugins-guide trust contract"], "priority": 2, "feasibility": "conpty", "expected_today": "unknown (verify, register if red)", "known_fail_id": null, "script": ["collection minimal -> Apply", "answer Decline at the trust question", "open a fresh terminal"], "assertions": ["no trust flip", "fresh terminal shows the documented per-source awaiting-trust notice naming the exact `niu plugin trust <id>`", "`niu plugin enable <asset>` refuses while untrusted"]},
+        {"id": "P1-S4", "title": "wizard menu input integrity (per question)", "guards": ["niu#85"], "priority": 3, "feasibility": "conpty", "expected_today": "unknown (verify, register if red)", "known_fail_id": null, "script": ["at each wizard menu: one DOWN", "one ESC", "one Enter"], "assertions": ["one DOWN = exactly one highlight row (row-number delta 1)", "ESC selects the documented default", "Enter never double-advances past the next question"]},
+        {"id": "P1-S5", "title": "apply honesty (failed entries stay red)", "guards": ["KNOWN_FAIL bash-preexec-recipe-entry"], "priority": null, "feasibility": "conpty", "expected_today": "red (registered)", "known_fail_id": "bash-preexec-recipe-entry", "script": ["(existing J2 assertion, kept)"], "assertions": ["any 'failed' line in the apply report keeps the step RED until its ticket lands"]}
+      ]
+    },
+    {
+      "id": "P2",
+      "title": "first session + first source beyond the just-written state",
+      "current_gate_status": "covered (J3) with gaps",
+      "steps": [
+        {"id": "P2-S1", "alias": "J3", "title": "activation: source the rc", "guards": ["niu#157", "niu#159"], "priority": null, "feasibility": "conpty", "expected_today": "green", "known_fail_id": null, "script": ["source ~/.niubashrc"], "assertions": ["completes", "zero syntax errors"]},
+        {"id": "P2-S2", "title": "day-one flag invocations", "guards": ["niu#148", "niu#160"], "priority": 3, "feasibility": "subproc", "expected_today": "red until niu#160 lands; #148 fixed 1.3.x (verify)", "known_fail_id": null, "script": ["niu -c 'echo ok'", "niu --norc -c 'echo ok'", "niu -c with an unclosed double quote"], "assertions": ["-c prints ok", "--norc works in any argument order", "unclosed quote prints the EOF diagnostic and exits rc 2 (GNU parity)"]},
+        {"id": "P2-S3", "title": "real-terminal inherited environment", "guards": ["niu#117", "niu#141"], "priority": 2, "feasibility": "conpty+env", "expected_today": "unknown (verify; fixed by 2f10/9a4458d for PS1 - assert stays green)", "known_fail_id": null, "script": ["spawn session with PS1 preset to a Git Bash shape + MSYSTEM=MINGW64 + SHELL=/usr/bin/bash"], "assertions": ["prompt renders", "zero '__git_ps1: command not found'", "zero foreign-PS1 glyphs at prompt #1"]},
+        {"id": "P2-S4", "title": "non-interactive login contract (~/.niubash_profile)", "guards": ["niu#138"], "priority": 3, "feasibility": "feature-pending", "expected_today": "n/a (do not add until niu#138 lands)", "known_fail_id": null, "script": [], "assertions": ["login-mode sources ~/.niubash_profile (mise activation visible)"]}
+      ]
+    },
+    {
+      "id": "P3",
+      "title": "second session, state persistence, state aging",
+      "current_gate_status": "partial (J4): sessions exercised, state stability not asserted; #167 masked",
+      "steps": [
+        {"id": "P3-S1", "alias": "J4", "title": "new terminals x3", "guards": ["6s-source F5/F6", "niu#145"], "priority": null, "feasibility": "conpty", "expected_today": "green", "known_fail_id": null, "script": ["open three fresh niu sessions"], "assertions": ["no 'Cloning into'", "no 'not declared'", "<= documented awaiting-trust lines", "prompt renders"]},
+        {"id": "P3-S2", "title": "rc byte-stability + theme identity across terminals (niu#168 killer)", "guards": ["niu#168"], "priority": 1, "feasibility": "conpty", "expected_today": "red (niu#168 OPEN)", "known_fail_id": "wt73-168-theme-rebound", "script": ["snapshot ~/.niubashrc bytes after J2", "source ~/.niubashrc in a live session", "open two fresh terminals", "snapshot bytes after each"], "assertions": ["rc bytes identical after every source/terminal", "OSH_THEME/BASH_IT_THEME still 'powerline-multiline' and unchanged", "the string 'selection materialized' never appears during an unchanged-spec source/startup", "terminal 2's first prompt row equals terminal 1's modulo clock digits"]},
+        {"id": "P3-S3", "title": "first-key integrity as product behavior (niu#167 anti-masking)", "guards": ["niu#167"], "priority": 1, "feasibility": "conpty+wake-flag", "expected_today": "green expected after 1.3.3 typeahead guard; red here means a regression", "known_fail_id": null, "script": ["idle the themed prompt >=1.2s (>=1 clock repaint)", "send 'echo' with wake disabled for this one probe"], "assertions": ["the full word executes (usage output or silent success)", "never 'cho: command not found'"]},
+        {"id": "P3-S4", "title": "aged state: damaged tree + bootstrap-failures ledger", "guards": ["changelog 1.3.1 F5", "plugins-guide 'tree missing' contract"], "priority": 1, "feasibility": "conpty+seed", "expected_today": "unknown (verify)", "known_fail_id": null, "script": ["rename a file inside a trusted installed tree", "seed a bootstrap-failures.toml entry for a declared-but-missing origin", "open a fresh terminal", "niu plugin sync", "open another fresh terminal"], "assertions": ["prompt within 10s with at most the documented one-line notices (deferred / 'tree missing - repair with niu plugin restore <id>')", "guarded loader no-ops silently (no error storm)", "explicit sync retries and repairs", "the terminal after repair is silent"]}
+      ]
+    },
+    {
+      "id": "P4",
+      "title": "re-running setup + switching themes",
+      "current_gate_status": "not covered",
+      "steps": [
+        {"id": "P4-S1", "title": "re-run `niu setup` on an existing install (rerun_wizard)", "guards": ["niu#168 entry door", "niu#157", "niu#159"], "priority": 1, "feasibility": "conpty", "expected_today": "unknown (verify)", "known_fail_id": null, "script": ["on the P3-state sandbox: run `niu setup` again", "complete the wizard picking a theme"], "assertions": ["wizard completes", "ends with exactly one theme state: freshly picked theme active in rc AND spec AND rendered prompt - never a third state", "zero syntax errors"]},
+        {"id": "P4-S2", "title": "theme switch A->B->A", "guards": ["niu#168", "niu#143"], "priority": 1, "feasibility": "conpty", "expected_today": "unknown (verify)", "known_fail_id": null, "script": ["wizard gallery: pick powerline-multiline (A) -> new terminal", "re-run wizard: pick edsonarios (B) -> new terminal", "re-run wizard: pick A again -> new terminal"], "assertions": ["after each pick the new terminal renders THAT theme (prompt shape + rc variable agree)", "returning to A restores the managed block byte-identically"]},
+        {"id": "P4-S3", "title": "execute the undo receipts", "guards": ["setup-journal contract (setup_wizard.rs:32 `niu plugin rollback` family)"], "priority": 2, "feasibility": "conpty", "expected_today": "unknown (verify)", "known_fail_id": null, "script": ["read the exact undo verbs from ~/.niubash/setup-journal.toml / the finish screen", "execute them"], "assertions": ["rc/spec/registry return to the pre-wizard state (restored or absent)", "re-running the wizard afterwards succeeds", "nothing resurrects at the next sync"]},
+        {"id": "P4-S4", "title": "dual-framework same-name theme routing", "guards": ["niu#168 mechanics", "wt61 G2 family"], "priority": 1, "feasibility": "conpty", "expected_today": "red (niu#168 OPEN)", "known_fail_id": "wt73-168-theme-rebound", "script": ["with full (OMB + bash-it installed): wizard-pick powerbash10k", "source", "open a second terminal"], "assertions": ["exactly one framework's block activates it", "spec framework attribution agrees with the rc guard block", "second terminal does not flip the framework"]},
+        {"id": "P4-S5", "title": "theme breadth smoke (~8 gallery themes, one per family)", "guards": ["rubash#416", "rubash#417", "rubash#418", "rubash#420", "rubash#421", "rubash#422"], "priority": 2, "feasibility": "conpty", "expected_today": "partially red (register per-theme KNOWN_FAILs with rubash issue ids)", "known_fail_id": null, "script": ["for each of edsonarios, hawaii50, brainy, iterate, powerbash10k, ...: enable via `niu plugin enable <theme>` (or wizard re-pick) in a throwaway session"], "assertions": ["zero syntax errors per theme", "prompt renders per theme", "known-bad themes register as KNOWN_FAILs naming their rubash issues"]}
+      ]
+    },
+    {
+      "id": "P5",
+      "title": "daily battery under adversarial conditions",
+      "current_gate_status": "partial (J5): 4 tiny commands, happy network only",
+      "steps": [
+        {"id": "P5-S1", "alias": "J5", "title": "the 4-command battery", "guards": [], "priority": null, "feasibility": "conpty", "expected_today": "green", "known_fail_id": null, "script": ["ls | wc -l", "echo hi | cat -n", "cd ~ && pwd", "[[ a != b ]] && echo ok"], "assertions": ["each produces output", "theme owns the prompt", "alive after each"]},
+        {"id": "P5-S2", "title": "volume battery", "guards": ["niu#155", "niu#158"], "priority": 2, "feasibility": "conpty", "expected_today": "green expected (fixed 1.3.x); red here is a regression", "known_fail_id": null, "script": ["seq 200000 | wc -l", "seq 20000 | cat"], "assertions": ["exact count 200000 (no silent EPIPE loss)", "cat returns (no permanent hang)"]},
+        {"id": "P5-S3", "title": "merged-redirect battery", "guards": ["niu#144"], "priority": 3, "feasibility": "conpty", "expected_today": "unknown (verify)", "known_fail_id": null, "script": ["ls nofile 2>&1 | wc -l", "echo out 2>&1 | grep out"], "assertions": ["count 1", "stderr reaches the pipe once, ordered, not withheld"]},
+        {"id": "P5-S4", "title": "git-repo cd", "guards": ["niu#147", "rubash#423"], "priority": 2, "feasibility": "conpty", "expected_today": "unknown (verify; #147 fixed by 395d20a - assert stays green)", "known_fail_id": null, "script": ["mkdir r && cd r && git init -q", "observe next prompt", "cd r && ls"], "assertions": ["prompt renders, no 'unexpected EOF', no stray ')'", "ls lists r's contents (children see the current cwd)"]},
+        {"id": "P5-S5", "title": "failing expansions exit codes", "guards": ["niu#154", "niu#163"], "priority": 3, "feasibility": "subproc", "expected_today": "green expected (fixed); red is a regression", "known_fail_id": null, "script": ["niu -c 'set -u; echo $x'"], "assertions": ["diagnostic printed", "exit code 1 (GNU parity)"]},
+        {"id": "P5-S6", "title": "env-sensitive child / TUI", "guards": ["niu#162"], "priority": 3, "feasibility": "conpty", "expected_today": "unknown (verify)", "known_fail_id": null, "script": ["niu -c 'env'", "if `less` on PATH: page a file and quit"], "assertions": ["no mangled drive-paths (the 'B:/~BUN' shape) in child env", "TUI exits, prompt alive (skip-if-absent)"]},
+        {"id": "P5-S7", "title": "startup under broken network", "guards": ["five TLS-burned release runs 2026-10-03", "changelog 1.3.1 F5/F6"], "priority": 1, "feasibility": "conpty+netfail", "expected_today": "unknown (verify)", "known_fail_id": null, "script": ["declare a source that is not yet fetched", "break_network()", "open a fresh terminal", "niu plugin sync (still dead)", "heal_network()", "niu plugin sync", "open another fresh terminal"], "assertions": ["prompt within 10s with exactly the one-line deferred/failed notices - no hang, no re-fetch storm", "sync while dead reports per-source failure readably", "healed sync repairs and clears the ledger", "final terminal silent"]}
+      ]
+    },
+    {
+      "id": "P6",
+      "title": "trust lifecycle",
+      "current_gate_status": "partial (J6): one source trusted once",
+      "steps": [
+        {"id": "P6-S1", "alias": "J6", "title": "trust + activate bash-completion", "guards": ["KNOWN_FAIL wt56-bash-completion-syntax"], "priority": null, "feasibility": "conpty", "expected_today": "green", "known_fail_id": null, "script": ["niu plugin trust bash-completion", "source ~/.niubashrc", "fresh terminal"], "assertions": ["trusted", "zero syntax errors", "_init_completion loaded"]},
+        {"id": "P6-S2", "title": "trust a second source while one is active", "guards": ["niu#168 dual-active world"], "priority": 2, "feasibility": "conpty", "expected_today": "unknown (verify)", "known_fail_id": null, "script": ["niu plugin trust bash-preexec (untrusted since J2)", "source ~/.niubashrc", "fresh terminal"], "assertions": ["both sources active", "zero errors", "both awaiting-trust notices gone"]},
+        {"id": "P6-S3", "title": "remove a source with active assets", "guards": ["changelog 1.3.1 F4 (no resurrection)"], "priority": 1, "feasibility": "conpty", "expected_today": "unknown (verify)", "known_fail_id": null, "script": ["niu plugin source remove bash-completion", "open a fresh terminal", "niu plugin sync"], "assertions": ["rc re-materialized without its loader line", "spec declaration dropped", "fresh terminal clean", "no resurrection at the next sync"]},
+        {"id": "P6-S4", "title": "checksum tier: damaged trusted tree + restore", "guards": ["plugins-guide trust tier + 'tree missing' contract"], "priority": 2, "feasibility": "conpty+seed", "expected_today": "unknown (verify)", "known_fail_id": null, "script": ["rename a file inside the trusted tree", "fresh terminal", "niu plugin restore <id>", "fresh terminal"], "assertions": ["startup silent or the documented repair line - never an error storm", "restore rebuilds from the pin", "next terminal loads the source again"]}
+      ]
+    },
+    {
+      "id": "P7",
+      "title": "spec hand-editing",
+      "current_gate_status": "not covered",
+      "steps": [
+        {"id": "P7-S1", "title": "hand-edit spec -> sync -> idempotent second sync", "guards": ["plugins-guide 'hand-edit the spec' contract"], "priority": 1, "feasibility": "conpty", "expected_today": "unknown (verify)", "known_fail_id": null, "script": ["hand-add an enable entry to ~/.niubash/plugins.toml", "niu plugin sync", "niu plugin sync again"], "assertions": ["first sync materializes it into the rc", "second sync byte-identical no-op"]},
+        {"id": "P7-S2", "title": "hand-added rc line survives sync", "guards": ["plugins-guide merge semantics (hand_added u next(spec))"], "priority": 1, "feasibility": "conpty", "expected_today": "unknown (verify)", "known_fail_id": null, "script": ["hand-add a marker line inside the managed rc block", "niu plugin sync"], "assertions": ["marker survives", "spec's own set intact"]},
+        {"id": "P7-S3", "title": "corrupt spec: readable failure, startup never wedges", "guards": ["hang class (niu#145 family) via plugin path"], "priority": 1, "feasibility": "conpty", "expected_today": "unknown (verify)", "known_fail_id": null, "script": ["write invalid TOML into plugins.toml", "niu plugin sync", "open a fresh terminal"], "assertions": ["sync fails with a readable error and does NOT destructively rewrite the rc", "fresh terminal reaches a prompt within 10s"]},
+        {"id": "P7-S4", "title": "unmanaged (hand-set) theme survives sync", "guards": ["niu#168 inverse invariant", "plugins-guide 'unmanaged' contract"], "priority": 1, "feasibility": "conpty", "expected_today": "unknown (verify)", "known_fail_id": null, "script": ["drop the theme key from the spec", "hand-set OSH_THEME in the rc", "niu plugin sync", "fresh terminal"], "assertions": ["hand theme survives", "sync never rewrites it"]}
+      ]
+    },
+    {
+      "id": "P8",
+      "title": "plugin add/remove/update cycles with live themes",
+      "current_gate_status": "not covered",
+      "steps": [
+        {"id": "P8-S1", "title": "add a wild source while themes are active", "guards": ["plugins-guide three-ways-to-add"], "priority": 2, "feasibility": "conpty", "expected_today": "unknown (verify)", "known_fail_id": null, "script": ["niu plugin add <small-wild-repo>", "niu plugin trust <id>", "niu plugin enable <id>/<file>", "source ~/.niubashrc"], "assertions": ["add installs untrusted", "trust review names origin/checksum", "enabled file sources clean alongside the active theme"]},
+        {"id": "P8-S2", "title": "update a source with an active theme", "guards": ["lockfile verb contracts"], "priority": 2, "feasibility": "conpty", "expected_today": "unknown (verify)", "known_fail_id": null, "script": ["niu plugin update <id>"], "assertions": ["pin moves to ref tip", "theme still active", "rc block unchanged byte-for-byte"]},
+        {"id": "P8-S3", "title": "rollback/restore round-trip", "guards": ["lockfile verb contracts"], "priority": 2, "feasibility": "conpty", "expected_today": "unknown (verify)", "known_fail_id": null, "script": ["niu plugin rollback <id>", "niu plugin restore <id>"], "assertions": ["tree returns to the prior pin", "enablement unchanged", "fresh terminal clean"]},
+        {"id": "P8-S4", "title": "remove the source providing the ACTIVE theme", "guards": ["niu#168 family (selection referencing a missing tree)", "changelog 1.3.1 F4"], "priority": 1, "feasibility": "conpty", "expected_today": "unknown (verify)", "known_fail_id": null, "script": ["niu plugin source remove <theme-bearing-source>", "fresh terminal", "re-add + re-enable"], "assertions": ["guarded loader no-ops, prompt falls back cleanly, no syntax-error storm", "spec declaration dropped (no resurrection)", "re-add + enable restores the theme"]}
+      ]
+    },
+    {
+      "id": "P9",
+      "title": "upgrade / migration first run",
+      "current_gate_status": "not covered",
+      "steps": [
+        {"id": "P9-S1", "title": "imperative-mode migration (pre-1.3.1 state)", "guards": ["changelog 1.3.1 F1-F4"], "priority": 1, "feasibility": "conpty+seed", "expected_today": "unknown (verify; F1-F4 fixed in 1.3.1 - assert stays green)", "known_fail_id": null, "script": ["seed: registry.toml + installed sources, NO plugins.toml", "first terminal", "niu plugin sync", "niu plugin sync --adopt", "niu plugin sync"], "assertions": ["first run: no 'installed but not declared' nag (F1)", "sync prints the migration one-liner (F3)", "--adopt snapshots enablement + theme (F2)", "following plain sync is a byte-stable no-op"]},
+        {"id": "P9-S2", "title": "old rc + new binary", "guards": ["niu#103/#106/#139/#140 version-regression family"], "priority": 2, "feasibility": "conpty+seed", "expected_today": "unknown (verify)", "known_fail_id": null, "script": ["seed a 1.2.x-era ~/.niubashrc (pre-spec generator shape)", "fresh terminal"], "assertions": ["rc loads with zero syntax errors", "aliases work", "the binary never silently rewrites the file behind the user's back"]},
+        {"id": "P9-S3", "title": "bootstrap-failures ledger from a previous version", "guards": ["changelog 1.3.1 F5"], "priority": 2, "feasibility": "conpty+seed", "expected_today": "unknown (verify)", "known_fail_id": null, "script": ["seed bootstrap-failures.toml with a stale origin", "fresh terminal", "niu plugin sync"], "assertions": ["startup defers with one line, no fetch churn", "explicit sync retries"]}
+      ]
+    },
+    {
+      "id": "P10",
+      "title": "multi-day drift",
+      "current_gate_status": "not covered",
+      "steps": [
+        {"id": "P10-S1", "title": "timezone drift", "guards": ["niu#167 across sessions"], "priority": 3, "feasibility": "conpty+env", "expected_today": "unknown (verify)", "known_fail_id": null, "script": ["spawn with TZ=Pacific/Auckland", "run the P3-S3 first-key probe"], "assertions": ["clock segment renders", "prompt alive", "first-key probe passes under the other TZ"]},
+        {"id": "P10-S2", "title": "degraded PATH (winuxcmd stripped)", "guards": ["niu#150 startup-validation behavior"], "priority": 2, "feasibility": "conpty+env", "expected_today": "unknown (verify)", "known_fail_id": null, "script": ["spawn with the winuxcmd directory stripped from PATH"], "assertions": ["startup degrades with the documented validation message", "never a silent wrong-shell or bare crash"]},
+        {"id": "P10-S3", "title": "long-lived terminal (idle + scrollback)", "guards": ["niu#167 across long idle"], "priority": 3, "feasibility": "conpty", "expected_today": "unknown (verify)", "known_fail_id": null, "script": [">=30s idle against the per-second clock", "generate a few hundred scrolled lines", "first-key probe"], "assertions": ["prompt alive", "scrollback sane", "first-key probe passes"]},
+        {"id": "P10-S4", "title": "MSYS-parent environment (partial)", "guards": ["niu#141"], "priority": 3, "feasibility": "conpty+env", "expected_today": "partial by construction (env-only)", "known_fail_id": null, "script": ["spawn with MSYSTEM=MINGW64 + MSYS-flavored PATH"], "assertions": ["external applets spawn", "pipes not silently empty", "NOTE: full shape (real MSYS parent) needs a parent-process driver capability; marked explicitly partial"]}
+      ]
+    }
+  ],
+  "coverage_matrix": [
+    {"phase": "P1", "current": "covered (J1-J2) + gaps", "gap": "decline path, per-question input integrity (#85), undo execution"},
+    {"phase": "P2", "current": "covered (J3) + gaps", "gap": "real-terminal env (#117/#141), -c/flags (#160/#148)"},
+    {"phase": "P3", "current": "partial (J4)", "gap": "state stability not asserted (#168 green-through); #167 masked; aged state unseeded"},
+    {"phase": "P4", "current": "not covered", "gap": "setup re-run, theme A->B->A, undo receipts, dual-framework routing, theme breadth"},
+    {"phase": "P5", "current": "partial (J5)", "gap": "volume (#155/#158), 2>&1 (#144), git-repo cd (#147), failing expansion, TUI child, broken network"},
+    {"phase": "P6", "current": "partial (J6)", "gap": "second trust, removal-with-active-assets, checksum mismatch"},
+    {"phase": "P7", "current": "not covered", "gap": "hand-edit + sync, corrupt TOML startup, unmanaged theme"},
+    {"phase": "P8", "current": "not covered", "gap": "add/update/rollback/remove-with-active-theme (F4 resurrection shipped here)"},
+    {"phase": "P9", "current": "not covered", "gap": "imperative-mode migration (F1-F4), old rc, old ledger"},
+    {"phase": "P10", "current": "not covered", "gap": "TZ/PATH/idle/parent-env drift"}
+  ],
+  "top_gaps_by_blast_radius": ["P3-S2", "P4-S1", "P4-S2", "P5-S7", "P3-S3", "P7-S1", "P7-S3", "P6-S3", "P8-S4", "P4-S4", "P9-S1", "P5-S2", "P2-S3"],
+  "lanes": [
+    {"id": "W1", "name": "persistence", "wave": 1, "phases": ["P3", "P8-S4"], "steps": ["P3-S2", "P3-S3", "P3-S4", "P8-S4"], "lands_capabilities": ["wake-flag", "seed"], "rationale": "one theme: state across terminals; both P0s (#168, #167) live here"},
+    {"id": "W2", "name": "wizard+spec", "wave": 1, "phases": ["P4", "P7"], "steps": ["P4-S1", "P4-S2", "P4-S3", "P4-S4", "P4-S5", "P7-S1", "P7-S2", "P7-S3", "P7-S4"], "lands_capabilities": [], "rationale": "both mutate selection state through wizard/sync; shares the gallery-walk machinery"},
+    {"id": "W3", "name": "network+trust", "wave": 2, "phases": ["P5-S7", "P6"], "steps": ["P5-S7", "P6-S2", "P6-S3", "P6-S4"], "lands_capabilities": ["netfail"], "rationale": "trust and fetch-failure share the sources/registry subsystem"},
+    {"id": "W4", "name": "envelope", "wave": 2, "phases": ["P2", "P5", "P9", "P10"], "steps": ["P2-S2", "P2-S3", "P5-S2", "P5-S3", "P5-S4", "P5-S5", "P5-S6", "P9-S1", "P9-S2", "P9-S3", "P10-S1", "P10-S2", "P10-S3", "P10-S4"], "lands_capabilities": ["env-per-session", "subproc"], "rationale": "everything that varies the environment rather than the state files; reuses W1's seed helper"}
+  ]
+}
