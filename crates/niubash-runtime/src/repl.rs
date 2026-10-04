@@ -1165,9 +1165,21 @@ pub fn run_repl(shell: Shell) -> anyhow::Result<()> {
         print_first_run_hint();
     }
 
+    // Typeahead guard (niubash#167): from here until the first (and every)
+    // `read_line`, console input typed while the shell runs prompt
+    // machinery is swept out of the shared console input queue — probing
+    // children spawned by the rc bootstrap or PROMPT_COMMAND would
+    // otherwise eat the first typed key — and reinjected, in order, right
+    // before the editor reads. Armed here so startup rc children are
+    // covered too; disarmed while a foreground command executes (the
+    // command owns the terminal) and re-armed at the top of every loop
+    // iteration for the pre-prompt stretch.
+    let mut typeahead = crate::typeahead_guard::TypeaheadGuard::disarmed();
+    typeahead.arm();
     shell.borrow_mut().run_startup_rc();
     let no_editing = shell.borrow().no_editing;
     if no_editing {
+        typeahead.disarm_and_reinject();
         return run_repl_without_line_editor(&mut shell.borrow_mut());
     }
     // User widget bindings and completion functions come from the rc
@@ -1180,16 +1192,23 @@ pub fn run_repl(shell: Shell) -> anyhow::Result<()> {
 
     loop {
         crate::console_guard::restore(&console_baseline);
+        typeahead.arm();
         let signal = if pending.is_empty() {
             drain_pending_notices();
             shell.borrow_mut().run_precmd_hooks();
             let prompt = shell.borrow().prompt.clone();
+            typeahead.disarm_and_reinject();
             line_editor.read_line(&prompt)
         } else {
             let prompt = shell.borrow().prompt.clone();
             let prompt = ContinuationPrompt::new(&prompt);
+            typeahead.disarm_and_reinject();
             line_editor.read_line(&prompt)
         };
+        // The foreground command (or widget/exit path) below owns the
+        // terminal: the guard stays disarmed until the next prompt
+        // rebuild at the top of the loop.
+        typeahead.disarm_and_reinject();
 
         match signal {
             Ok(Signal::Success(buffer)) => {
