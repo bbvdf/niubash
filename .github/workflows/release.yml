@@ -650,9 +650,115 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # Per-asset timing budget gate (owner directive 2026-10-04): EVERY theme
+  # and plugin asset of every trusted source gets a measured time on every
+  # release; any asset over its budget in scripts/perf/budgets.toml FAILS
+  # the release. Same discipline as the journey gate: the CURRENT gate runs
+  # against the tag's own build, with the asset sources pinned so measured
+  # numbers stay comparable to the committed baseline
+  # (scripts/perf/baselines/asset-timing-baseline.json).
+  perfbudget:
+    name: per-asset timing budget (release gate)
+    runs-on: windows-2025
+    timeout-minutes: 75
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Checkout rubash path dependency
+        run: git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/unixwin/rubash.git ../rubash
+
+      - name: Resolve release inputs
+        id: release
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ inputs.tag }}"
+          } else {
+            $tag = "${{ github.ref_name }}"
+          }
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Invalid release tag '$tag'"
+          }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      # Preserve the CURRENT gate before checking out the tag (old tags
+      # predate it), exactly like the journey job.
+      - name: Preserve current perfbudget gate
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path (Join-Path $env:RUNNER_TEMP "perf") | Out-Null
+          Copy-Item -Recurse -LiteralPath scripts/perf -Destination (Join-Path $env:RUNNER_TEMP "perf") -Force
+
+      - name: Checkout release tag
+        shell: pwsh
+        run: |
+          git fetch --tags --force
+          git checkout "${{ steps.release.outputs.tag }}"
+          if (Test-Path scripts/perf) { Remove-Item -Recurse -Force scripts/perf }
+          Copy-Item -Recurse -LiteralPath (Join-Path $env:RUNNER_TEMP "perf\perf") scripts/perf
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1.11
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Build niu from the tag's own source
+        run: cargo build --locked --release
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install perfbudget dependencies
+        run: pip install pywinpty pyte
+
+      # Pinned trusted sources — the SAME revisions the committed baseline
+      # measured (ohmybash/oh-my-bash @ abf8461, Bash-it/bash-it @ 4725d29).
+      # Bumping these pins changes every measured number and MUST come with
+      # a re-recorded baseline in the same change. Fetch-by-SHA so the pin
+      # stays honest even after the upstream branches move on.
+      - name: Checkout pinned asset sources
+        shell: pwsh
+        run: |
+          git init ..\oh-my-bash
+          git -C ..\oh-my-bash remote add origin https://github.com/ohmybash/oh-my-bash
+          git -C ..\oh-my-bash fetch --depth 1 origin abf8461
+          git -C ..\oh-my-bash checkout --quiet FETCH_HEAD
+          git init ..\bash-it
+          git -C ..\bash-it remote add origin https://github.com/Bash-it/bash-it
+          git -C ..\bash-it fetch --depth 1 origin 4725d29
+          git -C ..\bash-it checkout --quiet FETCH_HEAD
+
+      - name: Run the per-asset timing budget gate
+        shell: pwsh
+        run: |
+          git checkout origin/master -- scripts/perf
+          python scripts/perf/asset-timing.py `
+            --niu (Resolve-Path target/release/niu.exe) `
+            --omb (Resolve-Path ..\oh-my-bash) `
+            --bash-it (Resolve-Path ..\bash-it) `
+            --run-dir "$env:RUNNER_TEMP\perfbudget-run" `
+            --compare-baseline scripts/perf/baselines/asset-timing-baseline.json `
+            --out perfbudget-artifacts/asset-timing.json
+
+      - name: Upload perfbudget verdict
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: perfbudget-verdict
+          path: perfbudget-artifacts
+          if-no-files-found: error
+          retention-days: 14
+
   release:
     runs-on: ubuntu-latest
-    needs: [build-windows, build-linux, build-macos, journey]
+    needs: [build-windows, build-linux, build-macos, journey, perfbudget]
     steps:
       - uses: actions/checkout@v4.2.2
 
