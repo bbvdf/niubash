@@ -62,6 +62,20 @@ Fields:
 | `enable` | Enabled assets in the manager's own vocabulary: OMB rc arrays, bash-it `enabled/` entries, per-file source lines for wild/bpkg. |
 | `theme` | Theme pick. Absent means "unmanaged": a hand-set theme variable survives syncs. `theme = ''` explicitly clears it. |
 
+**Theme ownership is exclusive.** The same theme name can ship in several
+frameworks (powerbash10k exists in oh-my-bash AND bash-it), so a theme pick
+made through the setup wizard/gallery or `niu plugin enable <theme>` claims
+the name for exactly one source — it writes the picked entry's `id` + `theme`
+and moves the claim away from any other entry (a claimant left with no other
+selection loses its declaration, and sync then drops its activation block).
+If a spec still carries a stale claim (an older version wrote the rc without
+updating the spec, or a hand edit), the next `niu plugin sync` reconciles it
+toward the rc's live state — the working theme block never flips; sync clears
+the stale claim and prints the `reconciled` row naming the owner. The floor
+(§14.5: a declared source is active even with an empty selection) yields to a
+claimed theme: a source with no selection of its own does not load its
+framework on top of another source's claimed theme.
+
 The spec declares *what should exist*; the registry
 (`~/.niubash/sources/registry.toml`, schema `@0.3.0`) locks *what exists*
 (commit + tree checksum pins) and remembers the last selection the spec

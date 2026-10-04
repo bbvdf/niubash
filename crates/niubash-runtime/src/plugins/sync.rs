@@ -14,6 +14,11 @@
 //! 2. **declared, installed, trusted** → materialize the managed rc block
 //!    / enabled tree *from the spec*, idempotently (`plugins::assets::
 //!    materialize_spec_selection`, hand-added entries preserved);
+//!    immediately before this pass, theme claims are reconciled to a
+//!    single owner toward the rc's live state (niubash#168): a theme pick
+//!    written to the rc + spec is the user's latest expressed choice, so a
+//!    stale same-name claim is cleared — never re-routed over a working
+//!    theme block — and sync prints what it reconciled;
 //! 3. **installed, not declared** → suggest cleanup, never auto-delete
 //!    (`--prune` removes them explicitly);
 //! 4. **spec absent** → legacy imperative mode: nothing to reconcile; sync
@@ -25,6 +30,8 @@
 //! startup form (clean machine → zero output), wired into the rc by the
 //! setup wizard as a single bootstrap line. Startup installs that fail are
 //! memoized and deferred on later startups — only explicit verbs retry.
+
+use std::collections::BTreeMap;
 
 use super::assets;
 use super::sources::{
@@ -236,6 +243,38 @@ fn sync_with_spec(
     // (the same tree declared under two spellings); dropped after the pass.
     let mut merged: Vec<usize> = Vec::new();
 
+    // Theme-claim reconciliation (niubash#168) runs BEFORE materialization:
+    // a theme pick written to the rc + spec is the user's latest expressed
+    // choice, so a stale same-name claim must never re-materialize the old
+    // framework's block over it. Reconciliation happens here, toward the
+    // rc's live state — never by flipping a working theme block.
+    for reconciliation in reconcile_theme_claims(&mut spec, &registry) {
+        spec_changed = true;
+        rows.push(SyncRow {
+            id: reconciliation.id,
+            action: "reconciled".to_string(),
+            detail: reconciliation.detail,
+        });
+    }
+
+    // The niubash#168 floor-yield input, per entry: does any OTHER entry
+    // claim a theme? A selection-less source then leaves its framework
+    // floor dormant instead of loading it on top of the claimed theme.
+    let theme_claimed_elsewhere: Vec<bool> = spec
+        .sources
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            spec.sources.iter().enumerate().any(|(other, other_entry)| {
+                other != index
+                    && other_entry
+                        .theme
+                        .as_deref()
+                        .is_some_and(|theme| !theme.is_empty())
+            })
+        })
+        .collect();
+
     for (entry_index, entry) in spec.sources.iter_mut().enumerate() {
         let (catalog_hint, origin) = match resolve_spec_origin(&entry.target) {
             Ok(resolved) => resolved,
@@ -379,7 +418,14 @@ fn sync_with_spec(
 
         // Materialize the spec selection (idempotent; hand-added entries
         // preserved) and persist the materialized state into the lock.
-        match assets::materialize_spec_selection(&record, entry) {
+        match assets::materialize_spec_selection(
+            &record,
+            entry,
+            theme_claimed_elsewhere
+                .get(entry_index)
+                .copied()
+                .unwrap_or(false),
+        ) {
             Ok(materialized) => {
                 let mut updated = record.clone();
                 updated.spec_enabled = Some(materialized.spec_enabled.unwrap_or_default());
@@ -470,6 +516,128 @@ fn sync_with_spec(
     };
     report.clean = report.compute_clean();
     Ok(report)
+}
+
+// ── Theme-claim reconciliation (niubash#168) ─────────────────────────────────
+//
+// The same theme name can exist in several frameworks (powerbash10k ships
+// in oh-my-bash AND bash-it). When the spec disagrees about WHICH source
+// owns a theme — two entries claiming it, or one entry claiming it while
+// another source's rc block already displays it — the claim is resolved to
+// exactly one owner and every loser is reconciled toward the rc's live
+// state: the winner keeps (or is) the working block, a loser's claim is
+// cleared, and a loser that declared the theme and nothing else has its
+// declaration removed so the next pass drops its activation. Sync never
+// re-routes a working theme block; it reports what it reconciled.
+
+struct ThemeReconciliation {
+    id: String,
+    detail: String,
+}
+
+/// One spec entry's standing in the theme-ownership picture.
+struct ThemeClaimMember {
+    /// Index into `spec.sources`.
+    index: usize,
+    /// The entry's identifying id/target (for the reconciliation row).
+    id: String,
+    /// The registry record id (for the framework priority ranking).
+    record_id: String,
+    /// The theme the record's managed rc block currently carries.
+    live_theme: Option<String>,
+    /// The entry's non-empty spec claim, if any (`theme = ''` is an
+    /// explicit "no theme here" and never joins a group).
+    claim: Option<String>,
+}
+
+fn reconcile_theme_claims(
+    spec: &mut PluginSpec,
+    registry: &[SourceRecord],
+) -> Vec<ThemeReconciliation> {
+    let mut members: Vec<ThemeClaimMember> = Vec::new();
+    for (index, entry) in spec.sources.iter().enumerate() {
+        let Some(record) = record_for_entry(entry, registry) else {
+            continue;
+        };
+        // The same gate materialization applies: only a trusted, healthy
+        // source has a meaningful live state.
+        if !record.trusted || !record.path.is_dir() {
+            continue;
+        }
+        let live_theme = assets::live_managed_theme(record);
+        members.push(ThemeClaimMember {
+            index,
+            id: entry.id.clone().unwrap_or_else(|| entry.target.clone()),
+            record_id: record.id.clone(),
+            live_theme,
+            claim: entry.theme.clone().filter(|theme| !theme.is_empty()),
+        });
+    }
+    // Group the members by theme name: every claimant, plus entries with no
+    // claim whose live block already displays the name (the rc's live
+    // expression of a pick — e.g. the wizard's write — joins the group it
+    // contradicts).
+    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (member_index, member) in members.iter().enumerate() {
+        if let Some(theme) = &member.claim {
+            groups.entry(theme.clone()).or_default().push(member_index);
+        } else if member.claim.is_none() {
+            if let Some(live) = &member.live_theme {
+                groups.entry(live.clone()).or_default().push(member_index);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut dropped: Vec<usize> = Vec::new();
+    for (theme, group) in groups {
+        if group.len() < 2 {
+            continue;
+        }
+        // The owner: rc live evidence first, then an explicit spec claim
+        // over a bare live block, then the framework priority
+        // (`sources::primary_theme_source_rank` — oh-my-bash, the primary
+        // external framework, matching the wt61 G2 gallery rank), then the
+        // spec's declaration order.
+        let mut ranked = group;
+        ranked.sort_by(|&a, &b| {
+            let key = |m: usize| (members[m].live_theme.is_some(), members[m].claim.is_some());
+            key(b)
+                .cmp(&key(a))
+                .then_with(|| {
+                    sources::primary_theme_source_rank(&members[a].record_id)
+                        .cmp(&sources::primary_theme_source_rank(&members[b].record_id))
+                })
+                .then_with(|| a.cmp(&b))
+        });
+        let winner = &members[ranked[0]];
+        for &member_index in &ranked[1..] {
+            let member = &members[member_index];
+            // Live-joiners claim nothing — there is nothing to reconcile.
+            let Some(_claim) = &member.claim else {
+                continue;
+            };
+            let entry = &mut spec.sources[member.index];
+            entry.theme = Some(String::new());
+            let removed = entry.enable.is_empty();
+            let mut detail = format!(
+                "theme '{theme}' is owned by {} — stale claim cleared (the rc's live \
+                 state and the latest user pick win)",
+                winner.record_id
+            );
+            if removed {
+                dropped.push(member.index);
+                detail.push_str("; declaration removed (it carried the theme only)");
+            }
+            out.push(ThemeReconciliation {
+                id: member.id.clone(),
+                detail,
+            });
+        }
+    }
+    for index in dropped.into_iter().rev() {
+        spec.sources.remove(index);
+    }
+    out
 }
 
 fn write_record(registry: &mut Vec<SourceRecord>, updated: SourceRecord) {
@@ -709,6 +877,39 @@ mod tests {
 
     fn write_wild_fixture(root: &Path) {
         fs::write(root.join("pre.sh"), "pre_fun() { echo pre; }\n").unwrap();
+    }
+
+    /// The niubash#168 shape: the SAME theme name shipped by BOTH frameworks
+    /// (powerbash10k lives in oh-my-bash and bash-it; the fixtures use
+    /// `demox`, the journey's shared name).
+    fn write_bash_it_shared_theme_fixture(root: &Path) {
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::create_dir_all(root.join("themes/demox")).unwrap();
+        fs::write(
+            root.join("bash_it.sh"),
+            "#!/usr/bin/env bash\nfor _f in \"$BASH_IT/enabled\"/*.bash; do [ -r \"$_f\" ] && . \"$_f\"; done\nunset _f\n",
+        )
+        .unwrap();
+        fs::write(root.join("lib/composure.bash"), "# composure\n").unwrap();
+        fs::write(
+            root.join("themes/demox/demox.theme.bash"),
+            "PS1='demox-bit> '\n",
+        )
+        .unwrap();
+    }
+
+    fn write_omb_shared_theme_fixture(root: &Path) {
+        fs::create_dir_all(root.join("themes/demox")).unwrap();
+        fs::write(
+            root.join("oh-my-bash.sh"),
+            "#!/usr/bin/env bash\ncase $- in *i*) ;; *) return;; esac\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("themes/demox/demox.theme.sh"),
+            "omb_theme_demox() { PS1='demox-omb> '; }\nomb_theme_demox\n",
+        )
+        .unwrap();
     }
 
     fn rc_text() -> String {
@@ -1216,6 +1417,292 @@ mod tests {
         let report = sync_spec(SyncOptions::default()).unwrap();
         assert!(report.clean, "{:?}", report);
         assert_eq!(spec_sources().len(), 1);
+
+        let _ = fs::remove_dir_all(&holder);
+        let _ = fs::remove_dir_all(&box_.temp);
+    }
+
+    /// niubash#168 (P0): the theme pick moved to oh-my-bash — the wizard's
+    /// rc write (G2-routed) — but the spec still carries bash-it's era-1
+    /// claim on the SAME shared name, so every sync re-materialized the
+    /// bash-it block and reverted the user's theme. The invariant: a pick
+    /// written to the rc + spec is the user's latest expressed choice; sync
+    /// reconciles a stale claim toward the rc's live state (keeps the
+    /// working OSH block, clears the stale claim, drops the theme-only
+    /// loser's activation) and then stays there byte-stably.
+    #[test]
+    fn stale_theme_claim_reconciles_toward_the_rc_and_stays_there() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let holder = unique_temp_dir("claim-holder");
+        let bit_origin = holder.join("bit");
+        let omb_origin = holder.join("omb");
+        fs::create_dir_all(&bit_origin).unwrap();
+        fs::create_dir_all(&omb_origin).unwrap();
+        write_bash_it_shared_theme_fixture(&bit_origin);
+        write_omb_shared_theme_fixture(&omb_origin);
+        let box_ = sandbox("claim-reconcile");
+
+        // Era 1 (full-collection era): bash-it registered first, the theme
+        // recorded under it. Sync materializes its block and locks it.
+        sources::add_source(SourceInstallRequest {
+            origin: bit_origin.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
+        .unwrap();
+        sources::add_source(SourceInstallRequest {
+            origin: omb_origin.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
+        .unwrap();
+        sources::trust_source("bash-it").unwrap();
+        sources::trust_source("oh-my-bash").unwrap();
+        spec::save_spec(&PluginSpec {
+            schema: None,
+            sources: vec![SpecSource {
+                target: bit_origin.to_string_lossy().into_owned(),
+                id: Some("bash-it".to_string()),
+                kind: None,
+                ref_name: None,
+                theme: Some("demox".to_string()),
+                enable: vec![],
+            }],
+        })
+        .unwrap();
+        sync_spec(SyncOptions::default()).unwrap();
+        assert!(rc_text().contains("BASH_IT_THEME='demox'"), "{}", rc_text());
+
+        // Era 2 (the wizard pick): the rc is wholesale-rewritten to the
+        // oh-my-bash block only, and the spec gains the omb entry (the
+        // adopt snapshot) while bash-it's stale claim survives — the exact
+        // state a 1.3.x wizard run leaves behind.
+        let wizard_block = assets::build_theme_block("oh-my-bash", "demox").expect("theme block");
+        let wizard_rc = format!("# wizard rc\n\n{wizard_block}\n");
+        fs::write(assets::rc_file(), &wizard_rc).unwrap();
+        spec::save_spec(&PluginSpec {
+            schema: None,
+            sources: vec![
+                SpecSource {
+                    target: bit_origin.to_string_lossy().into_owned(),
+                    id: Some("bash-it".to_string()),
+                    kind: None,
+                    ref_name: None,
+                    theme: Some("demox".to_string()),
+                    enable: vec![],
+                },
+                SpecSource {
+                    target: omb_origin.to_string_lossy().into_owned(),
+                    id: Some("oh-my-bash".to_string()),
+                    kind: None,
+                    ref_name: None,
+                    theme: Some("demox".to_string()),
+                    enable: vec![],
+                },
+            ],
+        })
+        .unwrap();
+
+        // Source #1: sync reconciles toward the rc — the OSH block stays
+        // byte-identical, the stale bash-it claim is cleared, and the
+        // theme-only bash-it activation is NOT re-created.
+        let report = sync_spec(SyncOptions::default()).unwrap();
+        assert!(
+            report
+                .rows
+                .iter()
+                .any(|row| row.id == "bash-it" && row.action == "reconciled"),
+            "{:?}",
+            report.rows
+        );
+        assert_eq!(rc_text(), wizard_rc, "the working theme block never flips");
+        assert!(rc_text().contains("OSH_THEME='demox'"), "{}", rc_text());
+        assert!(
+            !rc_text().contains("BASH_IT_THEME"),
+            "the stale claim must not re-materialize: {}",
+            rc_text()
+        );
+        // The spec is updated (the stale claim is gone, the pick is pinned).
+        let declared = spec_sources();
+        assert!(
+            declared
+                .iter()
+                .all(|entry| entry.id.as_deref() != Some("bash-it")),
+            "theme-only loser declaration dropped: {declared:?}"
+        );
+        assert_eq!(declared.len(), 1, "{declared:?}");
+        assert_eq!(declared[0].id.as_deref(), Some("oh-my-bash"));
+        assert_eq!(declared[0].theme.as_deref(), Some("demox"));
+
+        // Source #2: byte-stable, nothing left to do.
+        let report = sync_spec(SyncOptions::default()).unwrap();
+        assert!(
+            report.rows.iter().all(|row| row.action == "unchanged"),
+            "{:?}",
+            report.rows
+        );
+        assert_eq!(rc_text(), wizard_rc, "rc byte-stable across sources");
+
+        let _ = fs::remove_dir_all(&holder);
+        let _ = fs::remove_dir_all(&box_.temp);
+    }
+
+    /// Same-name theme claims pinned in the spec with nothing live yet: the
+    /// exclusive owner is deterministic — oh-my-bash, niu's primary external
+    /// framework (the spec-layer twin of the wt61 G2 gallery rank) — and the
+    /// other framework's theme-only declaration does not materialize a
+    /// competing block.
+    #[test]
+    fn same_name_claims_pin_to_the_primary_framework_before_anything_is_live() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let holder = unique_temp_dir("pin-holder");
+        let bit_origin = holder.join("bit");
+        let omb_origin = holder.join("omb");
+        fs::create_dir_all(&bit_origin).unwrap();
+        fs::create_dir_all(&omb_origin).unwrap();
+        write_bash_it_shared_theme_fixture(&bit_origin);
+        write_omb_shared_theme_fixture(&omb_origin);
+        let box_ = sandbox("claim-pin");
+
+        sources::add_source(SourceInstallRequest {
+            origin: bit_origin.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
+        .unwrap();
+        sources::add_source(SourceInstallRequest {
+            origin: omb_origin.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
+        .unwrap();
+        sources::trust_source("bash-it").unwrap();
+        sources::trust_source("oh-my-bash").unwrap();
+        spec::save_spec(&PluginSpec {
+            schema: None,
+            sources: vec![
+                SpecSource {
+                    target: bit_origin.to_string_lossy().into_owned(),
+                    id: Some("bash-it".to_string()),
+                    kind: None,
+                    ref_name: None,
+                    theme: Some("demox".to_string()),
+                    enable: vec![],
+                },
+                SpecSource {
+                    target: omb_origin.to_string_lossy().into_owned(),
+                    id: Some("oh-my-bash".to_string()),
+                    kind: None,
+                    ref_name: None,
+                    theme: Some("demox".to_string()),
+                    enable: vec![],
+                },
+            ],
+        })
+        .unwrap();
+
+        let report = sync_spec(SyncOptions::default()).unwrap();
+        assert!(
+            report
+                .rows
+                .iter()
+                .any(|row| row.id == "bash-it" && row.action == "reconciled"),
+            "{:?}",
+            report.rows
+        );
+        let rc = rc_text();
+        assert!(rc.contains("OSH_THEME='demox'"), "{rc}");
+        assert!(!rc.contains("BASH_IT_THEME"), "{rc}");
+        let declared = spec_sources();
+        assert_eq!(
+            declared
+                .iter()
+                .find(|entry| entry.id.as_deref() == Some("oh-my-bash"))
+                .and_then(|entry| entry.theme.as_deref()),
+            Some("demox"),
+            "the primary framework keeps the claim: {declared:?}"
+        );
+
+        // Stable across a second sync.
+        let before = rc_text();
+        sync_spec(SyncOptions::default()).unwrap();
+        assert_eq!(rc_text(), before);
+
+        let _ = fs::remove_dir_all(&holder);
+        let _ = fs::remove_dir_all(&box_.temp);
+    }
+
+    /// The defaults-as-floor claim model yields to a claimed theme
+    /// (niubash#168): a declared-but-selection-less source does not
+    /// (re)create its loader-only block when another declared source owns
+    /// the theme — the framework would load on top of the pick and revert
+    /// it. A block that already exists is left byte-stable.
+    #[test]
+    fn floor_does_not_resurrect_a_framework_over_a_claimed_theme() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let holder = unique_temp_dir("floor-holder");
+        let bit_origin = holder.join("bit");
+        let omb_origin = holder.join("omb");
+        fs::create_dir_all(&bit_origin).unwrap();
+        fs::create_dir_all(&omb_origin).unwrap();
+        write_bash_it_shared_theme_fixture(&bit_origin);
+        write_omb_shared_theme_fixture(&omb_origin);
+        let box_ = sandbox("floor-yield");
+
+        sources::add_source(SourceInstallRequest {
+            origin: bit_origin.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
+        .unwrap();
+        sources::add_source(SourceInstallRequest {
+            origin: omb_origin.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
+        .unwrap();
+        sources::trust_source("bash-it").unwrap();
+        sources::trust_source("oh-my-bash").unwrap();
+
+        // The post-pick state: oh-my-bash owns the theme (rc block + spec
+        // claim); bash-it stays declared but selection-less (no claim, no
+        // block — the wizard's rc write removed it).
+        let wizard_block = assets::build_theme_block("oh-my-bash", "demox").expect("theme block");
+        let wizard_rc = format!("# wizard rc\n\n{wizard_block}\n");
+        fs::write(assets::rc_file(), &wizard_rc).unwrap();
+        spec::save_spec(&PluginSpec {
+            schema: None,
+            sources: vec![
+                SpecSource {
+                    target: bit_origin.to_string_lossy().into_owned(),
+                    id: Some("bash-it".to_string()),
+                    kind: None,
+                    ref_name: None,
+                    theme: None,
+                    enable: vec![],
+                },
+                SpecSource {
+                    target: omb_origin.to_string_lossy().into_owned(),
+                    id: Some("oh-my-bash".to_string()),
+                    kind: None,
+                    ref_name: None,
+                    theme: Some("demox".to_string()),
+                    enable: vec![],
+                },
+            ],
+        })
+        .unwrap();
+
+        let report = sync_spec(SyncOptions::default()).unwrap();
+        assert!(
+            report.rows.iter().all(|row| row.action != "activated"),
+            "the floor must not resurrect bash-it over the claimed theme: {:?}",
+            report.rows
+        );
+        let rc = rc_text();
+        assert!(rc.contains("OSH_THEME='demox'"), "{rc}");
+        assert!(
+            !rc.contains("niu source bash-it"),
+            "no bash-it loader block over the claimed theme: {rc}"
+        );
+
+        // Byte-stable across sources.
+        sync_spec(SyncOptions::default()).unwrap();
+        assert_eq!(rc_text(), wizard_rc);
 
         let _ = fs::remove_dir_all(&holder);
         let _ = fs::remove_dir_all(&box_.temp);

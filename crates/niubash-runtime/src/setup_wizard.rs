@@ -367,23 +367,16 @@ fn theme_gallery() -> ThemeGallery {
     external.sort_by(|a, b| {
         a.name
             .cmp(&b.name)
-            .then_with(|| gallery_source_rank(&a.source_id).cmp(&gallery_source_rank(&b.source_id)))
+            .then_with(|| {
+                crate::plugins::sources::primary_theme_source_rank(&a.source_id).cmp(
+                    &crate::plugins::sources::primary_theme_source_rank(&b.source_id),
+                )
+            })
             .then_with(|| a.source_id.cmp(&b.source_id))
     });
     let mut seen = BTreeSet::new();
     external.retain(|entry| seen.insert(entry.name.to_ascii_lowercase()));
     ThemeGallery { entries: external }
-}
-
-/// Priority tier of a theme source for same-name gallery resolution
-/// (lower renders first and wins the dedupe): 0 = oh-my-bash (the primary
-/// external framework), 1 = everything else.
-fn gallery_source_rank(source_id: &str) -> u8 {
-    if source_id == "oh-my-bash" {
-        0
-    } else {
-        1
-    }
 }
 
 /// The theme question itself: option 0 is Skip — described by whatever
@@ -995,6 +988,10 @@ fn run_wizard_inner(reconfigure: bool) -> anyhow::Result<()> {
     }
 
     let backup_path = write_rc_and_mark_done(&home, &cfg, lang)?;
+    // The pick is recorded in the spec too (niubash#168): the rc block and
+    // the spec entry must not disagree about theme ownership, or every
+    // later sync re-materializes the old claim over this choice.
+    record_theme_pick_in_spec(&theme_pick);
 
     // The niu-git question is Windows-only (niu-git is Windows-native git):
     // the Install branch — and the recommendation print — compiles only
@@ -1314,6 +1311,13 @@ fn run_post_install_theme_pick(
             // lands through generate_rc/write_rc_and_mark_done, so undo
             // (`niu plugin disable <theme>`) and rollback cover it.
             let _ = write_rc_and_mark_done(home, cfg, lang);
+            // And the spec claim moves with it (niubash#168) — same reason
+            // as the Q1 path: rc and spec must not disagree about who owns
+            // the theme.
+            record_theme_pick_in_spec(&ThemePick::External {
+                name: name.clone(),
+                source_id: source_id.clone(),
+            });
             Some((name, source_id))
         }
         Some(ThemePick::Keep) => None,
@@ -1752,6 +1756,21 @@ fn print_config_summary(
     );
     println!("  \u{2502}  {}", t.tr("everything else stays untouched"));
     println!();
+}
+
+/// Record an external theme pick in the plugin spec (niubash#168): the rc
+/// block the wizard just wrote and the spec entry must carry the same
+/// ownership, or every later `niu plugin sync` re-materializes the stale
+/// claim and reverts the pick. Failures are printed, never fatal — the rc
+/// pick already landed and the reconciliation pre-pass can still heal a
+/// missed claim on the next sync.
+fn record_theme_pick_in_spec(pick: &ThemePick) {
+    let ThemePick::External { name, source_id } = pick else {
+        return;
+    };
+    if let Err(err) = crate::plugins::assets::claim_theme(source_id, name) {
+        println!("  \u{26a0}\u{fe0f}  could not record the theme pick in the plugin spec: {err:#}");
+    }
 }
 
 /// Write `~/.niubashrc` from `cfg` (backing up any existing file) and create
@@ -2448,6 +2467,99 @@ mod tests {
         assert!(
             rc.contains("# Prompt owned by the bash-it theme 'demox'"),
             "the note must name the pick's actual source: {rc}"
+        );
+
+        let _ = crate::plugins::sources::remove_source("oh-my-bash");
+        let _ = crate::plugins::sources::remove_source("bash-it");
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    /// niubash#168 (P0): the theme pick writes BOTH halves — the rc block
+    /// through `generate_rc`, and the spec claim through
+    /// `record_theme_pick_in_spec` (the helper both the Q1 and the
+    /// post-install pick paths call) — so the rc and the spec cannot
+    /// disagree about theme ownership. The era-1 stale claim on the shared
+    /// name moves with the pick, and every later sync VERIFIES the pick
+    /// (byte-stable rc, theme active) instead of re-routing it.
+    #[test]
+    fn wizard_theme_pick_writes_the_spec_and_survives_sync() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp = unique_temp_dir("wizard-pick-spec");
+        let root = temp.join("sources");
+        let home = temp.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let _sources = EnvGuard::set("NIU_PLUGIN_SOURCES_ROOT", &root.to_string_lossy());
+        let _home = EnvGuard::set("HOME", &host_to_shell_style_path(&home));
+        let _userprofile = EnvGuard::unset("USERPROFILE");
+        let _spec = EnvGuard::set(
+            "NIU_PLUGIN_SPEC",
+            &home.join(".niubash/plugins.toml").to_string_lossy(),
+        );
+        // Register bash-it FIRST: the hostile order is the proof (the old
+        // bug flipped the rc toward whichever source the spec favored).
+        install_trusted_bash_it_fixture(&root);
+        install_trusted_omb_fixture(&root);
+        // One ranking authority for shared theme names — the gallery dedupe
+        // and the spec-layer reconciliation must never disagree.
+        assert_eq!(
+            crate::plugins::sources::primary_theme_source_rank("oh-my-bash"),
+            0
+        );
+        assert_eq!(
+            crate::plugins::sources::primary_theme_source_rank("bash-it"),
+            1
+        );
+
+        // Era 1: the full-collection era recorded the shared theme under
+        // bash-it (registry order of that era).
+        crate::plugins::spec::save_spec(&crate::plugins::spec::PluginSpec {
+            schema: None,
+            sources: vec![crate::plugins::spec::SpecSource {
+                target: root.join("bash-it").to_string_lossy().into_owned(),
+                id: Some("bash-it".to_string()),
+                kind: None,
+                ref_name: None,
+                theme: Some("demox".to_string()),
+                enable: vec![],
+            }],
+        })
+        .unwrap();
+
+        // The wizard pick: the rc block AND the spec claim, in one motion.
+        let pick = ThemePick::External {
+            name: "demox".to_string(),
+            source_id: "oh-my-bash".to_string(),
+        };
+        let cfg = build_config(&pick);
+        let rc = generate_rc(&cfg);
+        std::fs::write(home.join(PRIMARY_RC_FILE), &rc).unwrap();
+        record_theme_pick_in_spec(&pick);
+
+        // The spec names oh-my-bash (id pin — the ambiguous name is owned
+        // unambiguously) and bash-it's theme-only era-1 claim moved away.
+        let spec_text =
+            std::fs::read_to_string(home.join(".niubash/plugins.toml")).expect("spec written");
+        assert!(spec_text.contains("id = 'oh-my-bash'"), "{spec_text}");
+        assert!(spec_text.contains("theme = 'demox'"), "{spec_text}");
+        assert!(
+            !spec_text.contains("id = 'bash-it'"),
+            "the theme-only era-1 declaration moved with the pick: {spec_text}"
+        );
+
+        // Every later sync verifies the pick: byte-identical rc, theme
+        // active, no competing framework block.
+        crate::plugins::sync::sync_spec(crate::plugins::sync::SyncOptions::default())
+            .expect("sync 1");
+        let after = std::fs::read_to_string(home.join(PRIMARY_RC_FILE)).unwrap();
+        assert_eq!(after, rc, "the picked theme block never flips");
+        assert!(after.contains("OSH_THEME='demox'"), "{after}");
+        assert!(!after.contains("BASH_IT_THEME"), "{after}");
+        crate::plugins::sync::sync_spec(crate::plugins::sync::SyncOptions::default())
+            .expect("sync 2");
+        assert_eq!(
+            std::fs::read_to_string(home.join(PRIMARY_RC_FILE)).unwrap(),
+            rc,
+            "byte-stable across sources"
         );
 
         let _ = crate::plugins::sources::remove_source("oh-my-bash");

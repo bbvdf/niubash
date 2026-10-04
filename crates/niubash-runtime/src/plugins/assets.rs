@@ -738,6 +738,80 @@ fn current_theme(record: &SourceRecord, model: &SelectionModel) -> Option<String
         .unwrap_or(None)
 }
 
+/// The theme the source's managed rc block currently carries — the rc's
+/// live state (None = no block, or no theme line). This is what the
+/// theme-claim reconciliation (niubash#168) treats as the user's latest
+/// expressed choice when the spec disagrees about theme ownership.
+pub fn live_managed_theme(record: &SourceRecord) -> Option<String> {
+    let adapter = adapter_for(&record.adapter)?;
+    let model = adapter.selection_model();
+    current_theme(record, &model).filter(|theme| !theme.is_empty())
+}
+
+/// The user's latest theme pick — a wizard/gallery pick or
+/// `niu plugin enable <theme>` — recorded in the spec so the rc block and
+/// the spec entry cannot disagree (niubash#168).
+///
+/// The pick claims `theme` for `source_id`'s entry (with its id pin, so an
+/// ambiguous name is owned unambiguously) and MOVES the claim away from
+/// every other entry: any other non-empty theme claim is cleared, and a
+/// claimant left with no selection at all (it declared the theme and
+/// nothing else) has its declaration removed — the next sync then drops
+/// that source's activation block, so the losing framework never loads on
+/// top of the picked theme. The prior shape (rc written, spec untouched)
+/// let every sync re-materialize the stale claim and revert the pick.
+pub fn claim_theme(source_id: &str, theme: &str) -> anyhow::Result<()> {
+    if theme.is_empty() {
+        bail!("an empty theme name cannot be claimed; use `niu plugin disable <theme>`");
+    }
+    let mut spec = spec::load_spec()?.unwrap_or_default();
+    move_theme_claim(&mut spec, source_id, theme)?;
+    spec::save_spec(&spec)?;
+    Ok(())
+}
+
+/// The claim move itself, on an already-loaded spec: the shared half of
+/// [`claim_theme`] and the theme branch of [`enable`].
+fn move_theme_claim(spec: &mut PluginSpec, source_id: &str, theme: &str) -> anyhow::Result<()> {
+    let record = read_source_registry()
+        .into_iter()
+        .find(|record| record.id == source_id)
+        .ok_or_else(|| anyhow!("source '{source_id}' is not installed"))?;
+    {
+        let entry = upsert_spec_entry(spec, &record);
+        entry.theme = Some(theme.to_string());
+    }
+    let picked_index = spec
+        .entry_index_for_id(&record.id)
+        .ok_or_else(|| anyhow!("spec entry for '{source_id}' vanished while claiming"))?;
+    let mut dropped: Vec<usize> = Vec::new();
+    for (index, other) in spec.sources.iter_mut().enumerate() {
+        if index == picked_index {
+            continue;
+        }
+        let was_claimed = other
+            .theme
+            .as_deref()
+            .is_some_and(|existing| !existing.is_empty());
+        if !was_claimed {
+            continue;
+        }
+        other.theme = Some(String::new());
+        // A claimant that declared the theme and nothing else existed only
+        // to carry the claim that just moved: remove the declaration so its
+        // activation follows (the sync's undeclared pass drops the block
+        // and says so). Entries with their own selection stay declared —
+        // only their theme line goes.
+        if other.enable.is_empty() {
+            dropped.push(index);
+        }
+    }
+    for index in dropped.into_iter().rev() {
+        spec.sources.remove(index);
+    }
+    Ok(())
+}
+
 /// The live activation snapshot of a record — (enabled asset names, active
 /// theme) as the manager's own selection mechanism currently has it. This
 /// is what spec adoption (`niu plugin sync --adopt`, the wizard's
@@ -815,27 +889,32 @@ pub fn enable(name: &str) -> anyhow::Result<ActivationOutcome> {
                 );
             }
             let entry = upsert_spec_entry(&mut spec, &record);
-            if asset.kind == SourceAssetKind::Theme {
-                entry.theme = Some(asset.name.clone());
-                (
-                    record.clone(),
-                    format!(
-                        "theme '{}' ({}) declared in the spec; synced to the manager's theme variable",
-                        asset.name, record.id
-                    ),
-                )
+            let theme_pick = if asset.kind == SourceAssetKind::Theme {
+                Some(asset.name.clone())
             } else {
                 if !entry.enable.contains(&asset.name) {
                     entry.enable.push(asset.name.clone());
                 }
-                (
-                    record.clone(),
-                    format!(
-                        "'{}' ({}) declared in the spec; synced through the manager's own selection",
-                        asset.name, record.id
-                    ),
+                None
+            };
+            let summary = if let Some(theme) = &theme_pick {
+                format!(
+                    "theme '{}' ({}) declared in the spec; synced to the manager's theme variable",
+                    theme, record.id
                 )
+            } else {
+                format!(
+                    "'{}' ({}) declared in the spec; synced through the manager's own selection",
+                    asset.name, record.id
+                )
+            };
+            // The pick MOVES the claim (niubash#168): the previous owner's
+            // entry loses it, so no later sync re-materializes the old
+            // framework's theme block over this choice.
+            if let Some(theme) = &theme_pick {
+                move_theme_claim(&mut spec, &record.id, theme)?;
             }
+            (record.clone(), summary)
         }
     };
     spec::save_spec(&spec)?;
@@ -924,9 +1003,17 @@ pub struct SpecMaterialization {
 /// (§14.6.3 merge semantics): the spec's selection plus any hand-added
 /// entries wins; entries the spec dropped (in `prev` but not `next`) are
 /// removed; a hand-set theme survives a spec that does not declare one.
+///
+/// `theme_claimed_elsewhere` is the niubash#168 floor-yield input: true
+/// when another spec entry claims a (non-empty) theme. A source with no
+/// selection of its own then does NOT (re)create its loader-only floor
+/// block — the framework would load on top of the claimed theme. A block
+/// that already exists is left byte-stable (never silently flipped);
+/// removal is an explicit verb or a reconciled claim move.
 pub fn materialize_spec_selection(
     record: &SourceRecord,
     entry: &SpecSource,
+    theme_claimed_elsewhere: bool,
 ) -> anyhow::Result<SpecMaterialization> {
     let Some(adapter) = adapter_for(&record.adapter) else {
         return Ok(SpecMaterialization {
@@ -1036,7 +1123,14 @@ pub fn materialize_spec_selection(
                     // OSH_THEME renders its own default theme, bash-it with an
                     // empty enabled/ set still sources its framework. Disable
                     // removes the declaration (and with it the block).
-                    let active = true;
+                    // EXCEPT (niubash#168): the floor yields to a claimed
+                    // theme — a selection-less source never wins over a
+                    // theme claimed by another declared source; a block
+                    // already present stays (never silently flipped).
+                    let has_selection = !final_names.is_empty() || theme.is_some();
+                    let active = has_selection
+                        || !theme_claimed_elsewhere
+                        || managed_block_text(&record.id).is_some();
                     let (block_action, detail) = apply_block(record, &model, &state, active)?;
                     let action = if tree_changed
                         || block_action == "activated"
@@ -1107,7 +1201,15 @@ pub fn materialize_spec_selection(
                     // Same loader-fidelity invariant as the EnabledDir arm:
                     // declaration activates; empty arrays + no theme let the
                     // manager apply its own defaults (OMB default theme).
-                    apply_block(record, &model, &state, true)?
+                    // And the same niubash#168 floor-yield: a selection-less
+                    // source does not resurrect its framework over a theme
+                    // claimed elsewhere; a present block stays.
+                    let has_selection = theme.is_some()
+                        || state.array_items.iter().any(|(_, items)| !items.is_empty());
+                    let active = has_selection
+                        || !theme_claimed_elsewhere
+                        || managed_block_text(&record.id).is_some();
+                    apply_block(record, &model, &state, active)?
                 }
             };
             SpecMaterialization {
@@ -1629,6 +1731,78 @@ mod tests {
         assert!(rc_text().contains("plugins=('git')"), "{}", rc_text());
         let _ = fs::remove_dir_all(&omb);
         let _ = fs::remove_dir_all(&bc);
+        let _ = fs::remove_dir_all(&box_.temp);
+    }
+
+    /// niubash#168, `niu plugin enable <theme>` (the rc hint's own verb): a
+    /// theme pick MOVES the claim — the previous owner's spec entry loses
+    /// it (and its declaration entirely when it carried the theme only), so
+    /// the previous framework's theme block goes and no later sync flips
+    /// the pick back. Both directions must round-trip, byte-stably.
+    #[test]
+    fn theme_enable_moves_the_claim_across_sources() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let omb = unique_temp_dir("move-omb");
+        let bit = unique_temp_dir("move-bit");
+        write_omb_fixture(&omb);
+        // The shared name (powerbash10k's shape): both fixtures ship `demox`.
+        fs::create_dir_all(omb.join("themes/demox")).unwrap();
+        fs::write(
+            omb.join("themes/demox/demox.theme.sh"),
+            "omb_theme_demox() { PS1='demox-omb> '; }\nomb_theme_demox\n",
+        )
+        .unwrap();
+        write_bash_it_fixture(&bit);
+        let box_ = sandbox("theme-claim-move");
+        install(&omb);
+        install(&bit);
+        trust("oh-my-bash");
+        trust("bash-it");
+
+        // Pick demox from oh-my-bash: OSH block carries it, spec claims it.
+        enable("oh-my-bash/demox").expect("omb pick");
+        let rc = rc_text();
+        assert!(rc.contains("OSH_THEME='demox'"), "{rc}");
+        assert!(spec_text().contains("id = 'oh-my-bash'"), "{}", spec_text());
+        assert!(spec_text().contains("theme = 'demox'"), "{}", spec_text());
+        let picked_rc = rc_text();
+
+        // A plain sync is a no-op (byte-stable).
+        super::super::sync::sync_spec(super::super::sync::SyncOptions::default()).unwrap();
+        assert_eq!(rc_text(), picked_rc, "sync must keep the picked theme");
+
+        // Re-pick demox from bash-it: the claim MOVES — the OSH theme line
+        // goes (the theme-only omb declaration follows it), the bash-it
+        // block carries the theme, and the spec names bash-it as the owner.
+        enable("bash-it/demox").expect("bash-it pick");
+        let rc = rc_text();
+        assert!(rc.contains("BASH_IT_THEME='demox'"), "{rc}");
+        assert!(
+            !rc.contains("OSH_THEME"),
+            "the losing framework's theme block must go: {rc}"
+        );
+        let spec = spec_text();
+        assert!(spec.contains("id = 'bash-it'"), "{spec}");
+        assert!(
+            !spec.contains("id = 'oh-my-bash'"),
+            "the theme-only loser declaration is gone: {spec}"
+        );
+        let moved_rc = rc_text();
+        super::super::sync::sync_spec(super::super::sync::SyncOptions::default()).unwrap();
+        assert_eq!(
+            rc_text(),
+            moved_rc,
+            "byte-stable across syncs after the move"
+        );
+
+        // And back again.
+        enable("oh-my-bash/demox").expect("omb re-pick");
+        let rc = rc_text();
+        assert!(rc.contains("OSH_THEME='demox'"), "{rc}");
+        assert!(!rc.contains("BASH_IT_THEME"), "{rc}");
+
+        let _ = fs::remove_dir_all(&omb);
+        let _ = fs::remove_dir_all(&bit);
         let _ = fs::remove_dir_all(&box_.temp);
     }
 
