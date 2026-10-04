@@ -90,11 +90,14 @@ bash-completion — and P8-S4 restores what it removes):
      final terminal is silent again.
   P8-S4 remove the source providing the ACTIVE theme (F4)
      `niu plugin source remove oh-my-bash` while its theme is applied:
-     spec declaration drops, registry record and tree drop, a fresh
-     terminal falls back to the floor prompt with no resurrection and
-     no syntax-error storm; then re-add + trust + re-enable restores
-     the theme in a fresh terminal, and the rc carries exactly one
-     oh-my-bash block (no orphan blocks) at steady state.
+     spec declaration drops, registry record and tree drop, fresh
+     terminal(s) fall back to the floor prompt with no resurrection and
+     no syntax-error storm; then re-add + trust + re-enable restores the
+     theme, and the rc carries exactly one oh-my-bash block (no orphan
+     blocks) at steady state. The theme under test is DERIVED from the
+     live state at step start (whatever P4 left active — see the
+     function docstring); the floor-terminal count is the
+     NIU_JOURNEY_P8S4_FLOOR_TERMINALS matrix knob (default 1).
 
 Driver capabilities landed with this lane (journey-steps.json
 `driver_capabilities`, owner W1):
@@ -236,6 +239,16 @@ WAKE_GAP_SECONDS = 0.15
 # (trust 90s, source 60s) and an expiry is ledgered, never silent.
 ANCHOR_POLL_SECONDS = 0.1
 ANCHOR_TIMEOUT_SECONDS = 30.0
+
+
+def _env_int(name: str, default: int) -> int:
+    """Matrix-axis knob: an integer from the environment (a malformed or
+    absent value keeps the default; the axis exists so a matrix lane can
+    widen a step's cell coverage without editing step code)."""
+    try:
+        return int(os.environ.get(name, "").strip() or default)
+    except (TypeError, ValueError):
+        return default
 # Stress harness (hidden --stress-delay-ms): a randomized pause before
 # every send's settle check, simulating runner slowness — the shape that
 # broke two release runs. 0 disables (normal mode).
@@ -1001,6 +1014,39 @@ def prompt_block(session: Session):
     return rows[-PROMPT_BLOCK_ROWS:]
 
 
+# The structural signature scan stops at the first row that is not prompt
+# structure: startup-sync notices, the banner, and plain command output
+# must never enter the comparison (the run 37224044818 artifact: the
+# last-4-rows fingerprint carried a wrapped `completion`` notice fragment).
+NOTICE_MARK = "niu plugin sync:"
+POWERLINE_GLYPHS = "\ue0b0\ue0b2\ue0b3\ue0b6"
+
+
+def themed_prompt_signature(session: Session):
+    """The ACTIVE theme's prompt rows, digit-stripped, newest-last — the
+    stable structural signature of whatever theme this session renders
+    right now. Bottom-up from the input-glyph row, taking rows that carry
+    prompt structure (a powerline segment glyph, or the prompt-ish input
+    row) and stopping at the first notice/banner/plain-output row. Theme-
+    independent by construction: compare a session against a reference
+    captured from the SAME theme in the SAME run, never against a
+    fingerprint of a different theme's shape (P4 legitimately re-picks).
+    [] before the first prompt has rendered."""
+    rows = [row for row in session.text().splitlines() if row.strip()]
+    signature = []
+    for row in reversed(rows):
+        if NOTICE_MARK in row or re.match(r"Niubash \d+\.\d+\.\d+",
+                                          row.strip()):
+            break
+        if (any(glyph in row for glyph in POWERLINE_GLYPHS)
+                or PROMPTISH_LAST_ROW.match(row)):
+            signature.append(normalize_prompt_row(row))
+        else:
+            break
+    signature.reverse()
+    return signature
+
+
 def await_first_prompt_row(session: Session, timeout=STARTUP_TIMEOUT):
     """The terminal's FIRST prompt block, captured before anything is
     typed: poll until bytes have arrived and the last non-empty row looks
@@ -1748,21 +1794,55 @@ def p8_s4_remove_active_theme_source(exe, home, env, verdict, seed, state):
     applied — the F4 resurrection guard (spec declaration drops, no
     resurrection at the next startup) plus the degradation contract
     (guarded loader no-ops, floor prompt, no syntax-error storm), then
-    re-add + re-enable restores the theme with no orphan rc blocks."""
+    re-add + re-enable restores the theme with no orphan rc blocks.
+
+    The theme under test is DERIVED from the live journey state at step
+    start (rc theme variable == the spec's oh-my-bash entry theme, with
+    the assignment inside the oh-my-bash managed block) — whatever theme
+    P4 left active IS the state under test, and P4 legitimately re-picks
+    after J2 (release runs 37218948432 / 37224044818 red a hardcoded
+    `powerline-multiline` precondition here while the product was correct
+    at every hop). No active theme is a legal state too: the
+    removal-then-restore contract then runs themeless (re-add + trust
+    only; nothing may resurrect)."""
     step = verdict.step(
         "P8-S4", "remove the source providing the ACTIVE theme "
         "(changelog 1.3.1 F4)")
-    theme_line = state.get("theme_line") or ""
     tree = seed.sources_root / "oh-my-bash"
     registry_path = seed.sources_root / "registry.toml"
     try:
         rc_text = seed.rc_bytes().decode("utf-8", errors="replace")
-        ready = (bool(theme_line) and theme_line in rc_text
-                 and "oh-my-bash" in seed.spec_text() and tree.is_dir())
-        step.check("precondition: oh-my-bash installed with the picked "
-                   "theme active", ready,
-                   f"theme line present: {theme_line in rc_text}; declared: "
-                   f"{'oh-my-bash' in seed.spec_text()}; tree: {tree.is_dir()}")
+        spec_text = seed.spec_text()
+        vars_now = rc_theme_vars(rc_text)
+        omb_entry = spec_entry(spec_text, "oh-my-bash")
+        declared = entry_field(omb_entry, "theme") if omb_entry else None
+        active_var = ("OSH_THEME" if "OSH_THEME" in vars_now
+                      else "BASH_IT_THEME" if "BASH_IT_THEME" in vars_now
+                      else None)
+        active_theme = vars_now.get(active_var) if active_var else None
+        block_vars = {var: val.strip().strip("'\"")
+                      for var, val in re.findall(
+                          THEME_VAR_LINE,
+                          rc_managed_block(rc_text, "oh-my-bash") or "")}
+        # Themed state: one active variable, the spec's oh-my-bash entry
+        # declares the same theme, and the assignment lives in the
+        # oh-my-bash managed block (a mismatch is an rc/spec disagreement
+        # — a #168-class red, never silently tolerated here).
+        themed = bool(active_var and active_theme
+                      and active_theme == declared
+                      and block_vars.get(active_var) == active_theme)
+        theme_line_now = f"{active_var}='{active_theme}'" if themed else ""
+        ready = (tree.is_dir() and "oh-my-bash" in spec_text
+                 and (themed or (active_var is None and not declared)))
+        step.check("precondition: oh-my-bash installed with the active "
+                   "theme it declares (live state)", ready,
+                   f"rc active: {active_var}={active_theme!r}; spec "
+                   f"declares: {declared!r}; assignment inside the "
+                   f"oh-my-bash block: {block_vars}; tree: {tree.is_dir()}")
+        if not themed:
+            step.note("no theme active at step start — the removal-then-"
+                      "restore contract runs themeless (re-add + trust "
+                      "only; nothing may resurrect)")
 
         remover = Session(
             [str(exe)], home, env,
@@ -1770,6 +1850,16 @@ def p8_s4_remove_active_theme_source(exe, home, env, verdict, seed, state):
             label="P8-S4-remove", delivery_log=verdict.delivery_events)
         try:
             prompt_alive(remover, "P8S4_ALIVE")
+            # The structural reference: the live theme's prompt rows as
+            # THIS session renders them (same theme, same run — never a
+            # cross-theme fingerprint).
+            sig_ref = themed_prompt_signature(remover)
+            if themed and not sig_ref:
+                step.check("the active theme's prompt rendered before the "
+                           "removal", False,
+                           "the themed prompt's structural signature was "
+                           "empty — no themed prompt rows rendered before "
+                           "the removal")
             # Self-heal first: the removal contract only deletes a tree it
             # can fingerprint (sources.rs remove_source verifies the
             # adapter layout), so a tree still damaged from P3-S4 (whose
@@ -1815,46 +1905,69 @@ def p8_s4_remove_active_theme_source(exe, home, env, verdict, seed, state):
         step.check("F4: the tree is gone", not tree.exists(),
                    f"{tree} still present")
 
-        # Fresh terminal: floor prompt, no resurrection, no error storm.
-        floor = Session(
-            [str(exe)], home, env,
-            raw_log=verdict.transcripts / "P8-S4-floor.raw.ansi",
-            label="P8-S4-floor", delivery_log=verdict.delivery_events)
-        try:
-            row = await_first_prompt_row(floor)
-            step.check("fresh terminal without the theme source: prompt "
-                       "renders (floor)", row is not None,
-                       "no prompt-ish row ever rendered")
-            drain_notices(floor)
-            body = floor.transcript() + "\n" + floor.raw_stripped()
-            step.check("no resurrection: no 'Cloning into' at the fresh "
-                       "terminal", "Cloning into" not in body,
-                       next((line.strip()[:120] for line in body.splitlines()
-                             if "Cloning into" in line), ""))
-            step.check("no resurrection: the spec still lacks oh-my-bash",
-                       "oh-my-bash" not in seed.spec_text())
-            verdict_for_syntax_errors(
-                step, "no syntax-error storm after removal",
-                all_syntax_errors(floor))
-            themed = state.get("themed_prompt_row")
-            if themed is not None and row is not None:
-                step.check("prompt fell back to the floor (no longer the "
-                           "themed row)",
-                           normalize_prompt_row(row) != themed,
-                           f"floor row: {row.strip()[:100]!r}")
-            rc_after = seed.rc_bytes().decode("utf-8", errors="replace")
-            orphan = ">>> niu source oh-my-bash" in rc_after
-            state["orphan_block_after_fresh_terminal"] = orphan
-            step.note(
-                "rc block status after the removal + one fresh terminal: "
-                + ("an orphan oh-my-bash block is still in the rc (inert: "
-                   "its guarded loader no-ops on the missing tree); the "
-                   "steady-state no-orphan gate is asserted after the "
-                   "re-add below" if orphan else
-                   "the block was dropped — no orphan remained"))
-            verdict.capture("P8-S4-floor-terminal", floor)
-        finally:
-            floor.close()
+        # Fresh terminal(s): floor prompt, no resurrection, no error storm.
+        # The count is a matrix axis (wt87, owner standard: the gate must
+        # hold in every cell, not the one we happened to run): resurrection
+        # can first appear on a LATER startup (the memoized-defer path
+        # differs from the first one), so NIU_JOURNEY_P8S4_FLOOR_TERMINALS
+        # (default 1, matrix cell 3) walks that many consecutive fresh
+        # terminals and asserts the contract on each.
+        floor_terminals = max(1, _env_int("NIU_JOURNEY_P8S4_FLOOR_TERMINALS",
+                                          1))
+        if floor_terminals > 1:
+            step.note(f"matrix cell: {floor_terminals} post-remove "
+                      "terminals (NIU_JOURNEY_P8S4_FLOOR_TERMINALS)")
+        for floor_idx in range(1, floor_terminals + 1):
+            floor_nth = "" if floor_terminals == 1 else f" #{floor_idx}"
+            floor = Session(
+                [str(exe)], home, env,
+                raw_log=verdict.transcripts / (
+                    "P8-S4-floor.raw.ansi" if floor_idx == 1 else
+                    f"P8-S4-floor-{floor_idx}.raw.ansi"),
+                label="P8-S4-floor", delivery_log=verdict.delivery_events)
+            try:
+                row = await_first_prompt_row(floor)
+                step.check(f"fresh terminal{floor_nth} without the theme "
+                           "source: prompt renders (floor)", row is not None,
+                           "no prompt-ish row ever rendered")
+                drain_notices(floor)
+                body = floor.transcript() + "\n" + floor.raw_stripped()
+                step.check(f"no resurrection (terminal{floor_nth or ' 1'}): "
+                           "no 'Cloning into' at the fresh terminal",
+                           "Cloning into" not in body,
+                           next((line.strip()[:120]
+                                 for line in body.splitlines()
+                                 if "Cloning into" in line), ""))
+                step.check("no resurrection: the spec still lacks oh-my-bash",
+                           "oh-my-bash" not in seed.spec_text())
+                verdict_for_syntax_errors(
+                    step, f"no syntax-error storm after removal"
+                    f"{floor_nth}",
+                    all_syntax_errors(floor))
+                if themed and sig_ref:
+                    floor_sig = themed_prompt_signature(floor)
+                    step.check(f"prompt fell back to the floor "
+                               f"(no longer the themed row){floor_nth}",
+                               floor_sig != sig_ref,
+                               f"floor signature: {floor_sig}; themed "
+                               f"reference: {sig_ref}")
+                rc_after = seed.rc_bytes().decode("utf-8", errors="replace")
+                orphan = ">>> niu source oh-my-bash" in rc_after
+                state["orphan_block_after_fresh_terminal"] = orphan
+                if floor_idx == floor_terminals:
+                    step.note(
+                        "rc block status after the removal + "
+                        f"{floor_terminals} fresh terminal(s): "
+                        + ("an orphan oh-my-bash block is still in the rc "
+                           "(inert: its guarded loader no-ops on the missing "
+                           "tree); the steady-state no-orphan gate is "
+                           "asserted after the re-add below" if orphan else
+                           "the block was dropped — no orphan remained"))
+                verdict.capture(
+                    "P8-S4-floor-terminal"
+                    + ("" if floor_idx == 1 else f"-{floor_idx}"), floor)
+            finally:
+                floor.close()
 
         # Re-add + trust + re-enable (the manifest's restore path).
         restorer = Session(
@@ -1901,17 +2014,23 @@ def p8_s4_remove_active_theme_source(exe, home, env, verdict, seed, state):
             except TimeoutError as err:
                 step.check("`niu plugin trust oh-my-bash` reported trusted",
                            False, str(err))
-            restorer.send_line("niu plugin enable oh-my-bash/"
-                               "powerline-multiline", anchor_timeout=120)
-            try:
-                restorer.wait_for("Enabled", timeout=90)
-                step.check("`niu plugin enable "
-                           "oh-my-bash/powerline-multiline` re-applied the "
-                           "theme", True)
-            except TimeoutError as err:
-                step.check("`niu plugin enable "
-                           "oh-my-bash/powerline-multiline` re-applied the "
-                           "theme", False, str(err))
+            if themed:
+                # Re-enable the theme that was ACTIVE at step start (the
+                # live state's own pick — restoring the state P8-S4 found,
+                # not the J2 pick).
+                restorer.send_line(f"niu plugin enable oh-my-bash/"
+                                   f"{active_theme}", anchor_timeout=120)
+                try:
+                    restorer.wait_for("Enabled", timeout=90)
+                    step.check(f"`niu plugin enable oh-my-bash/"
+                               f"{active_theme}` re-applied the theme", True)
+                except TimeoutError as err:
+                    step.check(f"`niu plugin enable oh-my-bash/"
+                               f"{active_theme}` re-applied the theme",
+                               False, str(err))
+            else:
+                step.note("themeless state — the restore leg is re-add + "
+                          "trust only; nothing may resurrect")
         finally:
             restorer.close()
 
@@ -1929,10 +2048,13 @@ def p8_s4_remove_active_theme_source(exe, home, env, verdict, seed, state):
             verdict.capture("P8-S4-restored-terminal", final)
             rc_text = seed.rc_bytes().decode("utf-8", errors="replace")
             blocks = rc_text.count(">>> niu source oh-my-bash")
-            step.check("theme restored: the picked theme line is active in "
+            step.check("theme restored: the active theme line is active in "
                        "the rc again",
-                       bool(theme_line) and theme_line in rc_text,
-                       f"expected {theme_line!r}")
+                       (theme_line_now in rc_text) if themed
+                       else not rc_theme_vars(rc_text),
+                       f"expected {theme_line_now!r}" if themed else
+                       f"theme variables still on file: "
+                       f"{sorted(rc_theme_vars(rc_text).items())}")
             step.check("no orphan blocks: exactly one oh-my-bash managed "
                        "block", blocks == 1,
                        f"{blocks} oh-my-bash block(s) in the rc")
@@ -1941,11 +2063,22 @@ def p8_s4_remove_active_theme_source(exe, home, env, verdict, seed, state):
             verdict_for_syntax_errors(
                 step, "zero syntax errors after the restore",
                 all_syntax_errors(final))
-            themed = state.get("themed_prompt_row")
-            if themed is not None and row is not None:
-                step.check("the themed prompt renders again",
-                           normalize_prompt_row(row) == themed,
-                           f"row now: {row.strip()[:100]!r}")
+            # The structural comparison: the restored terminal's prompt rows
+            # must equal the pre-removal session's SAME-theme signature —
+            # never a cross-theme fingerprint, never mixed with notice rows
+            # (the wrapped-fragment artifact of runs 37218948432 /
+            # 37224044818).
+            sig_now = themed_prompt_signature(final)
+            if themed and sig_ref:
+                step.check("the themed prompt renders again (structural "
+                           "match with the pre-removal prompt)",
+                           sig_now == sig_ref,
+                           f"signature now: {sig_now}; expected: {sig_ref}")
+            elif not themed:
+                step.check("nothing resurrects on screen (still the floor "
+                           "signature)", sig_now != sig_ref if sig_ref
+                           else not sig_now,
+                           f"signature now: {sig_now}")
         finally:
             final.close()
     except Exception as err:  # noqa: BLE001

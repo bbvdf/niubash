@@ -98,7 +98,18 @@ hard_fail_multiplier = 5
 # Re-render over the mandated 120ms (user pays this on every ENTER):
 #   omb.theme:axin 544ms · omb.theme:clean 541ms · omb.theme:simple 464ms
 #   omb.theme:sexy 332ms · bashit.theme:sexy 330ms · bashit.theme:font 185ms
-#   omb.theme:half-life 183ms · omb.theme:rana 174ms · omb.theme:tonka 172ms
-#   bashit.theme:elixr 171ms · omb.theme:developer 153ms
+#   omb.theme:half-life 183ms · omb.theme:developer 153ms
 #   bashit.theme:demula 146ms · omb.theme:pzq 140ms
-#   omb.theme:edsonarios 123ms
+#
+# Re-verified against the 1.3.4 binary (wt87, 2026-10-05, N=2 medians on
+# the baseline host/OS, pinned trees unchanged): every entry above is
+# SAME-CLASS — the pathological five measure 5983-6170ms (git siblings
+# 5983/6170 vs 6090/6498 documented; the 6s STARTUP fetch fix does not
+# apply to these: their wall is the plugin's own sourcing behavior, not a
+# niu git transport) and the dead three still abort. Drift OUT of this
+# list (measured under the 120ms mandate now): bashit.theme:elixr 101ms,
+# omb.theme:rana 103ms, omb.theme:tonka 106ms, omb.theme:edsonarios 117ms
+# (baseline 171/174/172/123). Two label corrections against the baseline
+# JSON: developer and pzq are omb.theme (not bashit.theme) assets. The
+# next CI run with the fixed pinned checkout (full-SHA pins) is the
+# ratifying reference.

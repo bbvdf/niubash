@@ -111,6 +111,11 @@ source, a failed/degraded row dressed as awaiting-trust) still fails.
 recalibrated here (assertions untouched; follow-up gate work, not
 product bugs):**
 
+> **Resolved by the wt87 follow-up (see "Follow-up: P8-S4 state-robustness"
+> below)** — both reds were gate artifacts; the follow-up rewrites the
+> precondition and the render comparison. The text below is the original
+> adjudication, kept for the record.
+
 - `precondition: oh-my-bash installed with the picked theme active —
   theme line present: False` — the precondition demands the J2 pick
   (`powerline-multiline`) still be active in the rc, but the journey's
@@ -150,6 +155,100 @@ now derived instead of capped. Remaining local reds were the
 (environment, the documented five-TLS-burned-release-runs class; retry
 in a clean window) plus P8-S4's two adjudicated gate reds above, which
 reproduced exactly as predicted.
+
+### Follow-up: P8-S4 state-robustness + the full-matrix standard
+(wt87 continuation, post-37224044818)
+
+The re-dispatched release failed on exactly the two adjudicated P8-S4
+classes — both now FIXED in the gate (they were gate artifacts; the
+product was correct in the artifacts):
+
+- **The precondition is derived from the live journey state.** Whatever
+  theme P4 left active IS the state under test: at step start the gate
+  reads the rc's active theme variable and the spec's oh-my-bash entry,
+  requires them to agree with the assignment inside the oh-my-bash
+  managed block (a mismatch stays an honest red — an rc/spec
+  disagreement is a #168-class bug, never tolerated), and runs the
+  removal-then-restore contract against THAT theme — the re-enable leg
+  re-enables `oh-my-bash/<active-theme>`, restoring the state the step
+  found instead of silently flipping back to the J2 pick (the old form
+  "restored" `powerline-multiline` over a live `powerbash10k` and its
+  own check passed against the wrong line). No active theme is a legal
+  state: the contract then runs themeless (re-add + trust only; nothing
+  may resurrect on disk or screen).
+- **The render comparison is structural, not a fingerprint.** The new
+  `themed_prompt_signature(session)` extracts the prompt's OWN rows
+  (bottom-up from the input-glyph row while rows carry prompt
+  structure — powerline glyphs or the prompt-ish row — stopping at the
+  first notice/banner/output row; digits stripped). The restored
+  terminal must match a reference captured from the SAME theme in the
+  SAME run (the pre-removal session), never a cross-theme fingerprint;
+  the wrapped-awaiting-trust fragment (`completion``) can no longer
+  enter the comparison (that was run 37224044818's red: the themed
+  prompt provably rendered in its own snapshot).
+
+Matrix standard (owner escalation — the gate must hold in every cell,
+not the one we happened to run):
+
+- `{A→B→A, A→B (no return), A→A re-pick}` × theme axis: P8-S4 is
+  **robust by construction** — the precondition derives the live state,
+  so any consistent post-P4 theme satisfies it (validated against the
+  real run-37224044818 facts: active `powerbash10k`, spec-agreed,
+  J2 pick `powerline-multiline`). The P4-S2 hop-shape variants
+  themselves (A→B-no-return, A→A) remain P4-lane follow-up work: they
+  change the wizard-flow legs, not P8-S4's contract.
+- `{HISTCONTROL}` axis: **inapplicable to this gate's semantics** — the
+  product reads no HISTCONTROL anywhere (`grep -rn HISTCONTROL crates/`
+  is empty; only HISTFILE appears, in a comment). Recorded instead of
+  faked.
+- `{1 vs 3 post-remove terminals}` axis: implemented as the
+  `NIU_JOURNEY_P8S4_FLOOR_TERMINALS` knob (default 1; matrix cell 3):
+  resurrection can first appear on a LATER startup (the memoized-defer
+  path differs from the first one), so the floor contract asserts on
+  every consecutive fresh terminal.
+
+### Follow-up: the perfbudget gate ships now (wt87 continuation)
+
+Release run 37224044818's perfbudget job died BEFORE timing:
+`git fetch --depth 1 origin abf8461` → `couldn't find remote ref` — a
+fetch REFSPEC is resolved server-side as a ref NAME, so the abbreviated
+pins could never fetch. The checkout step now:
+
+- pins the FULL 40-char object ids
+  (`abf846186ab0a8a41ec5888e827ece6277dfe446`,
+  `4725d29db8c0ac8c21df47664b28539f3b8fce94` — verified against the
+  local baseline trees and the GitHub API);
+- retries 5× with backoff, honoring `GIT_PERF_FALLBACK_PROXY` on the
+  final attempt (local operators with a dead global proxy; CI runs
+  direct like every other job);
+- **fails open with a loud label** on total transport failure: the
+  missing source is skipped (empty `--omb`/`--bash-it` = source
+  disabled in asset-timing.py) and the verdict artifact carries
+  `SKIPPED-<source>.txt` plus a workflow warning — a flap must not kill
+  the gate before it measures, and a skip must never look like a
+  measurement;
+- **records per-source fetch latency** into
+  `perfbudget-artifacts/fetch-latency.json` (seconds, attempts, ok) —
+  the fetch feeding the measurement was historically invisible, and
+  that invisibility is how the 6s incident shipped.
+
+### Ship evidence: the 6s source fix is in the 1.3.4 binary
+
+- Source-level: `STARTUP_FETCH_BUDGET` (3s, `NIU_STARTUP_FETCH_BUDGET_MS`
+  overridable) + `run_git_bounded` (kill-on-close job over the whole git
+  process tree; credential guards) bound the startup bootstrap fetch —
+  `crates/niubash-runtime/src/plugins/sources.rs:67,669`; the product's
+  own unit test `run_git_bounded_kills_a_hung_child_at_the_deadline`
+  covers the hung-child kill.
+- E2E: a SYN-drop origin (`https://10.255.255.1/...`, the dropped-SYN
+  failure mode the budget exists for) declared in an otherwise
+  wizard-shaped sandbox: first prompt at **3.2s**, REPL alive — the
+  bounded fetch did not stall startup. Caveat stated plainly: the
+  host's startup floor is ~3.5s (bootstrap-off control: 3.6s), so the
+  E2E probe shows the budget path does not REGRESS startup and the
+  journey's own P3-S4 deferred-install cell renders at 3.4s; the
+  budget-vs-hang kill itself is evidenced by the unit test and source,
+  not by the floor-dominated E2E numbers.
 
 Exit code `0` only if every assertion holds. The run writes:
 
