@@ -114,6 +114,30 @@ pub fn run_doctor() -> anyhow::Result<()> {
         )?;
     }
 
+    // ── Advisory: PATH-shadowed niu (wt82-L01 V1 class) ──────────────────
+    // The rc bootstrap and every bare `niu` typing resolve `niu` through
+    // PATH. When PATH finds a *different* niu than the one running right
+    // now, startup reconcile runs under that binary's semantics and old
+    // vintages print `unknown plugin subcommand` noise on every start.
+    match find_niu_on_path() {
+        Some(path_niu)
+            if !same_executable(&path_niu, &std::env::current_exe().unwrap_or_default()) =>
+        {
+            writeln!(
+                out,
+                "  {warn} niu on PATH         {} is NOT this niu ({}) — \
+                 bare `niu` and the rc bootstrap run the PATH copy; \
+                 update/reinstall it (`niu --self-update` from that copy) or \
+                 reorder PATH so the current install wins",
+                display(&path_niu),
+                std::env::current_exe()
+                    .map(|e| display(&e))
+                    .unwrap_or_else(|_| "?".to_string()),
+            )?;
+        }
+        _ => {}
+    }
+
     // ── Advisory rows ───────────────────────────────────────────────────────
     if crate::fonts::nerd_font_installed() {
         writeln!(
@@ -273,4 +297,30 @@ pub fn run_doctor() -> anyhow::Result<()> {
 
 fn display(path: &std::path::Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+/// What `command -v niu` resolves to on this machine: the first PATH entry
+/// that carries an executable `niu` (`.exe`/`.bat`/`.cmd`/`.com`, plus the
+/// extension-less form some POSIX-side PATHs expose). `None` = nothing on
+/// PATH answers to `niu`.
+fn find_niu_on_path() -> Option<PathBuf> {
+    const EXTS: &[&str] = &[".exe", ".bat", ".cmd", ".com", ""];
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .find_map(|dir| {
+            EXTS.iter()
+                .map(|ext| dir.join(format!("niu{ext}")))
+                .find(|candidate| candidate.is_file())
+        })
+}
+
+/// Loose same-file test for the doctor row: canonicalize when possible
+/// (resolves case, `\\?\` prefixes and symlinks), else fall back to a
+/// case-insensitive textual compare (Windows paths are case-insensitive).
+fn same_executable(a: &PathBuf, b: &PathBuf) -> bool {
+    let canon = |p: &PathBuf| p.canonicalize().unwrap_or_else(|_| p.clone());
+    let (a, b) = (canon(a), canon(b));
+    a.to_string_lossy()
+        .eq_ignore_ascii_case(&b.to_string_lossy())
 }

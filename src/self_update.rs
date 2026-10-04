@@ -847,6 +847,11 @@ fn format_winhttp_message(code: u32) -> String {
         12031 => "the connection was reset".to_string(),
         12044 => "client certificate is required (proxy or server)".to_string(),
         12157 => "the secure channel transaction failed (TLS/proxy MITM)".to_string(),
+        // ERROR_WINHTTP_SECURE_FAILURE: the observed offline/inspection case
+        // (wt82-L01 V5) — the old message table left the reason empty.
+        12175 => "the secure connection failed (TLS/certificate error — check your \
+                  proxy, antivirus HTTPS scanning, or offline network)"
+            .to_string(),
         12169 => "the server certificate is invalid (proxy MITM or cert error)".to_string(),
         12172 => "the server certificate was revoked".to_string(),
         12038 => "the URL scheme is not supported".to_string(),
