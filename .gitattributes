@@ -6,3 +6,6 @@ scripts/*.sh text eol=lf
 # External plugin-manager source fixtures are shell trees; CRLF would kill
 # sourcing under the engine (same lesson as the rubash repo's *.sh pin).
 tests/fixtures/sources/** text eol=lf
+# Audit probe scripts live deeper than scripts/*.sh; same CRLF hazard
+# (wt82-L01: the tracked lanes' sweep/migrate probes must stay LF).
+scripts/**/*.sh text eol=lf

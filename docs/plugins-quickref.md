@@ -36,7 +36,7 @@ oh-my-niu-ecosystem.md` §14.6. All verbs: `niu plugin --help`.
 | `enable <id\|asset\|id/asset>` | Spec edit + sync; wild/bpkg assets are tree-relative paths | non-zero when untrusted/degraded/ambiguous/whole-source misuse |
 | `disable <target>` | Spec edit (entry removal for source targets) + sync; tree kept | 0 |
 | `trust <id>` | Review + flip the trust gate (checksum tier) | 0 |
-| `sync [--prune] [--bootstrap]` | Reconcile; `--prune` deletes undeclared, `--bootstrap` quiet startup form | 0 |
+| `sync [--prune] [--adopt] [--bootstrap]` | Reconcile; `--prune` deletes undeclared, `--adopt` declares installed-but-undeclared sources into the spec (snapshots live enable/theme), `--bootstrap` quiet startup form | 0 |
 | `update [<id>]` | Move lockfile pin(s) to ref tip (no id = all) | 0 |
 | `restore [<id>]` / `rollback <id>` / `clean` | Lockfile verbs | 0 |
 | `discover` | Read-only overview | 0 |

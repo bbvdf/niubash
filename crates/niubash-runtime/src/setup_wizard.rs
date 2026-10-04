@@ -1902,7 +1902,11 @@ unset __niubash_home_drive __niubash_home_rest
 # Plugins are declared in ~/.niubash/plugins.toml (the spec); this one
 # bootstrap line reconciles on startup — quiet when everything is in sync
 # (set NIU_PLUGIN_BOOTSTRAP=off to skip).
-command -v niu >/dev/null 2>&1 && niu plugin sync --bootstrap
+# NIU_SHELL is exported by niu itself (its own executable path), so the
+# reconcile runs under THIS niu even when PATH still resolves to an older
+# install first; outside niu (plain `source ~/.niubashrc`) it falls back
+# to whatever `niu` is on PATH.
+command -v "${{NIU_SHELL:-niu}}" >/dev/null 2>&1 && "${{NIU_SHELL:-niu}}" plugin sync --bootstrap
 
 # Change things later (nothing here runs automatically):
 #   niu plugin discover          see external sources & themes (read-only)
@@ -2203,11 +2207,18 @@ mod tests {
         assert!(rc.contains("NIU_COMPLETION_STYLE='column'"), "{rc}");
         assert!(rc.contains("USERPROFILE"), "{rc}");
         // The how-to-change-later hints are still there, plus the
-        // one-line spec bootstrap (§14.6.3).
+        // one-line spec bootstrap (§14.6.3). The bootstrap must run under
+        // NIU_SHELL (the running exe) with a bare-`niu` fallback — a bare
+        // `niu` alone PATH-shadow-resolves to a stale install and either
+        // errors (`unknown plugin subcommand 'sync'`) or reconciles under
+        // another vintage's semantics (wt82-L01 V1).
         assert!(rc.contains("niu plugin discover"), "{rc}");
         assert!(rc.contains("niu plugin add <target>"), "{rc}");
         assert!(rc.contains("niu plugin sync"), "{rc}");
-        assert!(rc.contains("niu plugin sync --bootstrap"), "{rc}");
+        assert!(
+            rc.contains(r#"command -v "${NIU_SHELL:-niu}" >/dev/null 2>&1 && "${NIU_SHELL:-niu}" plugin sync --bootstrap"#),
+            "{rc}"
+        );
         assert!(rc.contains("niu setup"), "{rc}");
     }
 
