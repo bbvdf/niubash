@@ -2,6 +2,24 @@
 
 All notable changes to Niubash are documented in this file.
 
+## [1.3.3] - 2026-10-04
+
+### Fixed (engine rubash 1.3.3)
+
+- Keystrokes typed while the prompt rebuilds are no longer eaten: external
+  children spawned by PROMPT_COMMAND (the theme clock's date/git/awk probes)
+  used to consume the first pending console input record - a human typing
+  right after a prompt refresh lost their first key (`echo` -> `cho`). A
+  typeahead guard now sweeps pending input during prompt machinery and
+  reinjects it verbatim before the editor reads.
+- `tr` with options in a pipeline actually runs (`tr -d b` was silently
+  passed through - the translate fast path had read `-d` as a character
+  set).
+- `for f in "${arr[@]:-}"` yields per-element words like GNU (bash-it
+  theme loading works).
+- Parser throughput: nvm -n ~13% faster (backslash-continuation scan
+  admission gate + binary-search line stamping), GNU ratio 18.0x -> 15.6x.
+
 ## [1.3.2] - 2026-10-04
 
 ### First three-platform release (engine rubash 1.3.2)
