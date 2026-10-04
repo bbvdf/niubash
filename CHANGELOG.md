@@ -23,6 +23,53 @@ All notable changes to Niubash are documented in this file.
   `scripts/test-winuxcmd-completions.py` (corpus replay must be
   byte-identical).
 
+## [1.3.4] - 2026-10-05
+
+### Fixed (engine rubash 1.3.4)
+
+- Theme choices survive `source` and new terminals: the wizard/gallery pick
+  is pinned into the spec, sync reconciles same-name claims toward the rc
+  (the "activated/deactivated" revert is gone), and the defaults-as-floor
+  never resurrects a framework over a claimed theme.
+- Multi-line theme prompts place the editing cursor at end-of-input-line:
+  the theme's right-align cursor surgery is served through the line
+  editor's own right-prompt channel (escape-excluded width math).
+- A 6-second first prompt after picking `full` is gone: startup fetches run
+  under a hard 3s budget (kill-on-close job object, credential-prompt
+  guard) and memoize; in-sync machines never fetch at all.
+- `tr -d/-s/-c` in pipelines actually runs (the translate fast path had
+  read `-d` as a character set); `for f in "${arr[@]:-}"` yields
+  per-element words; `/usr/bin/seq`-style file operands resolve through
+  `.exe` existence (directory forms unchanged); parser throughput +13%
+  (nvm -n 18.0x -> 15.6x vs GNU).
+
+### Fixed (product, found by the audit lanes and the golden journey)
+
+- `plugin add --checksum` is honored through add and adopt; failed adds
+  roll back their spec entry and legacy strands are pruned; enable/disable
+  surface rc-write failures and collapse duplicate managed blocks.
+- The wizard rc's bootstrap line references the running binary
+  (`${NIU_SHELL:-niu}`), so a stale niu on PATH can no longer hijack it;
+  doctor warns when the PATH-resolved niu differs from the running exe.
+- `--help`/usage/docs truth pass (ui/recipe/distro/mirror/source/rollback
+  verbs listed; sync --adopt documented; WinHttp 12175 gets a reason).
+
+### Added
+
+- Theme gallery live prompt preview (isolated render, 1.5s bound) in the
+  wizard and `niu plugin ui` (verb now registered) - highlight moves, the
+  pane below renders that theme's actual prompt.
+- Collections install curated independent recipes (complete-alias,
+  fzf-git.sh, bash-sensible, git-flow-completion - upstream-audited).
+- 178/178 winuxcmd applet completions embedded (zero-config Tab completion
+  for every bundled command; user TOMLs keep highest priority).
+- The golden user journey is a required release gate: install -> wizard ->
+  trust -> theme -> new terminals -> daily battery, plus persistence,
+  wizard-rerun, spec hand-editing and remove-active-source phases
+  (`--phases all`), all driven from the tag's own fresh build.
+- Per-asset timing budgets (437 themes/plugins/completions, zero
+  sampling) wired as a second release gate; budgets ratchet down only.
+
 ## [1.3.3] - 2026-10-04
 
 ### Fixed (engine rubash 1.3.3)
