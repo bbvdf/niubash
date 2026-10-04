@@ -1295,6 +1295,19 @@ def journey(exe: Path, root: Path, verdict: Verdict) -> str:
                 pane.pop()
             return pane
 
+        def settled_pane(timeout=5.0):
+            """The pane after its async render landed: the callback paints
+            instantly (placeholder first), the menu picks the render up on
+            its idle poll — wait out that pickup, bounded."""
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                pane = preview_pane()
+                body = "\n".join(pane[1:])
+                if body.strip() and "rendering preview" not in body:
+                    return pane
+                time.sleep(0.1)
+            return preview_pane()
+
         # The old preview was a static sentence; the live pane replaces it.
         step.check("static sentence replaced by the live pane",
                    "renders via the bash-compatible PS1 channel"
@@ -1304,7 +1317,7 @@ def journey(exe: Path, root: Path, verdict: Verdict) -> str:
         rendered_any = False
         for position, key in enumerate(("2", "5", "9")):
             s7.answer(key)  # digit jump: the highlight moves, no confirm
-            pane = preview_pane()
+            pane = settled_pane()
             header = pane[0].strip() if pane else ""
             body = "\n".join(pane[1:])
             seen_headers.append(header)
