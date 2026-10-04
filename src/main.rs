@@ -2087,19 +2087,37 @@ fn run_plugin_add_command(args: &[String]) -> anyhow::Result<()> {
         .clone()
         .unwrap_or_else(|| "(auto-detect)".to_string());
     print_source_trust_boundary(&display_id, &request);
+    // Failure rollback (wt83 #174): the entry above was persisted so the
+    // reconciler could see it; any failure below takes it back out — a
+    // failed add must not leave a spec strand no verb can remove.
+    let rollback_declaration = |err: anyhow::Error| -> anyhow::Error {
+        match niubash_runtime::plugins::sync::remove_declared_entry(
+            &entry_target,
+            entry_id.as_deref(),
+        ) {
+            Ok(true) => err.context(format!(
+                "the '{entry_target}' spec declaration was rolled back"
+            )),
+            _ => err,
+        }
+    };
     // The user's `--checksum` rides into the reconciler's install request
     // (wt83 #173): the fetch refuses a mismatched tree, exactly like
     // `niu plugin source add --checksum` always did. Absent, the fetch
     // gate + untrusted landing stay the only guards.
-    let report =
-        niubash_runtime::plugins::sync::sync_spec(niubash_runtime::plugins::sync::SyncOptions {
+    let report = match niubash_runtime::plugins::sync::sync_spec(
+        niubash_runtime::plugins::sync::SyncOptions {
             prune: false,
             checksum_pin: request
                 .expected_checksum
                 .clone()
                 .map(|checksum| (entry_target.clone(), checksum)),
             ..niubash_runtime::plugins::sync::SyncOptions::default()
-        })?;
+        },
+    ) {
+        Ok(report) => report,
+        Err(err) => return Err(rollback_declaration(err)),
+    };
     print_sync_rows(&report.rows);
     // The add must fail honestly when the new entry could not install (an
     // unrecognized layout, an empty repo, a refused kind pin): the
@@ -2108,7 +2126,21 @@ fn run_plugin_add_command(args: &[String]) -> anyhow::Result<()> {
         row.action == "failed"
             && (Some(row.id.as_str()) == entry_id.as_deref() || row.id == entry_target)
     }) {
-        anyhow::bail!("could not install '{}': {}", row.id, row.detail);
+        let removed = niubash_runtime::plugins::sync::remove_declared_entry(
+            &entry_target,
+            entry_id.as_deref(),
+        )
+        .unwrap_or(false);
+        anyhow::bail!(
+            "could not install '{}': {}{}",
+            row.id,
+            row.detail,
+            if removed {
+                " (spec declaration rolled back)"
+            } else {
+                ""
+            }
+        );
     }
     let new_id = report
         .rows

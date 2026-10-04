@@ -163,6 +163,23 @@ pub fn declared_entry(
     None
 }
 
+/// Remove the declaration(s) matching exactly (target, id) — the `niu
+/// plugin add` failure rollback (wt83 #174): a failed add must not leave a
+/// spec entry behind that no verb can remove. The add path guarantees the
+/// (target, id) pair is undeclared before it appends, so the match is the
+/// entry it just added. Returns true when anything was removed.
+pub fn remove_declared_entry(target: &str, id: Option<&str>) -> anyhow::Result<bool> {
+    let mut spec = spec::load_spec()?.unwrap_or_default();
+    let before = spec.sources.len();
+    spec.sources
+        .retain(|entry| !(entry.target == target && entry.id.as_deref() == id));
+    let removed = spec.sources.len() != before;
+    if removed {
+        spec::save_spec(&spec)?;
+    }
+    Ok(removed)
+}
+
 /// Run the reconciliation. Never prompts (the CLI layer prints; `--prune`
 /// is the explicit confirm). See the module docs for the algorithm.
 pub fn sync_spec(options: SyncOptions) -> anyhow::Result<SyncReport> {
@@ -230,6 +247,18 @@ pub fn adopt_installed_sources() -> anyhow::Result<Vec<String>> {
     Ok(adopted)
 }
 
+/// A declared-but-never-installed entry whose last startup install attempt
+/// failed — the memoized `deferred` population (wt83 #174): a legacy
+/// failed `niu plugin add` left it stranded, no verb could remove it, and
+/// every startup printed the deferred line. `--prune` is its way out.
+struct StrandedEntry {
+    label: String,
+    target: String,
+    id: Option<String>,
+    ref_name: Option<String>,
+    origin: String,
+}
+
 fn sync_with_spec(
     mut spec: PluginSpec,
     options: SyncOptions,
@@ -243,6 +272,27 @@ fn sync_with_spec(
     // Entries that resolved to a source an earlier entry already claimed
     // (the same tree declared under two spellings); dropped after the pass.
     let mut merged: Vec<usize> = Vec::new();
+    // Snapshot the stranded declarations BEFORE the pass — a non-startup
+    // retry clears the failure memo on the way in, and the memo is what
+    // marks the entry as stranded rather than merely not-yet-synced.
+    let mut stranded: Vec<StrandedEntry> = Vec::new();
+    for entry in spec.sources.iter() {
+        if record_for_entry(entry, &registry).is_some() {
+            continue;
+        }
+        let Ok((_, origin)) = resolve_spec_origin(&entry.target) else {
+            continue;
+        };
+        if bootstrap_failure_recorded(&origin, &entry.ref_name) {
+            stranded.push(StrandedEntry {
+                label: entry.id.clone().unwrap_or_else(|| entry.target.clone()),
+                target: entry.target.clone(),
+                id: entry.id.clone(),
+                ref_name: entry.ref_name.clone(),
+                origin,
+            });
+        }
+    }
 
     for (entry_index, entry) in spec.sources.iter_mut().enumerate() {
         let (catalog_hint, origin) = match resolve_spec_origin(&entry.target) {
@@ -475,6 +525,43 @@ fn sync_with_spec(
             }
         }
         undeclared.clear();
+
+        // Stranded-declaration cleanup (--prune is the explicit confirm;
+        // wt83 #174): the snapshotted entries that are STILL not installed
+        // after this pass come out of the spec with a printed row. One
+        // that this pass installed is a healthy declaration again — kept.
+        for entry in stranded {
+            let probe = SpecSource {
+                target: entry.target.clone(),
+                id: entry.id.clone(),
+                kind: None,
+                ref_name: entry.ref_name.clone(),
+                theme: None,
+                enable: Vec::new(),
+            };
+            let fresh = read_source_registry();
+            if record_for_entry(&probe, &fresh).is_some() {
+                continue;
+            }
+            match remove_declared_entry(&entry.target, entry.id.as_deref()) {
+                Ok(true) => {
+                    clear_bootstrap_failure(&entry.origin, &entry.ref_name);
+                    pruned.push(SyncRow {
+                        id: entry.label,
+                        action: "removed".to_string(),
+                        detail: "stranded declaration pruned — never installed \
+                                 and its startup install kept failing"
+                            .to_string(),
+                    });
+                }
+                Ok(false) => {}
+                Err(err) => pruned.push(SyncRow {
+                    id: entry.label,
+                    action: "failed".to_string(),
+                    detail: err.to_string(),
+                }),
+            }
+        }
     }
     rows.extend(pruned);
 
@@ -1335,6 +1422,169 @@ mod tests {
         assert!(rc_text().is_empty(), "untrusted sources activate nothing");
 
         let _ = fs::remove_dir_all(&holder);
+        let _ = fs::remove_dir_all(&box_.temp);
+    }
+
+    /// Legacy stranded declarations (wt83 #174): a declared entry whose
+    /// startup install failed is memoized and deferred on every later
+    /// startup; `sync --prune` is its one-time removal, with a printed
+    /// row. A declared-but-never-synced entry (no failure memo) is never
+    /// touched by --prune, and an entry this pass installs is kept.
+    #[test]
+    fn prune_removes_stranded_declarations_and_keeps_pending_ones() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let holder = unique_temp_dir("strand-holder");
+        let origin = holder.join("real-tree");
+        fs::create_dir_all(&origin).unwrap();
+        write_wild_fixture(&origin);
+        let missing = holder.join("missing-tree");
+        let box_ = sandbox("strand");
+
+        spec::save_spec(&PluginSpec {
+            schema: None,
+            sources: vec![
+                SpecSource {
+                    target: missing.to_string_lossy().into_owned(),
+                    id: Some("stranded".to_string()),
+                    kind: None,
+                    ref_name: None,
+                    theme: None,
+                    enable: vec![],
+                },
+                SpecSource {
+                    target: origin.to_string_lossy().into_owned(),
+                    id: Some("pending".to_string()),
+                    kind: None,
+                    ref_name: None,
+                    theme: None,
+                    enable: vec![],
+                },
+            ],
+        })
+        .unwrap();
+
+        // Startup 1: the broken declaration fails and is memoized; the
+        // healthy one installs (untrusted).
+        let report = sync_spec(SyncOptions {
+            startup: true,
+            ..SyncOptions::default()
+        })
+        .unwrap();
+        assert!(
+            report
+                .rows
+                .iter()
+                .any(|row| row.id == "stranded" && row.action == "failed"),
+            "{:?}",
+            report.rows
+        );
+        assert!(
+            fs::read_to_string(bootstrap_failure_path())
+                .unwrap()
+                .contains("missing-tree"),
+            "startup failure memoized"
+        );
+
+        // Startup 2: deferred — the every-startup line the issue records.
+        let report = sync_spec(SyncOptions {
+            startup: true,
+            ..SyncOptions::default()
+        })
+        .unwrap();
+        assert!(
+            report
+                .rows
+                .iter()
+                .any(|row| row.id == "stranded" && row.action == "deferred"),
+            "{:?}",
+            report.rows
+        );
+
+        // --prune: the stranded declaration comes out of the spec with a
+        // printed row; the healthy declaration (installed this run) stays.
+        let report = sync_spec(SyncOptions {
+            prune: true,
+            ..SyncOptions::default()
+        })
+        .unwrap();
+        assert!(
+            report.rows.iter().any(|row| row.id == "stranded"
+                && row.action == "removed"
+                && row.detail.contains("stranded declaration pruned")),
+            "{:?}",
+            report.rows
+        );
+        assert!(
+            !report
+                .rows
+                .iter()
+                .any(|row| row.id == "pending" && row.action == "removed"),
+            "a healthy declaration is never pruned: {:?}",
+            report.rows
+        );
+        let targets: Vec<String> = spec_sources()
+            .into_iter()
+            .map(|entry| entry.target)
+            .collect();
+        assert_eq!(targets, [origin.to_string_lossy().into_owned()]);
+        assert!(
+            !fs::read_to_string(bootstrap_failure_path())
+                .unwrap()
+                .contains("[[failure]]"),
+            "the memo goes with the stranded entry"
+        );
+
+        // The healed spec is stable: next startup prints nothing about it.
+        let report = sync_spec(SyncOptions {
+            startup: true,
+            ..SyncOptions::default()
+        })
+        .unwrap();
+        assert!(
+            !report.rows.iter().any(|row| row.id == "stranded"),
+            "{:?}",
+            report.rows
+        );
+
+        let _ = fs::remove_dir_all(&holder);
+        let _ = fs::remove_dir_all(&box_.temp);
+    }
+
+    /// The add-failure rollback helper removes exactly the (target, id)
+    /// declaration it is handed and nothing else (wt83 #174).
+    #[test]
+    fn remove_declared_entry_removes_only_the_matching_pair() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let box_ = sandbox("rollback");
+        spec::save_spec(&PluginSpec {
+            schema: None,
+            sources: vec![
+                SpecSource {
+                    target: "D:/one".to_string(),
+                    id: Some("one".to_string()),
+                    kind: None,
+                    ref_name: None,
+                    theme: None,
+                    enable: vec![],
+                },
+                SpecSource {
+                    target: "D:/two".to_string(),
+                    id: None,
+                    kind: None,
+                    ref_name: None,
+                    theme: None,
+                    enable: vec![],
+                },
+            ],
+        })
+        .unwrap();
+
+        assert!(remove_declared_entry("D:/one", Some("one")).unwrap());
+        let targets: Vec<String> = spec_sources().into_iter().map(|e| e.target).collect();
+        assert_eq!(targets, ["D:/two"]);
+        assert!(!remove_declared_entry("D:/one", Some("one")).unwrap());
+        assert!(!remove_declared_entry("D:/two", Some("one")).unwrap());
+
         let _ = fs::remove_dir_all(&box_.temp);
     }
 }
