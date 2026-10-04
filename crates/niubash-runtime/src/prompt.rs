@@ -317,15 +317,37 @@ impl Prompt for NiubashPrompt {
 
 /// Bash-compatible prompt values rendered from PS1/PS2 after the shell has run
 /// public Bash prompt hooks such as PROMPT_COMMAND.
+///
+/// The rendered PS1 may carry the theme's own right-align cursor surgery
+/// (`CSI 500 C` + `CSI n D`, oh-my-bash/bash-it powerline-multiline). The
+/// line editor walks the prompt as a linear text run and strips ANSI, so the
+/// surgery bytes detach its last-line visible width and row count from the
+/// real render and the editing cursor lands away from the input line
+/// (niubash#169). `BashPrompt::new` therefore splits the surgery at the
+/// channel ([`crate::prompt_right_align::split_right_align`]): the aligned
+/// tail is served through `render_prompt_right`, which the editor positions
+/// from the tail's own escape-excluded visible width.
 #[derive(Clone)]
 pub struct BashPrompt {
     left: String,
+    right: Option<String>,
+    right_on_last_line: bool,
     multiline: String,
 }
 
 impl BashPrompt {
     pub fn new(left: String, multiline: String) -> Self {
-        Self { left, multiline }
+        let columns = crate::terminal::terminal_columns();
+        let split = crate::prompt_right_align::split_right_align(&left, columns);
+        Self {
+            left: split.left,
+            right: split.right,
+            right_on_last_line: split.right_on_last_line,
+            // PS2 (the continuation indicator) passes through untouched:
+            // real themes do not right-align it, and a dropped tail would
+            // have no editor surface to render on.
+            multiline,
+        }
     }
 }
 
@@ -335,7 +357,14 @@ impl Prompt for BashPrompt {
     }
 
     fn render_prompt_right(&self) -> Cow<'_, str> {
-        Cow::Borrowed("")
+        match &self.right {
+            Some(right) => Cow::Borrowed(right),
+            None => Cow::Borrowed(""),
+        }
+    }
+
+    fn right_prompt_on_last_line(&self) -> bool {
+        self.right_on_last_line
     }
 
     fn render_prompt_indicator(&self, _mode: PromptEditMode) -> Cow<'_, str> {

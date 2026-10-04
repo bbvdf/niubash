@@ -18,6 +18,16 @@ pub fn stdio_is_interactive() -> bool {
 pub fn stdout_is_terminal() -> bool {
     platform::stdout_is_terminal()
 }
+
+/// Current terminal width in columns, falling back to the 80-column
+/// historical default when the size cannot be queried (piped output, CI
+/// consoles mid-reconfigure).
+///
+/// Used by the prompt channel's right-align split (niubash#169): the jump
+/// detection needs the real margin to recognize a clamping cursor-forward.
+pub fn terminal_columns() -> u16 {
+    crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80)
+}
 #[cfg(windows)]
 mod platform {
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
