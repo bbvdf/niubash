@@ -545,3 +545,80 @@ fn plugin_add_on_an_installed_source_declares_it() {
 
     let _ = fs::remove_dir_all(sandbox.home.parent().unwrap());
 }
+
+/// The `niu plugin add --checksum` pin is honored, not just echoed (wt83
+/// #173): a mismatched tree is refused with nothing registered, and the
+/// tree's real checksum installs — the same honesty `niu plugin source
+/// add --checksum` always had.
+#[test]
+fn plugin_add_honors_the_checksum_pin_and_rolls_back_on_failure() {
+    let sandbox = Sandbox::new("add-checksum-pin");
+    let origin = fixture("oh-my-bash");
+    let origin_s = origin.to_string_lossy().into_owned();
+
+    // A wrong checksum is refused: rc != 0 and the reason names the
+    // mismatch; nothing is registered.
+    let wrong = run_niu_with_env(
+        &[
+            "plugin",
+            "add",
+            "oh-my-bash",
+            "--path",
+            &origin_s,
+            "--checksum",
+            "deadbeef",
+        ],
+        &sandbox.envs,
+    );
+    assert!(!wrong.status.success(), "wrong pin must fail the add");
+    let wrong_out = format!("{}{}", stdout_text(&wrong), stderr_text(&wrong));
+    assert!(wrong_out.contains("checksum mismatch"), "{wrong_out}");
+    // (A failed add currently strands its spec entry — wt83 #174, not this
+    // test's subject. Drop it by hand so the flow can continue.)
+    let _ = fs::remove_file(sandbox.spec_path());
+    let listed = run_niu_with_env(&["plugin", "source", "list"], &sandbox.envs);
+    assert!(
+        stdout_text(&listed).contains("no sources installed"),
+        "{}",
+        stdout_text(&listed)
+    );
+
+    // Learn the fixture's real checksum from an unpinned install, remove
+    // it, then re-add pinned: the correct checksum installs.
+    let plain = run_niu_with_env(
+        &["plugin", "add", "oh-my-bash", "--path", &origin_s],
+        &sandbox.envs,
+    );
+    assert_success(&plain, "unpinned add");
+    let out = stdout_text(&plain);
+    let sha = out
+        .split("tree sha256 ")
+        .nth(1)
+        .map(|rest| rest.split_whitespace().next().unwrap_or("").to_string())
+        .unwrap_or_default();
+    assert_eq!(sha.len(), 64, "expected a sha256 in the receipt: {out}");
+
+    let remove = run_niu_with_env(&["plugin", "source", "remove", "oh-my-bash"], &sandbox.envs);
+    assert_success(&remove, "remove the unpinned install");
+
+    let pinned = run_niu_with_env(
+        &[
+            "plugin",
+            "add",
+            "oh-my-bash",
+            "--path",
+            &origin_s,
+            "--checksum",
+            &sha,
+        ],
+        &sandbox.envs,
+    );
+    assert_success(&pinned, "the correct checksum must install");
+    assert!(
+        stdout_text(&pinned).contains("Installed source 'oh-my-bash'"),
+        "{}",
+        stdout_text(&pinned)
+    );
+
+    let _ = fs::remove_dir_all(sandbox.home.parent().unwrap());
+}

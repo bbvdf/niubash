@@ -45,6 +45,14 @@ pub struct SyncOptions {
     /// are memoized and not retried on later startups (explicit verbs
     /// retry), so one bad origin can never clone on every terminal.
     pub startup: bool,
+    /// A checksum pin handed in by `niu plugin add --checksum` (wt83 #173):
+    /// `(target, sha256)` applied to the declared entry whose target (or
+    /// resolved origin) matches — the fetch is refused on mismatch, exactly
+    /// like `niu plugin source add --checksum`. Every other entry
+    /// reconciles unpinned. The pin rides the options (not the spec): the
+    /// spec declares WHAT to install; a one-shot supply-chain pin belongs
+    /// to the invocation that made it.
+    pub checksum_pin: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -279,12 +287,21 @@ fn sync_with_spec(
                 if !options.startup {
                     clear_bootstrap_failure(&origin, &entry.ref_name);
                 }
+                // The `niu plugin add --checksum` hand-off (wt83 #173): the
+                // pin applies to the entry whose target (or resolved
+                // origin) it names — a one-entry scope, so other pending
+                // declarations are never pinned by someone else's flag.
+                let expected_checksum = options
+                    .checksum_pin
+                    .as_ref()
+                    .filter(|(target, _)| target == &entry.target || target == &origin)
+                    .map(|(_, checksum)| checksum.clone());
                 let request = SourceInstallRequest {
                     adapter: adapter_hint.clone(),
                     origin: origin.clone(),
                     ref_name: entry.ref_name.clone(),
                     commit: None,
-                    expected_checksum: None,
+                    expected_checksum,
                     id: entry.id.clone(),
                     entry: None,
                 };
@@ -1216,6 +1233,106 @@ mod tests {
         let report = sync_spec(SyncOptions::default()).unwrap();
         assert!(report.clean, "{:?}", report);
         assert_eq!(spec_sources().len(), 1);
+
+        let _ = fs::remove_dir_all(&holder);
+        let _ = fs::remove_dir_all(&box_.temp);
+    }
+
+    /// The `niu plugin add --checksum` hand-off (wt83 #173): the pin rides
+    /// the options into the reconciler's install request. A mismatched tree
+    /// is refused and registers nothing, a matching one installs untrusted
+    /// (the fetch gate + trust flow unchanged), and the pin never leaks
+    /// onto other pending declarations.
+    #[test]
+    fn checksum_pin_refuses_mismatch_honors_match_and_stays_scoped() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let holder = unique_temp_dir("pin-holder");
+        let origin_a = holder.join("pinned");
+        let origin_b = holder.join("unpinned");
+        fs::create_dir_all(&origin_a).unwrap();
+        fs::create_dir_all(&origin_b).unwrap();
+        write_wild_fixture(&origin_a);
+        write_wild_fixture(&origin_b);
+        let target_a = origin_a.to_string_lossy().into_owned();
+        let target_b = origin_b.to_string_lossy().into_owned();
+        let box_ = sandbox("checksum-pin");
+
+        spec::save_spec(&PluginSpec {
+            schema: None,
+            sources: vec![
+                SpecSource {
+                    target: target_a.clone(),
+                    id: Some("pinned".to_string()),
+                    kind: None,
+                    ref_name: None,
+                    theme: None,
+                    enable: vec![],
+                },
+                SpecSource {
+                    target: target_b.clone(),
+                    id: Some("unpinned".to_string()),
+                    kind: None,
+                    ref_name: None,
+                    theme: None,
+                    enable: vec![],
+                },
+            ],
+        })
+        .unwrap();
+
+        // A wrong pin on entry A refuses A's fetch — and only A's: entry B
+        // (outside the pin's scope) still installs through the fetch gate.
+        let report = sync_spec(SyncOptions {
+            checksum_pin: Some((target_a.clone(), "deadbeef".to_string())),
+            ..SyncOptions::default()
+        })
+        .unwrap();
+        let pinned_row = report
+            .rows
+            .iter()
+            .find(|row| row.id == "pinned")
+            .expect("pinned row");
+        assert_eq!(pinned_row.action, "failed", "{:?}", report.rows);
+        assert!(
+            pinned_row.detail.contains("checksum mismatch"),
+            "{:?}",
+            report.rows
+        );
+        assert!(
+            report
+                .rows
+                .iter()
+                .any(|row| row.id == "unpinned" && row.action == "awaiting-trust"),
+            "{:?}",
+            report.rows
+        );
+        let registered: Vec<String> = read_source_registry()
+            .into_iter()
+            .map(|record| record.id)
+            .collect();
+        assert_eq!(registered, ["unpinned"], "refused fetch registers nothing");
+
+        // The correct pin installs — untrusted, fetch gate untouched.
+        let good = sources::tree_sha256(&origin_a).unwrap();
+        let report = sync_spec(SyncOptions {
+            checksum_pin: Some((target_a, good)),
+            ..SyncOptions::default()
+        })
+        .unwrap();
+        assert!(
+            report
+                .rows
+                .iter()
+                .any(|row| row.id == "pinned" && row.action == "awaiting-trust"),
+            "{:?}",
+            report.rows
+        );
+        let pinned = read_source_registry()
+            .into_iter()
+            .find(|record| record.id == "pinned")
+            .expect("pinned installed");
+        assert!(!pinned.trusted, "fetch gate unchanged: lands untrusted");
+        assert!(rc_text().is_empty(), "untrusted sources activate nothing");
 
         let _ = fs::remove_dir_all(&holder);
         let _ = fs::remove_dir_all(&box_.temp);

@@ -2087,9 +2087,17 @@ fn run_plugin_add_command(args: &[String]) -> anyhow::Result<()> {
         .clone()
         .unwrap_or_else(|| "(auto-detect)".to_string());
     print_source_trust_boundary(&display_id, &request);
+    // The user's `--checksum` rides into the reconciler's install request
+    // (wt83 #173): the fetch refuses a mismatched tree, exactly like
+    // `niu plugin source add --checksum` always did. Absent, the fetch
+    // gate + untrusted landing stay the only guards.
     let report =
         niubash_runtime::plugins::sync::sync_spec(niubash_runtime::plugins::sync::SyncOptions {
             prune: false,
+            checksum_pin: request
+                .expected_checksum
+                .clone()
+                .map(|checksum| (entry_target.clone(), checksum)),
             ..niubash_runtime::plugins::sync::SyncOptions::default()
         })?;
     print_sync_rows(&report.rows);
@@ -2858,6 +2866,7 @@ fn run_plugin_sync_command(args: &[String]) -> anyhow::Result<()> {
             prune,
             adopt,
             startup: bootstrap,
+            checksum_pin: None,
         })?;
     if bootstrap {
         // Startup form: silent when clean; install notices only otherwise
