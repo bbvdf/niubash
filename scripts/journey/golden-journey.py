@@ -1348,7 +1348,6 @@ def journey(exe: Path, root: Path, verdict: Verdict,
         s6b.close()
     step.finish()
 
-<<<<<<< HEAD
     # ── J7: the theme gallery's live prompt preview (niubash#170). When the
     # highlight moves, the pane below the menu renders that theme's ACTUAL
     # prompt — the real PS1 expanded with that theme's config — in place of
@@ -1444,7 +1443,7 @@ def journey(exe: Path, root: Path, verdict: Verdict,
     finally:
         s7.close()
     step.finish()
-=======
+
     # ── Spec phases (journey-spec.md §3/§7; wave lanes) ─────────────────────
     # Composed after the base gate on the same sandbox: every phase walks on
     # the installed state J1–J6 leave. Runner functions register themselves
@@ -1459,7 +1458,6 @@ def journey(exe: Path, root: Path, verdict: Verdict,
             # rest of the run honestly.
             verdict.step(phase_id, f"{phase_id} (crashed: {err})").finish(
                 status="blocked")
->>>>>>> wt80/jw2-wizardspec
 
     return verdict.seal()
 
