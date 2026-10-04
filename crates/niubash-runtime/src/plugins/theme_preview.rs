@@ -71,11 +71,6 @@ pub const MAX_PREVIEW_LINES: usize = 4;
 /// gallery sweep.
 const RENDER_WORKERS: usize = 2;
 
-/// How long the synchronous menu callback waits for an in-flight render
-/// before falling back to the placeholder. Bounded well under the render
-/// timeout: the gallery stays interactive even for a hung theme.
-pub const PREVIEW_GRACE: Duration = Duration::from_millis(400);
-
 /// Placeholder shown while a theme's render is in flight.
 pub const RENDERING_PLACEHOLDER: &str = "rendering preview …";
 
@@ -367,8 +362,10 @@ struct GalleryInner {
 /// Shared, lazy, time-bounded preview cache for one gallery session (the
 /// wizard's theme question or `niu plugin ui`'s theme section). Renders run
 /// on a small worker pool; the synchronous menu callback only reads ready
-/// results or shows the placeholder — a hung theme can delay one callback
-/// by at most the grace window, never the gallery.
+/// results or shows the placeholder — with zero grace at the menu surfaces
+/// (interactive_menu repaints the pane when a pending render lands), so a
+/// highlight move costs a cache read and a queue send, never a render wait,
+/// and a hung theme can only ever cost its own bounded child.
 pub struct GalleryPreviews {
     inner: Arc<GalleryInner>,
 }

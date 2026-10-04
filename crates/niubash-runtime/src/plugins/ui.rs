@@ -466,7 +466,7 @@ pub fn run_ui() -> anyhow::Result<()> {
 /// (niubash#170) through the shared [`theme_preview::GalleryPreviews`] cache.
 fn open_section(section: &UiSection) -> anyhow::Result<()> {
     use crate::interactive_menu::PreviewPhase;
-    use crate::plugins::theme_preview::{GalleryPreviews, PREVIEW_GRACE};
+    use crate::plugins::theme_preview::GalleryPreviews;
 
     if section.global {
         // The global section is a verb list, not a row list.
@@ -512,9 +512,11 @@ fn open_section(section: &UiSection) -> anyhow::Result<()> {
                             }
                         }
                         let mut lines = vec![format!("{} · {}", row.id, row.hint)];
+                        // Zero grace: instant callback; the menu's async pane
+                        // pickup repaints when the render lands.
                         lines.extend(
                             previews
-                                .lines_for(source_id, &row.id, PREVIEW_GRACE)
+                                .lines_for(source_id, &row.id, std::time::Duration::ZERO)
                                 .into_iter()
                                 .take(crate::plugins::theme_preview::MAX_PREVIEW_LINES),
                         );

@@ -441,11 +441,14 @@ fn ask_theme_question(
                     previews.prefetch(&next.source_id, &next.name);
                 }
                 let mut lines = vec![format!("{} · {}", entry.name, entry.adapter)];
+                // Zero grace: the callback must be instant — a fast arrow
+                // walk pays this per key. The menu's async pane pickup
+                // repaints when the render lands.
                 lines.extend(
                     match previews.state_for(
                         &entry.source_id,
                         &entry.name,
-                        crate::plugins::theme_preview::PREVIEW_GRACE,
+                        std::time::Duration::ZERO,
                     ) {
                         PreviewState::Ready(prompt_lines) => prompt_lines,
                         PreviewState::Rendering => vec![t.tr(RENDERING_PLACEHOLDER).to_string()],

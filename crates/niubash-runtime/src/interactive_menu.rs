@@ -184,7 +184,34 @@ pub fn interactive_choice_ex(
         }
     }
 
+    // The pane may fill asynchronously (niubash#170: the preview callback
+    // must answer instantly, the render lands in the background). Track the
+    // painted pane so the idle poll below can pick the result up without a
+    // keypress and repaint only on change.
+    let mut painted_pane: Option<Vec<String>> = preview.map(|pv| pv(PreviewPhase::Draw, selected));
+
     loop {
+        // 50ms idle poll: keys are read the moment they arrive; between
+        // keys the loop wakes to pick up an async pane render (the callback
+        // is a cheap cache read when idle). Menus are short-lived, so the
+        // wakeup cost is noise.
+        if !event::poll(Duration::from_millis(50)).unwrap_or(false) {
+            if let (Some(pv), Some(painted)) = (preview, painted_pane.as_ref()) {
+                let lines = pv(PreviewPhase::Draw, selected);
+                if &lines != painted {
+                    painted_pane = Some(lines.clone());
+                    redraw_menu(
+                        options,
+                        selected,
+                        Some(&lines),
+                        preview_height,
+                        rest_row,
+                        max_opts,
+                    );
+                }
+            }
+            continue;
+        }
         let key = match event::read() {
             Ok(Event::Key(k)) => k,
             Ok(_) => continue,
@@ -198,7 +225,30 @@ pub fn interactive_choice_ex(
             MenuAction::Abort => return Selection::Abort,
             MenuAction::MoveTo(new) if new != selected => {
                 selected = new;
+                // Coalesce a navigation burst (niubash#170): a fast arrow
+                // walk can queue keys while the menu paints, and a live pane
+                // whose render is still in flight must never multiply that
+                // cost. Drain every already-queued key and repaint ONCE for
+                // the final position; a Confirm/Esc inside the burst acts on
+                // the coalesced position (last key wins, same as an
+                // un-coalesced queue). The Draw below must be instant — the
+                // async pane pickup above brings the render in when it
+                // lands.
+                while event::poll(Duration::ZERO).unwrap_or(false) {
+                    match event::read() {
+                        Ok(Event::Key(k)) => match key_action(&k, selected, options.len()) {
+                            MenuAction::MoveTo(next) if next != selected => selected = next,
+                            MenuAction::Confirm => return Selection::Confirmed(selected),
+                            MenuAction::UseDefault => return Selection::UseDefault,
+                            MenuAction::Abort => return Selection::Abort,
+                            _ => {}
+                        },
+                        Ok(_) => continue,
+                        Err(_) => break,
+                    }
+                }
                 let lines = preview.map(|pv| pv(PreviewPhase::Draw, selected));
+                painted_pane = lines.clone();
                 redraw_menu(
                     options,
                     selected,

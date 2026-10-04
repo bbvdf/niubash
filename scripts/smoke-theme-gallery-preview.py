@@ -185,6 +185,16 @@ def build_source_tree(staged: Path):
         theme_dir = staged / "themes" / name
         theme_dir.mkdir(parents=True, exist_ok=True)
         (theme_dir / f"{name}.theme.sh").write_text(body, encoding="utf-8")
+    # The deep-walk tail: enough tiny themes to reproduce the golden
+    # journey's J2 shape (>60-entry gallery, walk DOWN to a deep row). A
+    # preview that cost real time per key would stall this walk — the walk
+    # must stay as fast as it was before the live pane existed.
+    for index in range(110):
+        name = f"zzz-walk-{index:03d}"
+        theme_dir = staged / "themes" / name
+        theme_dir.mkdir(parents=True, exist_ok=True)
+        (theme_dir / f"{name}.theme.sh").write_text(
+            f"PS1='walk-{index:03d} $ '\n", encoding="utf-8")
 
 
 def run_golden(exe: Path, root: Path) -> None:
@@ -241,6 +251,7 @@ def run_golden(exe: Path, root: Path) -> None:
     s = Session([str(exe), "setup"], home, env)
     try:
         s.wait_for("Pick a theme")
+        s.settle()  # the option window paints right after the label
         check("gallery opens", True)
         # The gallery must list the representative themes (>5 entries from
         # the one trusted source: 3 fixture + 7 representative + Skip).
@@ -298,8 +309,13 @@ def run_golden(exe: Path, root: Path) -> None:
               f"pane={placeholder_pane!r}")
         (transcripts / "preview-hung.txt").write_text(s.text(), encoding="utf-8")
 
-        # twoline sits past the digit range: jump to right-aligned (9) and
-        # walk down twice (10 robbyrussell, 11 twoline).
+        # The pick still lands (the J2 flow must survive the preview): the
+        # highlighted twoline is confirmed, Skip through the niu-git
+        # question, then Apply. But first — the deep walk (the J2 shape):
+        # from twoline, walk DOWN through the zzz-walk tail to the last row
+        # (journey walk dynamics: one DOWN per poll, poll the highlight,
+        # no per-key resend). A preview that cost real time per key would
+        # stall this; the walk must reach the bottom quickly.
         s.press(jumps["right-aligned"])
         s.press(DOWN)  # 10 robbyrussell
         s.press(DOWN)  # 11 twoline
@@ -312,8 +328,32 @@ def run_golden(exe: Path, root: Path) -> None:
         (transcripts / "preview-twoline.txt").write_text(
             s.text(), encoding="utf-8")
 
-        # The pick still lands (the J2 flow must survive the preview): the
-        # highlighted twoline is confirmed, Skip through the niu-git
+        target = "zzz-walk-109"
+        reached = False
+        started = time.time()
+        for _ in range(600):
+            rows = s.text().split("\n")
+            if any("\u25c6" in row and target in row for row in rows):
+                reached = True
+                break
+            before = s.text()
+            s.proc.write(DOWN)
+            s.wait_change(before, timeout=5.0)
+            time.sleep(0.02)
+        elapsed = time.time() - started
+        check("deep walk reaches the last theme (no preview stall)",
+              reached, f"{elapsed:.1f}s for the 120-row gallery")
+        (transcripts / "deep-walk-end.txt").write_text(
+            s.text(), encoding="utf-8")
+        # Walk back to twoline for the pick (digits jump: '3' is classic…
+        # simplest is to re-jump by digit: right-aligned is '9', then two
+        # DOWNs land on twoline again).
+        s.press("9")
+        s.press(DOWN)
+        s.press(DOWN)
+        s.capture_pane()
+
+        # The highlighted twoline is confirmed, Skip through the niu-git
         # question, then Apply.
         s.proc.write(ENTER)
         s.wait_for("niu-git")
