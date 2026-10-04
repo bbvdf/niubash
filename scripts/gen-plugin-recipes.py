@@ -55,6 +55,27 @@ STANDALONE = [
      "lightweight bash package manager (bpkg install owner/pkg)",
      "MIT", "https://github.com/bpkg/bpkg",
      {"driver": "git", "kind": "generic", "entry": "bpkg.sh"}),
+    # niubash#171: curated independent recipes carried by the built-in
+    # collections. Every entry audited against its upstream root via the
+    # GitHub contents API (wt61 pattern, 2026-10-02); the file-adapter
+    # detection needs at least one *.sh/*.bash in the tree, which each
+    # origin satisfies (complete-alias through its tests/*.sh).
+    ("complete-alias", "completion",
+     "automagical alias completion: completes what your aliases expand to (needs bash-completion)",
+     "GPL-3.0-only", "https://github.com/cykerway/complete-alias",
+     {"driver": "git", "kind": "generic", "entry": "complete_alias"}),
+    ("fzf-git.sh", "plugin",
+     "fzf key bindings for git objects (files, branches, commits); script only — needs the fzf binary (package-manager install)",
+     "MIT", "https://github.com/junegunn/fzf-git.sh",
+     {"driver": "git", "kind": "generic", "entry": "fzf-git.sh"}),
+    ("bash-sensible", "plugin",
+     "sane bash defaults in one sourceable file (vim-sensible for bash)",
+     "MIT", "https://github.com/mrzool/bash-sensible",
+     {"driver": "git", "kind": "generic", "entry": "sensible.bash"}),
+    ("git-flow-completion", "completion",
+     "bash completion for git-flow (feature/hotfix/release/support commands)",
+     "MIT", "https://github.com/bobthecow/git-flow-completion",
+     {"driver": "git", "kind": "generic", "entry": "git-flow-completion.bash"}),
     ("basher", "manager",
      "package manager with per-package bins (PATH + `basher init` model; info-only in niu)",
      "MIT", "https://github.com/basherpm/basher",

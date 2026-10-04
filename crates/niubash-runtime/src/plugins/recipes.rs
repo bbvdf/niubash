@@ -928,6 +928,13 @@ mod tests {
         ("liquidprompt", "liquidprompt"),
         ("bash-git-prompt", "gitprompt.sh"),
         ("bpkg", "bpkg.sh"),
+        // niubash#171 collection curation (audited 2026-10-02 via the
+        // GitHub contents API, wt61 pattern): the four independent recipes
+        // the built-in collections carry.
+        ("complete-alias", "complete_alias"),
+        ("fzf-git.sh", "fzf-git.sh"),
+        ("bash-sensible", "sensible.bash"),
+        ("git-flow-completion", "git-flow-completion.bash"),
     ];
 
     #[test]

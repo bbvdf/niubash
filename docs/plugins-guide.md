@@ -94,6 +94,42 @@ Every `add` lands the source **untrusted**: nothing activates until you
 review and trust it. All three are one spec entry + one sync under the
 hood — you can equally hand-edit the spec and run `niu plugin sync`.
 
+## Collections: the out-of-box sets
+
+A collection ("distro", the LazyVim extras pattern) is a **data manifest**
+listing recipe ids; `niu plugin distro apply <name>` walks the entries
+through the same add pipeline as `niu plugin add` — every source lands
+**untrusted**, failures are reported per entry (a bad entry never kills
+the rest), and the setup wizard offers the same sets on first run. Three
+built-ins ship in the product (`niu plugin distro list`); the same
+manifest format can be imported from any repo or directory
+(`niu plugin distro import <url|dir>`).
+
+Since niubash#171 the built-ins carry **independent recipes** too —
+completion-script repos, plugin files and hook layers installed through
+the plugin driver's own git install, not only framework themes. Every
+curated entry file is audited against its upstream root (the seed test
+fails on drift before a user ever sees it). Executable-tool rows are
+**not** collection entries: fzf and starship stay package-manager
+recommendations (download retraction — niu downloads nothing; `niu plugin
+add fzf` prints the commands).
+
+| Collection | Entries |
+|---|---|
+| `minimal` | bash-completion |
+| `recommended` | oh-my-bash, omb-theme-robbyrussell, bash-completion, bash-preexec, complete-alias, fzf-git.sh |
+| `full` | everything in `recommended` **plus** bash-it, bash-sensible, git-flow-completion |
+
+The independent recipes in one line (upstream, license, entry file):
+
+| Recipe | What it is | Upstream | License | Entry |
+|---|---|---|---|---|
+| `bash-preexec` | precmd/preexec hook layer | github.com/rcaloras/bash-preexec | MIT | `bash-preexec.sh` |
+| `complete-alias` | alias-aware completion | github.com/cykerway/complete-alias | GPL-3.0-only | `complete_alias` |
+| `fzf-git.sh` | fzf key bindings for git objects (script only; needs the fzf binary from your package manager) | github.com/junegunn/fzf-git.sh | MIT | `fzf-git.sh` |
+| `bash-sensible` | sane bash defaults | github.com/mrzool/bash-sensible | MIT | `sensible.bash` |
+| `git-flow-completion` | git-flow completion | github.com/bobthecow/git-flow-completion | MIT | `git-flow-completion.bash` |
+
 ## What `niu plugin sync` does
 
 `niu plugin sync` reconciles spec and machine (lazy.nvim `:Lazy sync`

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Fixture modeled on cykerway/complete-alias (GPL-3.0-only): single entry
+# file at the upstream root (`complete_alias`, audited 2026-10-02, wt61
+# pattern). Shape kept faithful: an alias-completion helper plus the
+# completion hook, no side effects at source time.
+__complete_alias_imported=1
+
+__compcomplete_aliashook() {
+  # Upstream defers to bash-completion's loader for the expanded command.
+  return 0
+}
+
+__complete_alias() {
+  # Upstream completes the alias's expansion, not the alias name.
+  return 0
+}

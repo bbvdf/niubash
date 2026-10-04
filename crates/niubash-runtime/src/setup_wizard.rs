@@ -1514,8 +1514,8 @@ fn ask_plugin_collection(io: &mut WizardIo, t: &Lang) -> Option<Option<String>> 
             "{}  {}",
             pad_display("full", 14),
             t.tr(
-                "both frameworks + bash-preexec; fzf/starship are suggested \
-                 installs (niu downloads nothing)"
+                "both frameworks + hooks + curated bash plugins; fzf/starship \
+                 are suggested installs (niu downloads nothing)"
             )
         ),
     ];
@@ -2047,9 +2047,9 @@ fn zh(en: &str) -> Option<&'static str> {
         "bash-completion only, no frameworks" => "仅 bash-completion，不含框架",
         "oh-my-bash + its default theme + completions" =>
             "oh-my-bash + 默认主题 + 补全",
-        "both frameworks + bash-preexec; fzf/starship are suggested \
-                 installs (niu downloads nothing)" =>
-            "双框架 + bash-preexec；fzf/starship 仅为安装建议（niu 不下载任何东西）",
+        "both frameworks + hooks + curated bash plugins; fzf/starship \
+                 are suggested installs (niu downloads nothing)" =>
+            "双框架 + 钩子 + 精选 bash 插件；fzf/starship 仅为安装建议（niu 不下载任何东西）",
         "  |  installs stay untrusted until `niu plugin trust`; Skip changes nothing" =>
             "  |  安装后保持未信任，待 `niu plugin trust` 审阅；跳过则不做任何改动",
 
