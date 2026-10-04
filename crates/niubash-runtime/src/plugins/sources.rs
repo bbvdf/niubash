@@ -24,6 +24,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
+
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 
 use anyhow::{anyhow, Context};
 use serde::{Deserialize, Serialize};
@@ -50,6 +54,33 @@ pub use super::descriptors::{
 pub const SOURCE_REGISTRY_SCHEMA: &str = "niubash:plugin-source-registry@0.3.0";
 /// Ref recorded for local-directory installs (no git ref exists).
 pub const LOCAL_ORIGIN_REF: &str = "local";
+
+/// Hard wall-clock budget for ONE startup fetch attempt (`niu plugin sync
+/// --bootstrap`; the 1.3.1 memo records the failure and later startups
+/// defer, so this caps the worst case a bad network day can impose on the
+/// interactive session). The owner's 2026-10-04 P0: one declared-but-
+/// unmatched spec entry burned 5.26s in a TLS-failing `git clone` at
+/// startup, and a silently blackholed network (SYN dropped, no RST) hangs
+/// git for minutes — a startup-destroying window. 3s stays under the
+/// "startup-destroying" bar, and the memo + `niu plugin sync` (unbudgeted,
+/// user-invoked) remain the path that actually completes big installs.
+pub const STARTUP_FETCH_BUDGET: Duration = Duration::from_secs(3);
+
+/// The effective startup fetch budget: `NIU_STARTUP_FETCH_BUDGET_MS`
+/// overrides the default (milliseconds; power users on peculiar networks,
+/// and tests). An invalid or zero value falls back to the default.
+pub fn startup_fetch_budget() -> Duration {
+    match std::env::var("NIU_STARTUP_FETCH_BUDGET_MS") {
+        Ok(raw) => raw
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .filter(|ms| *ms > 0)
+            .map(Duration::from_millis)
+            .unwrap_or(STARTUP_FETCH_BUDGET),
+        Err(_) => STARTUP_FETCH_BUDGET,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -514,6 +545,12 @@ pub struct SourceInstallRequest {
     /// (their own layout detect already ran); file sources name it in the
     /// recommended enable verb (`niu plugin enable <id>/<entry>`).
     pub entry: Option<String>,
+    /// Hard wall-clock budget for the git transport phase of this install
+    /// (the `--bootstrap` startup form sets [`STARTUP_FETCH_BUDGET`];
+    /// explicit verbs leave it `None` — a user-invoked fetch may take as
+    /// long as the network needs). On expiry the git child is killed and
+    /// the install fails like any fetch failure (memoized at startup).
+    pub fetch_budget: Option<Duration>,
 }
 
 struct FetchedSource {
@@ -532,12 +569,19 @@ struct FetchedSource {
 /// config (§14.8: the recorded origin stays canonical — GitHub URL in the
 /// registry, mirror applied only as a git config key at transport time).
 /// Pure, so the insteadOf wiring is testable without spawning git.
-fn git_clone_arg_list(origin: &str, ref_name: &str) -> Vec<String> {
+/// `credential_guard` (the budgeted startup path only) additionally clears
+/// credential helpers so an auth-demanding origin fails the fetch instead
+/// of hanging the session; explicit verbs keep git's own prompting
+/// behavior (a user-invoked sync may legitimately answer a prompt).
+fn clone_arg_list(origin: &str, ref_name: &str, credential_guard: bool) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-c".into(),
         // OMB has no .gitattributes; CRLF would kill sourcing (§9).
         "core.autocrlf=false".into(),
     ];
+    if credential_guard {
+        args.extend(["-c".into(), "credential.helper=".into()]);
+    }
     args.extend(super::mirrors::git_clone_args(origin));
     args.extend(["clone".into(), "--depth".into(), "1".into()]);
     if ref_name != "HEAD" {
@@ -547,20 +591,16 @@ fn git_clone_arg_list(origin: &str, ref_name: &str) -> Vec<String> {
     args
 }
 
-fn git_clone_to(staging: &Path, origin: &str, ref_name: &str) -> anyhow::Result<()> {
-    let args = git_clone_arg_list(origin, ref_name);
-    let status = Command::new("git")
-        .args(&args)
-        .arg(staging)
-        .status()
-        .with_context(|| "failed to run git; is git.exe on PATH?")?;
-    if !status.success() {
-        anyhow::bail!(
-            "git clone exited with status {}",
-            status.code().unwrap_or(1)
-        );
-    }
-    Ok(())
+fn git_clone_to(
+    staging: &Path,
+    origin: &str,
+    ref_name: &str,
+    deadline: Option<Instant>,
+) -> anyhow::Result<()> {
+    let args = clone_arg_list(origin, ref_name, deadline.is_some());
+    let mut command = Command::new("git");
+    command.args(&args).arg(staging);
+    run_git_bounded(command, deadline, "clone")
 }
 
 /// Fetch one exact commit without a branch clone: init + shallow
@@ -569,26 +609,28 @@ fn git_clone_to(staging: &Path, origin: &str, ref_name: &str) -> anyhow::Result<
 /// config rides along (§14.8): every subcommand gets the same `-c` keys —
 /// insteadOf only affects URL resolution at fetch time, so `remote add`
 /// keeps storing the canonical origin.
-fn git_fetch_commit_to(staging: &Path, origin: &str, commit: &str) -> anyhow::Result<()> {
+fn git_fetch_commit_to(
+    staging: &Path,
+    origin: &str,
+    commit: &str,
+    deadline: Option<Instant>,
+) -> anyhow::Result<()> {
     let mirror_args = super::mirrors::git_clone_args(origin);
+    let guarded = deadline.is_some();
     let run = |args: &[&str]| -> anyhow::Result<()> {
-        let status = Command::new("git")
+        let mut command = Command::new("git");
+        command
             .arg("-C")
             .arg(staging)
             .arg("-c")
             .arg("core.autocrlf=false")
-            .args(&mirror_args)
-            .args(args)
-            .status()
-            .with_context(|| "failed to run git; is git.exe on PATH?")?;
-        if !status.success() {
-            anyhow::bail!(
-                "git {} exited with status {}",
-                args.first().copied().unwrap_or(""),
-                status.code().unwrap_or(1)
-            );
+            .args(&mirror_args);
+        if guarded {
+            // `-c` keys must precede the subcommand.
+            command.arg("-c").arg("credential.helper=");
         }
-        Ok(())
+        command.args(args);
+        run_git_bounded(command, deadline, args.first().copied().unwrap_or(""))
     };
     fs::create_dir_all(staging)?;
     run(&["init", "-q"])?;
@@ -597,12 +639,152 @@ fn git_fetch_commit_to(staging: &Path, origin: &str, commit: &str) -> anyhow::Re
         // Some servers refuse fetch-by-sha; fall back to a plain shallow
         // clone of the default branch and check the commit out from it.
         fs::remove_dir_all(staging)?;
-        git_clone_to(staging, origin, "HEAD")?;
+        git_clone_to(staging, origin, "HEAD", deadline)?;
         run(&["checkout", "-q", commit])?;
         return Ok(());
     }
     run(&["checkout", "-q", "FETCH_HEAD"])?;
     Ok(())
+}
+
+/// Credential-prompt guards for the budgeted (startup) git runs: `git`
+/// never asks — neither on the terminal (`GIT_TERMINAL_PROMPT`) nor through
+/// an askpass program (`GIT_ASKPASS`); the `-c credential.helper=` arg
+/// (which must precede the subcommand) comes from the arg-list builders.
+/// An auth-demanding origin fails the fetch instead of hanging the
+/// session behind a hidden prompt.
+fn apply_credential_guards(command: &mut Command) {
+    command
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "echo");
+}
+
+/// Run one git command to completion under an optional wall-clock deadline
+/// (the budgeted startup path, which also gets the credential guards).
+/// The deadline closes the slowsource P0's two startup failure modes: a
+/// TLS reset that costs git's whole handshake (~5s today) and a dropped
+/// SYN that hangs it for minutes — `status()` has no timeout. On expiry
+/// the whole process tree is killed (see `kill_on_close_job`) and the
+/// install fails into the startup memo, so later startups defer.
+fn run_git_bounded(
+    mut command: Command,
+    deadline: Option<Instant>,
+    subcommand: &str,
+) -> anyhow::Result<()> {
+    if deadline.is_some() {
+        apply_credential_guards(&mut command);
+    }
+    // A kill-on-close job binds the whole git process tree: killing
+    // `git.exe` alone orphans `git-remote-https`, which keeps writing the
+    // staging clone and holds the files a synchronous cleanup then blocks
+    // on (measured: a 300ms budget turned into a 5.2s wall purely on the
+    // orphan's own TLS-failure schedule). Closing the job handle at scope
+    // end terminates everything still running under it.
+    let job = kill_on_close_job();
+    let mut child = command
+        .spawn()
+        .with_context(|| "failed to run git; is git.exe on PATH?")?;
+    job.assign(&child);
+    // Poll instead of `status()`: std has no wait-with-timeout, and 20ms
+    // granularity is far below any real clone's duration.
+    const POLL: Duration = Duration::from_millis(20);
+    loop {
+        match child.try_wait()? {
+            Some(status) => {
+                if !status.success() {
+                    anyhow::bail!(
+                        "git {subcommand} exited with status {}",
+                        status.code().unwrap_or(1)
+                    );
+                }
+                return Ok(());
+            }
+            None => {
+                if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    anyhow::bail!(
+                        "git {subcommand} timed out (startup fetch budget); \
+                         `niu plugin sync` retries without the cap"
+                    );
+                }
+                std::thread::sleep(POLL);
+            }
+        }
+    }
+}
+
+/// A kill-on-close job object (Windows): dropping the handle terminates
+/// every process still assigned to it, so a timed-out git fetch cannot
+/// leave a download tree behind. A construction failure yields a null
+/// handle and only loses the tree-kill, never the run.
+#[cfg(windows)]
+pub struct JobGuard(HANDLE);
+
+#[cfg(windows)]
+impl JobGuard {
+    /// Bind a spawned child into the job (best effort: an assignment
+    /// failure only loses the tree-kill, never the run).
+    pub fn assign<T: std::os::windows::io::AsRawHandle>(&self, child: &T) {
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+        unsafe {
+            AssignProcessToJobObject(self.0, child.as_raw_handle());
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for JobGuard {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // KILL_ON_JOB_CLOSE: this closes every surviving process in the
+            // tree (the timed-out git's remote helper included).
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+}
+
+#[cfg(windows)]
+fn kill_on_close_job() -> JobGuard {
+    use windows_sys::Win32::System::JobObjects::{
+        CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            return JobGuard(std::ptr::null_mut());
+        }
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &limits as *const _ as *const _,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        ) == 0
+        {
+            CloseHandle(job);
+            return JobGuard(std::ptr::null_mut());
+        }
+        JobGuard(job)
+    }
+}
+
+#[cfg(not(windows))]
+fn kill_on_close_job() -> UnixJobGuard {
+    UnixJobGuard
+}
+
+/// Non-Windows stand-in: the child kill already takes git down; POSIX
+/// children of a killed git lose their transport when the pipe breaks.
+#[cfg(not(windows))]
+pub struct UnixJobGuard;
+
+#[cfg(not(windows))]
+impl UnixJobGuard {
+    pub fn assign<T>(&self, _child: &T) {}
 }
 
 /// Shared fetch pipeline (§12.2): fetch to staging, detect adapter, compute
@@ -619,6 +801,10 @@ fn fetch_source_to_staging(request: &SourceInstallRequest) -> anyhow::Result<Fet
     }
     fs::create_dir_all(&staging)?;
     let staging_for_cleanup = staging.clone();
+    // The startup form's hard wall-clock budget (`STARTUP_FETCH_BUDGET`)
+    // covers the whole git transport phase; the local-snapshot path is
+    // plain file IO (no network child) and stays unbudgeted.
+    let deadline = request.fetch_budget.map(|budget| Instant::now() + budget);
     let origin_path = Path::new(origin);
     let result = (|| -> anyhow::Result<FetchedSource> {
         // Origin semantics: an explicit ref or commit forces git semantics
@@ -640,11 +826,11 @@ fn fetch_source_to_staging(request: &SourceInstallRequest) -> anyhow::Result<Fet
             None => LOCAL_ORIGIN_REF.to_string(),
         };
         if commit.is_some() {
-            git_fetch_commit_to(&staging, origin, commit.as_deref().unwrap())?;
+            git_fetch_commit_to(&staging, origin, commit.as_deref().unwrap(), deadline)?;
         } else if ref_name == LOCAL_ORIGIN_REF {
             copy_tree(origin_path, &staging)?;
         } else {
-            git_clone_to(&staging, origin, &ref_name)?;
+            git_clone_to(&staging, origin, &ref_name, deadline)?;
         }
 
         let adapter = match &request.adapter {
@@ -972,6 +1158,7 @@ pub fn rollback_source(id: &str) -> anyhow::Result<SourceUpdateSummary> {
         expected_checksum: Some(previous.checksum_sha256.clone()),
         id: None,
         entry: None,
+        fetch_budget: None,
     })?;
 
     remove_tree_if_present(&record.path)
@@ -1202,6 +1389,7 @@ pub fn restore_source(id: &str) -> anyhow::Result<SourceSyncOutcome> {
         expected_checksum: Some(record.checksum_sha256.clone()),
         id: None,
         entry: None,
+        fetch_budget: None,
     })?;
     remove_tree_if_present(&record.path)
         .with_context(|| format!("failed to remove tree {}", record.path.display()))?;
@@ -1409,8 +1597,78 @@ mod tests {
         dir
     }
 
-    /// Minimal oh-my-bash-shaped fixture (corpus layout:
-    /// `D:/repo/rubash/target-ecosys/repos/oh-my-bash`).
+    /// A Command that sleeps well past any test budget (bounded-runner
+    /// tests kill it).
+    fn sleeping_command() -> Command {
+        if cfg!(windows) {
+            let mut command = Command::new("cmd");
+            command.args(["/c", "ping", "-n", "30", "127.0.0.1", ">nul"]);
+            command
+        } else {
+            let mut command = Command::new("sleep");
+            command.arg("30");
+            command
+        }
+    }
+
+    /// The bounded git runner kills a hung child at the deadline and says
+    /// so (the slowsource P0: an unbounded startup fetch hung the session
+    /// on blackholed networks).
+    #[test]
+    fn run_git_bounded_kills_a_hung_child_at_the_deadline() {
+        let start = Instant::now();
+        let err = run_git_bounded(
+            sleeping_command(),
+            Some(Instant::now() + Duration::from_millis(250)),
+            "clone",
+        )
+        .expect_err("a killed child must fail the run");
+        assert!(err.to_string().contains("timed out"), "{err}");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "the kill must land at the deadline, took {:?}",
+            start.elapsed()
+        );
+    }
+
+    /// Without a deadline the same runner behaves like the old `status()`:
+    /// success passes, a non-zero exit reports the status.
+    #[test]
+    fn run_git_bounded_unbudgeted_propagates_exit_status() {
+        let mut ok = Command::new(if cfg!(windows) { "cmd" } else { "true" });
+        if cfg!(windows) {
+            ok.args(["/c", "exit", "0"]);
+        }
+        run_git_bounded(ok, None, "init").expect("exit 0 must pass");
+
+        let mut bad = Command::new(if cfg!(windows) { "cmd" } else { "false" });
+        if cfg!(windows) {
+            bad.args(["/c", "exit", "3"]);
+        }
+        let err = run_git_bounded(bad, None, "fetch").expect_err("exit 3 must fail");
+        assert!(err.to_string().contains("status 3"), "{err}");
+    }
+
+    /// The guards are plain env overrides on the spawned command —
+    /// assert them on the Command itself (no process needed).
+    #[test]
+    fn credential_guards_are_applied_to_the_command() {
+        let mut command = Command::new("git");
+        command
+            .env("GIT_TERMINAL_PROMPT", "1")
+            .env("GIT_ASKPASS", "gui-askpass");
+        apply_credential_guards(&mut command);
+        let env_of = |key: &str| {
+            command
+                .get_envs()
+                .find(|(name, _)| *name == std::ffi::OsStr::new(key))
+                .and_then(|(_, value)| value)
+                .and_then(|value| value.to_str())
+        };
+        assert_eq!(env_of("GIT_TERMINAL_PROMPT"), Some("0"));
+        assert_eq!(env_of("GIT_ASKPASS"), Some("echo"));
+    }
+
     fn write_omb_fixture(root: &Path, marker: &str) {
         fs::create_dir_all(root.join("themes/robbyrussell")).unwrap();
         fs::create_dir_all(root.join("themes/agnoster")).unwrap();
@@ -1508,6 +1766,7 @@ mod tests {
             expected_checksum: None,
             id: None,
             entry: None,
+            fetch_budget: None,
         }
     }
 
@@ -1657,7 +1916,7 @@ mod tests {
         let _guard = EnvVarGuard::set("NIU_MIRRORS", &config);
 
         let origin = "https://github.com/ohmybash/oh-my-bash.git";
-        let args = git_clone_arg_list(origin, "HEAD");
+        let args = clone_arg_list(origin, "HEAD", false);
         let expected_pair = [
             "-c",
             "url.https://git.example.com/github.com.insteadOf=https://github.com/",
@@ -1666,6 +1925,23 @@ mod tests {
             args.windows(2).any(|window| window == expected_pair),
             "clone args missing insteadOf pair: {args:?}"
         );
+        // The credential guard rides only the budgeted (startup) path, and
+        // its `-c` keys must precede the subcommand (see `run_git_bounded`).
+        let guarded = clone_arg_list(origin, "HEAD", true);
+        let clone_at = guarded
+            .iter()
+            .position(|arg| arg == "clone")
+            .expect("clone subcommand present");
+        assert!(
+            guarded[..clone_at]
+                .windows(2)
+                .any(|window| window == ["-c", "credential.helper="]),
+            "guarded clone args missing credential.helper=: {guarded:?}"
+        );
+        assert!(
+            !args.contains(&"credential.helper=".to_string()),
+            "explicit verbs keep git's own prompting: {args:?}"
+        );
         // The origin handed to `git clone` is still the canonical URL —
         // git does the rewrite, the recorded origin never changes.
         assert_eq!(args.last().map(String::as_str), Some(origin));
@@ -1673,7 +1949,7 @@ mod tests {
 
         // Without a mirror config the args carry no insteadOf keys.
         let _guard = EnvVarGuard::set("NIU_MIRRORS", &temp.join("absent.toml"));
-        let args = git_clone_arg_list(origin, "v1");
+        let args = clone_arg_list(origin, "v1", false);
         assert!(
             !args.iter().any(|arg| arg.contains("insteadOf")),
             "unexpected insteadOf without a mirror: {args:?}"
@@ -1683,7 +1959,7 @@ mod tests {
 
         // Local (non-GitHub) origins never get mirror config.
         let _guard = EnvVarGuard::set("NIU_MIRRORS", &config);
-        let args = git_clone_arg_list("D:/repo/local-origin", LOCAL_ORIGIN_REF);
+        let args = clone_arg_list("D:/repo/local-origin", LOCAL_ORIGIN_REF, false);
         assert!(
             !args.iter().any(|arg| arg.contains("insteadOf")),
             "local origin must not be mirrored: {args:?}"
@@ -1844,6 +2120,7 @@ mod tests {
             expected_checksum: None,
             id: None,
             entry: None,
+            fetch_budget: None,
         };
         let v1 = add_source(request("v1")).expect("install from git ref v1");
         trust_source("oh-my-bash").unwrap();
@@ -2293,6 +2570,7 @@ mod tests {
             expected_checksum: None,
             id: None,
             entry: None,
+            fetch_budget: None,
         };
         let v1 = add_source(request("v1")).unwrap();
         assert!(v1.commit_sha.is_some(), "git installs pin the commit");
@@ -2375,6 +2653,7 @@ mod tests {
             expected_checksum: None,
             id: None,
             entry: None,
+            fetch_budget: None,
         };
         let v1 = add_source(request("v1")).unwrap();
         trust_source("oh-my-bash").unwrap();
