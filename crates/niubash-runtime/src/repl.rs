@@ -1195,6 +1195,11 @@ pub fn run_repl(shell: Shell) -> anyhow::Result<()> {
         typeahead.arm();
         let signal = if pending.is_empty() {
             drain_pending_notices();
+            // niubash#180: a finished `niu setup` run (a child process)
+            // left its handoff marker — apply the new configuration before
+            // the precmd hooks render the prompt, so the very next prompt
+            // already shows the new theme.
+            shell.borrow_mut().apply_setup_config_if_pending();
             shell.borrow_mut().run_precmd_hooks();
             let prompt = shell.borrow().prompt.clone();
             typeahead.disarm_and_reinject();
@@ -1310,6 +1315,8 @@ fn run_repl_without_line_editor(shell: &mut Shell) -> anyhow::Result<()> {
     let mut pending = PendingReplInput::default();
     loop {
         crate::console_guard::restore(&console_baseline);
+        // niubash#180: same live-session apply as the line-editor loop.
+        shell.apply_setup_config_if_pending();
         shell.run_precmd_hooks();
         let prompt = if pending.is_empty() {
             shell.prompt.render_prompt_left().to_string()

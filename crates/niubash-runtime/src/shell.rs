@@ -771,6 +771,66 @@ impl Shell {
         self.run_startup_files(true);
     }
 
+    /// niubash#180 session side: a finished `niu setup` run (a child
+    /// process — the wizard cannot reach this session's executor state)
+    /// leaves the one-shot marker `~/.niubash/setup-apply-pending`; when
+    /// the live REPL draws its next prompt it consumes the marker and
+    /// re-sources the startup rc in-process — the exact equivalent of the
+    /// `source ~/.niubashrc` the finish screen names. No prompt machinery
+    /// is duplicated here: the next `run_precmd_hooks` executes the fresh
+    /// `PROMPT_COMMAND` and `sync_bash_prompt_from_env` re-reads `PS1`, so
+    /// the new theme renders on that same prompt. The marker is consumed
+    /// first (`setup_wizard::take_apply_pending_marker`), so a broken rc
+    /// degrades to the honest warning instead of looping the REPL, and a
+    /// hand-edited rc alone never triggers a re-source — only the wizard's
+    /// own handoff does.
+    pub fn apply_setup_config_if_pending(&mut self) {
+        if !crate::setup_wizard::take_apply_pending_marker(&self.home_dir) {
+            return;
+        }
+        let failed = || eprintln!("{}", crate::setup_wizard::session_apply_failed_notice());
+        let Some(path) = self.startup_rc_path() else {
+            failed();
+            return;
+        };
+        if !path.is_file() {
+            failed();
+            return;
+        }
+        ensure_prompt_terminal_env(&mut self.executor);
+        self.executor.set_env("NIU_REPL_STARTUP", "1");
+        let outcome = self.source_file_into_current_shell(&path);
+        let _ = self.execute_script("unset NIU_REPL_STARTUP");
+        match outcome {
+            // GNU maybe_execute_file discipline (evalfile.c:339, the same
+            // contract source_startup_file implements): a failed or
+            // nonzero-exiting re-source warns but never aborts the shell —
+            // the session keeps running, with the old state where the new
+            // rc did not take.
+            Ok(0) => {
+                self.sync_process_path_from_executor_path();
+                self.update_completion_state();
+                println!("{}", crate::setup_wizard::session_apply_notice());
+            }
+            Ok(code) => {
+                log::warn!(
+                    "{} exited with status {} during the setup re-apply",
+                    path.display(),
+                    code
+                );
+                eprintln!("{}", crate::setup_wizard::session_apply_failed_notice());
+            }
+            Err(err) => {
+                log::warn!(
+                    "{} failed during the setup re-apply: {}",
+                    path.display(),
+                    err
+                );
+                eprintln!("{}", crate::setup_wizard::session_apply_failed_notice());
+            }
+        }
+    }
+
     /// Interactive startup files for a non-REPL interactive dispatch
     /// (`niu -i -c 'cmd'`, `niu -i script`). GNU shell.c: `-i` sets
     /// forced_interactive during option parsing, so run_startup_files
@@ -781,6 +841,12 @@ impl Shell {
     }
 
     fn run_startup_files(&mut self, repl: bool) {
+        // niubash#180 baseline: this session sources the current rc right
+        // now, so a marker left by a setup that ran before this session
+        // started is stale by definition — consume it here so only a setup
+        // that runs while the session is live triggers the next-prompt
+        // re-apply (apply_setup_config_if_pending).
+        crate::setup_wizard::clear_stale_apply_pending_marker(&self.home_dir);
         normalize_executor_home_env(&mut self.executor, &self.home_dir);
         ensure_windows_profile_env(&mut self.executor, &self.home_dir);
         ensure_prompt_terminal_env(&mut self.executor);
