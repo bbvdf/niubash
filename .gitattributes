@@ -20,3 +20,7 @@ scripts/**/*.sh text eol=lf
 # diffed across agents/shells; keep it LF like scripts/*.sh (shared-tree
 # hygiene: a CRLF working copy must never silently change the gate).
 scripts/journey/*.py text eol=lf
+
+# The adversarial injection kit (wt88/advmatrix) is python edited and run
+# across agents/shells; same shared-tree hygiene as scripts/journey/*.py.
+scripts/adversarial/*.py text eol=lf
