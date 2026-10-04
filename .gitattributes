@@ -15,3 +15,8 @@ crates/niubash-runtime/tests/fixtures/winuxcmd-help-corpus/** text eol=lf
 # Audit probe scripts live deeper than scripts/*.sh; same CRLF hazard
 # (wt82-L01: the tracked lanes' sweep/migrate probes must stay LF).
 scripts/**/*.sh text eol=lf
+
+# The golden-journey driver is python (CRLF-tolerant) but it is edited and
+# diffed across agents/shells; keep it LF like scripts/*.sh (shared-tree
+# hygiene: a CRLF working copy must never silently change the gate).
+scripts/journey/*.py text eol=lf
