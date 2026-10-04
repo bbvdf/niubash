@@ -79,6 +79,7 @@ impl Drop for EnvGuard {
 struct PreviewSandbox {
     _guards: Vec<EnvGuard>,
     sources_root: PathBuf,
+    #[allow(dead_code)] // kept for parity with the other sandbox fixtures
     home: PathBuf,
 }
 
