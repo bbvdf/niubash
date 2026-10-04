@@ -2307,6 +2307,7 @@ mod tests {
             expected_checksum: None,
             id: None,
             entry: None,
+            fetch_budget: None,
         })
         .expect("fixture source add must succeed");
         crate::plugins::sources::trust_source("oh-my-bash").expect("fixture trust must succeed");
@@ -2366,6 +2367,7 @@ mod tests {
             expected_checksum: None,
             id: None,
             entry: None,
+            fetch_budget: None,
         })
         .expect("bash-it fixture source add must succeed");
         crate::plugins::sources::trust_source("bash-it").expect("bash-it fixture trust");
@@ -2651,6 +2653,7 @@ mod tests {
             expected_checksum: None,
             id: None,
             entry: None,
+            fetch_budget: None,
         })
         .expect("fixture source add must succeed");
     }
@@ -2883,6 +2886,7 @@ mod tests {
             expected_checksum: None,
             id: None,
             entry: None,
+            fetch_budget: None,
         })
         .expect("bash-completion fixture add must succeed");
         let candidates = post_install_theme_candidates(Some(&CollectionJournal {

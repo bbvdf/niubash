@@ -1714,6 +1714,7 @@ impl PluginSourceRequest {
             expected_checksum: self.expected_checksum.clone(),
             id: self.id.clone(),
             entry: None,
+            fetch_budget: None,
         }
     }
 }

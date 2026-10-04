@@ -1349,6 +1349,7 @@ mod tests {
             expected_checksum: None,
             id: None,
             entry: None,
+            fetch_budget: None,
         })
         .expect("fixture add");
     }

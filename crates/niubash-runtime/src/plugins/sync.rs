@@ -287,6 +287,13 @@ fn sync_with_spec(
                     expected_checksum: None,
                     id: entry.id.clone(),
                     entry: None,
+                    // Startup fetches run under a hard wall-clock budget
+                    // (sources::STARTUP_FETCH_BUDGET): a bad network day
+                    // (TLS resets, blackholes) must cost the interactive
+                    // session one bounded attempt, not an unbounded hang;
+                    // the memo then defers later startups, and the explicit
+                    // verbs below retry without the cap.
+                    fetch_budget: options.startup.then_some(sources::startup_fetch_budget()),
                 };
                 match sources::install_or_adopt(request) {
                     Ok((record, already_installed)) => {
@@ -811,6 +818,7 @@ mod tests {
             expected_checksum: None,
             id: None,
             entry: None,
+            fetch_budget: None,
         })
         .unwrap();
         let report = sync_spec(SyncOptions::default()).unwrap();
@@ -1153,6 +1161,167 @@ mod tests {
         assert!(!text.contains("[[failure]]"), "memo cleared: {text}");
 
         let _ = fs::remove_dir_all(&holder);
+        let _ = fs::remove_dir_all(&box_.temp);
+    }
+
+    /// The slowsource P0 pin (owner report 2026-10-04): an IN-SYNC startup
+    /// must not notice airplane mode. Every declared source is installed,
+    /// trusted, and materialized; the network is dead (all proxies point at
+    /// a refused port, so any fetch attempt would fail loudly into the
+    /// memo). The startup sync changes nothing, spawns no fetch, and stays
+    /// fast — the wall is bounded well under a second in-process.
+    #[test]
+    fn startup_in_sync_survives_airplane_mode_untouched() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let holder = unique_temp_dir("airplane-holder");
+        let origin = holder.join("oh-my-fixture");
+        fs::create_dir_all(&origin).unwrap();
+        write_omb_fixture(&origin);
+        let box_ = sandbox("airplane");
+
+        spec::save_spec(&PluginSpec {
+            schema: None,
+            sources: vec![SpecSource {
+                target: origin.to_string_lossy().into_owned(),
+                id: Some("oh-my-bash".to_string()),
+                kind: None,
+                ref_name: None,
+                theme: Some("agnoster".to_string()),
+                enable: vec!["git".to_string()],
+            }],
+        })
+        .unwrap();
+        sync_spec(SyncOptions::default()).unwrap();
+        sources::trust_source("oh-my-bash").unwrap();
+        // Materialize once, then confirm the steady state is reached (the
+        // second sync is the in-sync no-op the startup form must reproduce).
+        let report = sync_spec(SyncOptions::default()).unwrap();
+        assert_eq!(report.rows[0].action, "activated", "{:?}", report.rows);
+        let report = sync_spec(SyncOptions::default()).unwrap();
+        assert_eq!(report.rows[0].action, "unchanged", "{:?}", report.rows);
+
+        // Airplane mode: every proxy points at a refused port, so a single
+        // network touch would fail and land in the bootstrap-failure memo.
+        let _dead_http = EnvGuard::set("http_proxy", "http://127.0.0.1:9");
+        let _dead_https = EnvGuard::set("https_proxy", "http://127.0.0.1:9");
+        let _dead_upper_https = EnvGuard::set("HTTPS_PROXY", "http://127.0.0.1:9");
+        let _dead_upper_http = EnvGuard::set("HTTP_PROXY", "http://127.0.0.1:9");
+        let _dead_all = EnvGuard::set("ALL_PROXY", "http://127.0.0.1:9");
+
+        let registry_before =
+            fs::read_to_string(sources::sources_root().join("registry.toml")).unwrap();
+        let rc_before = rc_text();
+        let spec_before = fs::read_to_string(spec::spec_path()).unwrap();
+
+        let start = std::time::Instant::now();
+        let report = sync_spec(SyncOptions {
+            startup: true,
+            ..SyncOptions::default()
+        })
+        .unwrap();
+        let elapsed = start.elapsed();
+        println!("airplane in-sync startup wall: {elapsed:?}");
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "in-sync startup must stay network-free and fast: {elapsed:?}"
+        );
+        assert!(
+            report.rows.iter().all(|row| row.action == "unchanged"),
+            "{:?}",
+            report.rows
+        );
+        assert!(report.clean, "{:?}", report);
+        assert!(
+            !box_.temp.join("sources/bootstrap-failures.toml").exists(),
+            "no fetch attempt may run, so no failure may be memoized"
+        );
+        assert_eq!(
+            fs::read_to_string(sources::sources_root().join("registry.toml")).unwrap(),
+            registry_before,
+            "registry byte-identical in airplane mode"
+        );
+        assert_eq!(rc_text(), rc_before, "rc byte-identical in airplane mode");
+        assert_eq!(
+            fs::read_to_string(spec::spec_path()).unwrap(),
+            spec_before,
+            "spec byte-identical in airplane mode"
+        );
+
+        let _ = fs::remove_dir_all(&holder);
+        let _ = fs::remove_dir_all(&box_.temp);
+    }
+
+    /// The other half of the slowsource P0: when a declared source IS
+    /// missing and the network is blackholed, the startup fetch attempt is
+    /// BOUNDED (`sources::STARTUP_FETCH_BUDGET`, tuned down here via the
+    /// env override), the failure is memoized, and the next startup defers
+    /// instead of paying again. Unbounded, one TLS-burning attempt cost the
+    /// owner 5.26s and a dropped SYN would hang git for minutes.
+    #[test]
+    fn startup_fetch_budget_bounds_the_first_attempt_and_memoizes() {
+        let _env_lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let box_ = sandbox("budget");
+        let ledger = box_.temp.join("sources/bootstrap-failures.toml");
+
+        // RFC 5737 TEST-NET-3: never routable, so a plain git clone hangs
+        // in the connect phase instead of failing fast with a reset.
+        spec::save_spec(&PluginSpec {
+            schema: None,
+            sources: vec![SpecSource {
+                target: "https://203.0.113.1/repo.git".to_string(),
+                id: Some("blackhole".to_string()),
+                kind: None,
+                ref_name: None,
+                theme: None,
+                enable: vec![],
+            }],
+        })
+        .unwrap();
+        let _budget = EnvGuard::set("NIU_STARTUP_FETCH_BUDGET_MS", "300");
+
+        let start = std::time::Instant::now();
+        let report = sync_spec(SyncOptions {
+            startup: true,
+            ..SyncOptions::default()
+        })
+        .unwrap();
+        let elapsed = start.elapsed();
+        println!("budgeted startup attempt wall: {elapsed:?}");
+        // Bounded: the budget (300ms) plus process slack, never the
+        // minutes a blackholed TCP connect would otherwise cost.
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "the startup fetch must respect the budget: {elapsed:?}"
+        );
+        assert!(
+            report.rows.iter().any(|row| row.action == "failed"),
+            "{:?}",
+            report.rows
+        );
+        let memo = fs::read_to_string(&ledger).unwrap();
+        // The memo keys by the resolved origin (what the deferral lookup
+        // matches), not the spec id.
+        assert!(memo.contains("203.0.113.1"), "{memo}");
+        assert!(memo.contains("[[failure]]"), "{memo}");
+
+        // The memo quiets the NEXT startup (no second attempt).
+        let report = sync_spec(SyncOptions {
+            startup: true,
+            ..SyncOptions::default()
+        })
+        .unwrap();
+        assert_eq!(report.rows[0].action, "deferred", "{:?}", report.rows);
+
+        // The explicit verb retries and clears the memo on the way in.
+        let report = sync_spec(SyncOptions::default()).unwrap();
+        assert!(
+            report.rows.iter().any(|row| row.action == "failed"),
+            "explicit sync must retry: {:?}",
+            report.rows
+        );
+        let memo = fs::read_to_string(&ledger).unwrap();
+        assert!(!memo.contains("[[failure]]"), "memo cleared: {memo}");
+
         let _ = fs::remove_dir_all(&box_.temp);
     }
 
