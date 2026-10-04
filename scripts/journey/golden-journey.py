@@ -38,6 +38,78 @@ this product, a known pitfall, so both point at the sandbox):
      degrades bounded instead of freezing); Esc fast-forwards, Cancel
      writes nothing.
 
+Wave-1 persistence lane (wt79/jw1-persistence, journey-spec P3 + P8-S4 —
+the two live P0s #168/#167 plus F4/F5 aged state). Registered as phases
+P3 and P8 in PHASE_RUNNERS; like every phase they compose AFTER the base
+gate on the same sandbox, walking on the installed state J1–J7 leave
+(the theme-bearing source is still installed — J6 only trusts
+bash-completion — and P8-S4 restores what it removes):
+
+  P3-S1 reopen sandbox session (aged state)
+     a fresh terminal after J5: prompt renders; the picked theme still
+     owns the rc (`OSH_THEME`/`BASH_IT_THEME` line intact); the spec
+     still declares the wizard's sources; the session reads back a
+     marker file a PREVIOUS session wrote (the wake-flag capability:
+     a session detects "a previous session mutated state"), proving the
+     sandbox HOME wiring survives process boundaries.
+  P3-S2 rc byte-stability + theme identity across terminals (niu#168)
+     snapshot rc bytes after the wizard; `source ~/.niubashrc` in a live
+     session; two fresh terminals; snapshot after each. (a) bytes
+     identical after every open; (b) the picked theme's variable still
+     present, unchanged, on the same framework; (c) the string
+     `selection materialized` (the #168 rewrite tell) never appears
+     during an unchanged-spec source/startup; (d) terminal 2's first
+     prompt row equals terminal 1's modulo clock digits. Expected-red
+     until niu#168 lands -> registered KNOWN-FAIL
+     `wt73-168-theme-rebound` (labeling, never waiving).
+  P3-S3 first-key integrity as product behavior (niu#167 anti-masking)
+     after the themed prompt idles >=1.2s (>=1 clock repaint), send
+     `echo NIU167KEY` with the driver's Ctrl-U wake DISABLED for this
+     one probe: the full word must execute, never `cho: command not
+     found`. One labeled probe per session. When it passes the journey
+     FLIPS the global wake off (`WAKE_ENABLED = False`): every later
+     send runs wake-free, so the gate stops masking #167.
+  P3-S4 aged state: damaged tree + bootstrap-failures ledger (F5)
+     seed between sessions (the `seed` capability): rename a file
+     inside the trusted oh-my-bash tree (the guarded loader must no-op
+     silently) and hand-write a spec entry for a declared-but-missing
+     origin plus its `bootstrap-failures.toml` memo. The next terminal
+     reaches a prompt within 10s with at most the documented one-line
+     notices (deferred / awaiting-trust); the explicit verbs repair
+     (`niu plugin sync` retries the missing origin readably, `niu
+     plugin restore` rebuilds the tree); after healing the spec, the
+     final terminal is silent again.
+  P8-S4 remove the source providing the ACTIVE theme (F4)
+     `niu plugin source remove oh-my-bash` while its theme is applied:
+     spec declaration drops, registry record and tree drop, a fresh
+     terminal falls back to the floor prompt with no resurrection and
+     no syntax-error storm; then re-add + trust + re-enable restores
+     the theme in a fresh terminal, and the rc carries exactly one
+     oh-my-bash block (no orphan blocks) at steady state.
+
+Driver capabilities landed with this lane (journey-steps.json
+`driver_capabilities`, owner W1):
+
+  wake-flag  `send_line(..., wake=False)` sends a line WITHOUT the
+             sacrificial Ctrl-U byte, and never retries it (a retry
+             would mask exactly the first-key behavior the probe
+             exists to observe). Plus the previous-session marker
+             file (`~/.journey-wake.flag`): a step's session writes
+             it through the shell; the NEXT session's step reads it
+             back — a session detects "a previous session mutated
+             state" without any driver-internal channel.
+  seed       the `SandboxSeed` helper: byte snapshots of the rc,
+             spec `[[sources]]` stanza add/drop, a product-format
+             `bootstrap-failures.toml` memo write, and tree-file
+             damage — all under the sandbox home, between sessions.
+
+`--phases` selects what runs (comma-separated): the base J1–J7 gate
+ALWAYS runs first; then the registered phases. `all` (the DEFAULT) adds
+every registered phase in spec order (P3, P4, P7, P8) — the gate
+exercises everything unless a subset is asked for. `base` is the bare
+release gate (J1–J7, no phases). The wt79 single-value `--phase`
+vocabulary folds in: `full` = all, `gate` = base, `persist` = P3,P8.
+
 Unlike scripts/smoke-wizard-journey.py (offline, mirror-seeded, one
 question path), this is the ONLINE journey: the clones come from the real
 canonical origins, exactly as the user's terminal did. CI and local runs
@@ -52,21 +124,24 @@ so the red is expected-red, not a mystery.
 Spec phases (docs/journey-spec.md §3, lane split §7): wave lanes land
 their phases as clearly-separated runner functions keyed by the spec's
 phase ids (docs/journey-steps.json) — wt79/jw1-persistence owns P3/P8-S4,
-wt80/jw2-wizardspec owns P4/P7. `--phases base` (the default) is J1–J6,
-the release gate, unchanged. Selected phases compose AFTER the base gate
-on the same sandbox — every phase walks on the installed state the base
-gate leaves — so a lane's local run is `--phases base,P4,P7` and the full
-walk is `--phases all`.
+wt80/jw2-wizardspec owns P4/P7. The DEFAULT run is the base gate (J1–J7)
+followed by EVERY registered phase in spec order (P3, P4, P7, P8) — the
+gate exercises everything; `--phases` selects subsets (`--phases base`
+is the bare release gate). Phases compose AFTER the base gate on the
+same sandbox — every phase walks on the installed state the base gate
+leaves — so a lane's local run is `--phases base,P4,P7` and the full
+walk is the default (or `--phases all`).
 
 Exit codes: 0 every assertion holds, 1 any fail/known-fail, 2 skip
 (missing python deps / not Windows / no niu.exe / no git / unknown phase
 id).
 
 Usage: python scripts/journey/golden-journey.py <niu.exe> [--artifacts DIR]
-        [--phases base|P4,P7,...|all]
+        [--phases all|base|P3,P4,P7,P8,...|full|gate|persist]
 """
 
 import argparse
+import difflib
 import json
 import os
 import random
@@ -165,6 +240,14 @@ STRESS_DELAY_MS = 0
 # lands intact. Verified against the release build: Ctrl-U + line executes
 # clean; double Ctrl-U + line (the retry shape) also executes clean.
 KILL_LINE = "\x15"
+# The wake-flag capability (journey-spec W1, P3-S3 / niu#167): the gate's
+# sends normally carry the sacrificial Ctrl-U above, which MASKS the
+# product's first-key-eat behavior. P3-S3 runs one labeled no-wake probe;
+# when the product passes it (the 1.3.3 typeahead guard), the probe flips
+# this flag and every LATER send in the run goes wake-free too — the gate
+# stops masking. When the probe fails, the flag stays True so one live
+# product bug does not drown the rest of the journey in eaten bytes.
+WAKE_ENABLED = True
 # A REPL prompt is the classic "last non-empty row ends in a prompt
 # glyph" (powerline tails, the default user@host:cwd# $ #) or the
 # agnoster shape where the glyph leads the row (➜  dirname). An early
@@ -213,14 +296,21 @@ KNOWN_FAILS = [
         "id": "wt73-168-theme-rebound",
         "ticket": "niu#168 (fix lane wt72/themeback): wizard/sync leave the rc "
                   "and the spec disagreeing about the picked theme",
-        "pattern": r"wt73-168-theme-rebound|theme rebound|theme ownership "
-                   r"disagrees",
-        "note": "the wizard's re-run pick (or the sync rewrite) never reaches "
-                "the spec, so the next sync re-materializes the stale claim "
-                "over it — the pick reverts or the framework flips across "
-                "source/new terminals. expected-red until wt72 lands; "
-                "labeling, never waiving — when the fix lands the assertions "
-                "go green without edits",
+        "pattern": r"wt73-168-theme-rebound|theme re-?bound|theme ownership "
+                   r"disagrees|selection materialized",
+        "note": "the OPEN #168 P0: the wizard's re-run pick (or the sync's "
+                "'selection materialized' rewrite) never reaches the spec, "
+                "so the next sync re-materializes the stale claim over it — "
+                "the pick reverts or the framework flips across source/new "
+                "terminals. Evidence shapes this pattern labels (wt73's "
+                "matrix + wt79's P3-S2 grid): rc bytes not identical across "
+                "session opens, the picked theme's variable "
+                "(OSH_THEME/BASH_IT_THEME) re-pointed or flipped to the "
+                "other framework, the literal rewrite tell printed during an "
+                "unchanged-spec source/startup, or the pick sticking "
+                "assertions after a wizard re-run. expected-red until wt72 "
+                "lands; labeling, never waiving — when the fix lands the "
+                "assertions go green without edits (journey-spec P3-S2)",
     },
     {
         "id": "wt80-undo-receipt-ambiguous-theme",
@@ -289,6 +379,7 @@ class Session:
                  label="session", delivery_log=None):
         self.label = label
         self.delivery_log = delivery_log if delivery_log is not None else []
+        self.dead = False  # the child exited and took the pty with it
         self.proc = PtyProcess.spawn(argv, cwd=str(cwd), env=env,
                                      dimensions=(rows, cols))
         # HistoryScreen keeps scrolled-off lines so the artifacts hold FULL
@@ -314,6 +405,26 @@ class Session:
                         self._raw_file.write(data.encode("utf-8",
                                                          errors="replace"))
                 self.stream.feed(data)
+        self.dead = True
+
+    def _write(self, data) -> bool:
+        """One guarded ConPTY write. A child that dies mid-journey closes
+        the pty out from under the driver (observed 2026-10-04 run 4:
+        niu.exe children vanishing while sibling lanes ran their own
+        cleanup — a by-name taskkill looks identical to a product crash
+        here); the journey must then record an honest red and STILL seal
+        a verdict, never crash unsealed."""
+        if self.dead:
+            return False
+        try:
+            self.proc.write(data)
+            return True
+        except (EOFError, OSError) as err:
+            self.dead = True
+            self._delivery_event(
+                "pty-write", str(data)[:20], 1,
+                f"pty closed (child exited): {err}", "child-exited")
+            return False
 
     def text(self) -> str:
         """The current viewport (what a user sees right now)."""
@@ -345,6 +456,10 @@ class Session:
         moved past what we were waiting for."""
         deadline = time.time() + timeout
         while time.time() < deadline:
+            if self.dead:
+                raise TimeoutError(
+                    f"pty closed (child exited) while waiting for {needles};"
+                    f" screen:\n{self.text()}")
             body = self.text()
             for needle in needles:
                 if needle in body or needle in self.raw_text():
@@ -502,11 +617,13 @@ class Session:
             settle = self.wait_quiescent()
             before = self.text()
             if keys.endswith(ENTER) and len(keys) > 1:
-                self.proc.write(keys[:-1])
+                if not self._write(keys[:-1]):
+                    return
                 time.sleep(ENTER_GAP_SECONDS)
-                self.proc.write(ENTER)
+                self._write(ENTER)
             else:
-                self.proc.write(keys)
+                if not self._write(keys):
+                    return
             if self._await_change(before):
                 return
             if attempt == 1:
@@ -522,7 +639,7 @@ class Session:
                     "undelivered")
 
     def send_line(self, line, anchor_timeout=ANCHOR_TIMEOUT_SECONDS,
-                  anchor=True):
+                  anchor=True, wake=None):
         """Type a whole command at the REPL prompt, then Enter — and do
         not return until the command has COMPLETED.
 
@@ -538,6 +655,16 @@ class Session:
         short confirm (its scroll is immediate). Delivery retries only —
         the expected-output wait that follows never retries.
 
+        wake (the W1 wake-flag capability, journey-spec P3-S3 / niu#167):
+        `wake=False` sends the line WITHOUT the sacrificial Ctrl-U and
+        WITHOUT the one resend — the #167 probe must observe the
+        product's raw first-key behavior (a retry, with or without a
+        wake byte, would mask exactly what this send exists to test),
+        and without the kill-line a resend could concatenate with a
+        half-delivered first line. `wake=None` (default) follows the
+        global WAKE_ENABLED, which P3-S3 flips off for the rest of the
+        run when the product passes the probe.
+
         Output-anchored (release run 37153503706, J6): after the Enter,
         await_output_anchor holds this send until a NEW prompt-ish row
         sits below the typed line — so the NEXT send in this session can
@@ -551,13 +678,25 @@ class Session:
         gated on the wizard's own screens (wait_for), and the anchor's
         prompt-ish matcher must not decide when interaction may start.
         Delivery hardening (settle/wake/echo/retry) is identical."""
+        use_wake = WAKE_ENABLED if wake is None else bool(wake)
         settle = self.wait_quiescent()
-        for attempt in (1, 2):
+        for attempt in ((1,) if not use_wake else (1, 2)):
             before = self.text()
-            self.proc.write(KILL_LINE)
-            time.sleep(WAKE_GAP_SECONDS)
-            self.proc.write(line)
+            if use_wake:
+                self._write(KILL_LINE)
+                time.sleep(WAKE_GAP_SECONDS)
+            if not self._write(line):
+                return
             if self._await_echo(line, before):
+                break
+            if not use_wake:
+                self._delivery_event(
+                    "send_line", line, 1,
+                    f"no echo of the typed text within "
+                    f"{ECHO_TIMEOUT_SECONDS}s (wake disabled, "
+                    f"settle={settle}) — no retry by design (a no-wake "
+                    "send must not mask the first-key behavior it "
+                    "probes)", "no-wake-no-retry")
                 break
             if attempt == 1:
                 self.wait_quiescent(timeout=5.0)  # do not retype mid-drain
@@ -577,13 +716,13 @@ class Session:
         # The input line is the bottom-most content while editing; this
         # snapshot is what the anchor must see REPLACED by a new prompt.
         input_row = self.last_nonempty_row()
-        self.proc.write(ENTER)
+        self._write(ENTER)
         if not self._await_change(before, timeout=ENTER_ACK_SECONDS):
             self._delivery_event(
                 "send_line-enter", line, 2,
                 f"screen did not advance within {ENTER_ACK_SECONDS}s of "
                 "Enter — resending Enter once", "resend")
-            self.proc.write(ENTER)
+            self._write(ENTER)
         if anchor:
             self.await_output_anchor(line, input_row, timeout=anchor_timeout)
 
@@ -841,6 +980,8 @@ def ensure_tools_on_path(path: str) -> str:
 
 def prompt_alive(session: Session, marker: str, timeout=STARTUP_TIMEOUT):
     """The prompt is alive: `echo <marker>` comes back as output."""
+    if session.dead:
+        return False
     session.send_line(f"echo {marker}")
     try:
         session.wait_for(marker, timeout=timeout)
@@ -855,12 +996,888 @@ def drain_notices(session: Session, seconds: float = 1.0):
     time.sleep(seconds)
 
 
+# ── W1 driver capabilities (journey-spec §4: wake-flag, seed) ────────────────
+PROMPT_BLOCK_ROWS = 4
+
+
+def prompt_block(session: Session):
+    """The prompt BLOCK as the user sees it: the last non-empty viewport
+    rows (a themed prompt paints several — powerline-multiline carries
+    the clock on its top segment row). Returns the rows newest-last, or
+    None before the first prompt has rendered."""
+    if not (session._raw_pulse()
+            and PROMPTISH_LAST_ROW.match(session.last_nonempty_row())):
+        return None
+    rows = [row for row in session.text().splitlines() if row.strip()]
+    return rows[-PROMPT_BLOCK_ROWS:]
+
+
+def await_first_prompt_row(session: Session, timeout=STARTUP_TIMEOUT):
+    """The terminal's FIRST prompt block, captured before anything is
+    typed: poll until bytes have arrived and the last non-empty row looks
+    like a prompt, let trailing startup notices land, then read it.
+    Returns the digit-stripped fingerprint (the clock must not count) of
+    the block joined with '|', or None on timeout."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        block = prompt_block(session)
+        if block is not None:
+            time.sleep(1.0)  # trailing startup notices, then re-read
+            block = prompt_block(session)
+            if block is not None:
+                return "|".join(normalize_prompt_row(row)
+                                for row in block)
+        time.sleep(0.05)
+    return None
+
+
+def time_to_first_prompt(session: Session, timeout, started=None):
+    """Seconds from `started` (default: now) to the first prompt-ish row —
+    the P3-S4 bounded-startup measure (prompt within 10s). None on
+    timeout."""
+    start = started if started is not None else time.time()
+    deadline = start + timeout
+    while time.time() < deadline:
+        if (session._raw_pulse()
+                and PROMPTISH_LAST_ROW.match(session.last_nonempty_row())):
+            return time.time() - start
+        time.sleep(0.05)
+    return None
+
+
+def normalize_prompt_row(row):
+    """A prompt row modulo its clock: the themed prompt repaints a
+    per-second clock, so P3-S2(d) compares rows with every digit run
+    stripped."""
+    return re.sub(r"\d", "", row or "")
+
+
+def await_bare_line(session: Session, text, timeout=30):
+    """True when `text` arrives as an OUTPUT line (viewport or
+    ANSI-stripped raw stream) within the bound. The typed input line also
+    carries the text — behind the prompt glyph — so the match is a line
+    that STARTS with the text: `echo X`'s output row and `cat`'s output
+    both lead with the payload, while the input echo leads with the
+    prompt glyph (the distinction the #167 probe lives on). Prefix (not
+    full-line) matching on purpose: stray console noise (observed:
+    tasklist's 'No Instance(s) Available.' from niu's own startup probes)
+    can land on the same physical row right after the payload with no
+    newline in between."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for line in session.text().splitlines():
+            if line.strip().startswith(text):
+                return True
+        for line in session.raw_stripped().splitlines():
+            if line.strip().startswith(text):
+                return True
+        time.sleep(0.1)
+    return False
+
+
+def sync_row_keys(body: str, action: str):
+    """Distinct source ids of `niu plugin sync: <action> <id> ...` rows in
+    a mixed transcript+raw body. The same row appears twice (the pyte
+    transcript AND the raw stream both carry it) and stray console noise
+    can glue onto a physical line, so row identity is (action, id) —
+    never the physical line count."""
+    return {
+        match.group(1)
+        for match in re.finditer(
+            rf"niu plugin sync: {re.escape(action)}\s+(\S+)", body)
+    }
+
+
+def first_diff_lines(old: bytes, new: bytes, limit=8):
+    """The first changed lines between two rc snapshots — the verdict
+    detail for a P3-S2 byte-stability red."""
+    old_text = old.decode("utf-8", errors="replace").splitlines()
+    new_text = new.decode("utf-8", errors="replace").splitlines()
+    diffs = [line for line in difflib.unified_diff(
+        old_text, new_text, lineterm="", n=0)
+        if line[:1] in "+-" and line[:3] not in ("+++", "---")]
+    return diffs[:limit]
+
+
+def check_theme_stability(recorder: "StepRecorder", name: str, ok: bool,
+                          evidence_shape: str, detail: str = "") -> bool:
+    """Record one P3-S2 assertion (the #168 assertion class: rc
+    byte-stability, theme identity, no-rewrite-tell, prompt identity).
+    A red carries the evidence shape so the registered KNOWN-FAIL
+    `wt73-168-theme-rebound` can label it expected-red (labeling, never
+    waiving) — the raw diff stays in the detail and the artifacts."""
+    ok = bool(ok)
+    if ok:
+        recorder.check(name, True)
+        return True
+    evidence = f"theme rebound (#168): {evidence_shape}"
+    if detail:
+        evidence += f" — {detail}"
+    known = match_known_fail(evidence)
+    if known is not None:
+        recorder.check(
+            name, False,
+            f"KNOWN-FAIL {known['id']} ({known['ticket']}): {detail or evidence}",
+            known=True)
+        recorder.note(f"expected-red until {known['ticket']} lands")
+    else:
+        recorder.check(name, False, detail or evidence)
+    return False
+
+
+class SandboxSeed:
+    """The `seed` capability (journey-spec §4 `conpty+seed`, owner lane
+    W1): aged-state writes under the sandbox home BETWEEN sessions, so a
+    phase starts from state a PRIOR session produced (or damaged) — never
+    from fresh-wizard state. Every path stays inside the sandbox; the
+    product reads these files with its normal startup/sync machinery.
+
+    The previous-session marker (`~/.journey-wake.flag`) also lives here:
+    a step's session writes it THROUGH THE SHELL and the next session's
+    step reads it back the same way — a session detects "a previous
+    session mutated state" with no driver-internal channel, and the
+    sandbox HOME wiring is proven end-to-end across process boundaries
+    (the relative-home doubling pitfall)."""
+
+    def __init__(self, home: Path):
+        self.home = home
+
+    # ── paths ──
+    @property
+    def rc_path(self) -> Path:
+        return self.home / ".niubashrc"
+
+    @property
+    def spec_path(self) -> Path:
+        return self.home / ".niubash" / "plugins.toml"
+
+    @property
+    def sources_root(self) -> Path:
+        return self.home / ".niubash" / "sources"
+
+    @property
+    def ledger_path(self) -> Path:
+        """The startup install-failure memo (`bootstrap-failures.toml`,
+        changelog 1.3.1 F5) — under the sources root, the product's own
+        `bootstrap_failure_path()` location."""
+        return self.sources_root / "bootstrap-failures.toml"
+
+    def marker_path(self) -> Path:
+        return self.home / ".journey-wake.flag"
+
+    # ── snapshots ──
+    def rc_bytes(self) -> bytes:
+        try:
+            return self.rc_path.read_bytes()
+        except OSError:
+            return b""
+
+    def spec_text(self) -> str:
+        try:
+            return self.spec_path.read_text(encoding="utf-8")
+        except OSError:
+            return ""
+
+    # ── spec hand-editing (the documented workflow: edit + sync) ──
+    def add_spec_source(self, stanza_body: str):
+        """Append one `[[sources]]` stanza (body lines without the
+        header) to the spec — the same shape `niu plugin add` writes."""
+        text = self.spec_text()
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += "\n[[sources]]\n" + stanza_body.rstrip("\n") + "\n"
+        self.spec_path.parent.mkdir(parents=True, exist_ok=True)
+        self.spec_path.write_text(text, encoding="utf-8", newline="\n")
+
+    def drop_spec_source(self, id_or_target: str) -> bool:
+        """Remove every `[[sources]]` stanza whose text names
+        `id_or_target` (its `id =` or `target =` line). Returns True when
+        a stanza was dropped."""
+        text = self.spec_text()
+        stanzas = text.split("[[sources]]")
+        kept = [stanzas[0]]
+        dropped = False
+        for stanza in stanzas[1:]:
+            if id_or_target in stanza:
+                dropped = True
+                continue
+            kept.append("[[sources]]" + stanza)
+        if dropped:
+            self.spec_path.write_text("".join(kept), encoding="utf-8",
+                                      newline="\n")
+        return dropped
+
+    # ── the F5 ledger, in the product's exact format ──
+    def seed_bootstrap_failure(self, target: str, error: str,
+                               ref_name=None):
+        """Write (or merge into) `bootstrap-failures.toml` exactly the way
+        `sync.rs write_bootstrap_failures` formats a startup failure for
+        (target, ref) — the shape `bootstrap_failure_recorded` matches
+        against the resolved origin of a spec entry."""
+        entry = f"\n[[failure]]\ntarget = \"{target}\"\n"
+        if ref_name:
+            entry += f"ref = \"{ref_name}\"\n"
+        entry += (f"error = \"{error}\"\n"
+                  f"at = \"{datetime.now(timezone.utc).isoformat(timespec='seconds')}\"\n")
+        path = self.ledger_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_file():
+            path.write_text(path.read_text(encoding="utf-8") + entry,
+                            encoding="utf-8", newline="\n")
+        else:
+            path.write_text(
+                "# Startup install-failure memo (niu plugin sync --bootstrap).\n"
+                "# Cleared by an explicit `niu plugin sync` / `niu plugin add` retry.\n"
+                "schema = \"niubash:plugin-bootstrap-failures@1\"\n" + entry,
+                encoding="utf-8", newline="\n")
+
+    # ── tree damage (the `tree missing` / guarded-loader contract) ──
+    def damage_source_file(self, source_id: str, relative: str,
+                           suffix=".journey-bak"):
+        """Rename one file inside an installed source tree (aged-state
+        damage a real user's disk can produce). Returns (old, new) paths;
+        raises when the file is not there to damage."""
+        old = self.sources_root / source_id / relative
+        new = old.with_name(old.name + suffix)
+        if not old.is_file():
+            raise FileNotFoundError(f"cannot damage: {old} is missing")
+        old.rename(new)
+        return old, new
+
+
+# ── Wave-1 persistence steps (journey-spec P3 + P8-S4, lane wt79/W1) ─────────
+#
+# Each step is the user's own moves over the SAME sandbox the J-blocks
+# aged: real fresh terminals, real `niu plugin` verbs, and the seed
+# capability writing between sessions. `state` threads the ordered facts
+# (rc byte snapshots keyed by milestone, the picked theme line, the
+# first themed prompt row) from the wizard block into the assertions.
+
+P3_MARKER_FILE = ".journey-wake.flag"
+P3_MARKER_VALUE = "wake-p3s1"
+
+
+def p3_s1_reopen(exe, home, env, verdict, seed, state):
+    """P3-S1: reopen the sandbox session — theme persists, spec persists,
+    and the session detects a previous session's state mutation through
+    the wake-flag marker file."""
+    step = verdict.step(
+        "P3-S1", "reopen sandbox session: theme persists, spec persists")
+    session = None
+    try:
+        session = Session([str(exe)], home, env,
+                          raw_log=verdict.transcripts / "P3-S1-reopen.raw.ansi",
+                          label="P3-S1", delivery_log=verdict.delivery_events)
+        row = await_first_prompt_row(session)
+        step.check("fresh terminal: prompt renders", row is not None,
+                   "no prompt-ish row ever rendered"
+                   if row is None else f"first prompt row: {row.strip()[:100]}")
+        rc_bytes = seed.rc_bytes()
+        rc_text = rc_bytes.decode("utf-8", errors="replace")
+        theme_line = state.get("theme_line")
+        step.check("theme persists in the rc (the wizard's pick intact)",
+                   bool(theme_line) and theme_line in rc_text,
+                   f"expected {theme_line!r} in the rc"
+                   if theme_line else "the wizard snapshot carried no theme "
+                   "line (J2 carried the failure)")
+        spec_text = seed.spec_text()
+        step.check("spec persists (oh-my-bash declared, theme declared)",
+                   "oh-my-bash" in spec_text
+                   and "powerline-multiline" in spec_text,
+                   f"spec exists: {seed.spec_path.is_file()}")
+        # The wake-flag capability: THIS session writes the marker through
+        # the shell; the NEXT session (P3-S2's) reads it back — a session
+        # detects "a previous session mutated state" across the process
+        # boundary, proving the sandbox HOME wiring end-to-end.
+        session.send_line(
+            f"printf '{P3_MARKER_VALUE}' > ~/{P3_MARKER_FILE}"
+            f" && cat ~/{P3_MARKER_FILE}")
+        step.check(
+            "session wrote the wake-flag marker through the shell",
+            await_bare_line(session, P3_MARKER_VALUE, timeout=30))
+        verdict.capture("P3-S1-reopen", session)
+        state["rc_bytes"]["after-reopen"] = rc_bytes
+        state["raw_texts"]["P3-S1"] = session.raw_stripped()
+    except Exception as err:  # noqa: BLE001 - a stalled walk is the fail
+        step.check("P3-S1 walk completed", False, f"{err}")
+        if session is not None:
+            verdict.capture("P3-S1-stalled", session)
+    finally:
+        if session is not None:
+            session.close()
+    step.finish()
+
+
+def p3_s2_rc_stability(exe, home, env, verdict, seed, state):
+    """P3-S2: rc byte-stability + theme identity across terminals — the
+    niu#168 killer. Expected-red until niu#168 lands; registered
+    KNOWN-FAIL wt73-168-theme-rebound (labeling, never waiving)."""
+    step = verdict.step(
+        "P3-S2", "rc byte-stability + theme identity across terminals "
+        "(niu#168)")
+    theme_line = state.get("theme_line") or ""
+    theme_var = state.get("theme_var") or "OSH_THEME"
+    other_var = "BASH_IT_THEME" if theme_var == "OSH_THEME" else "OSH_THEME"
+    baseline = state["rc_bytes"].get("after-wizard", b"")
+    raws = state["raw_texts"]
+    rows = {}
+    try:
+        # Live session: read back the previous session's marker, then the
+        # unchanged-spec source.
+        live = Session([str(exe)], home, env,
+                       raw_log=verdict.transcripts / "P3-S2-source.raw.ansi",
+                       label="P3-S2-live",
+                       delivery_log=verdict.delivery_events)
+        try:
+            live.send_line(f"cat ~/{P3_MARKER_FILE}")
+            step.check(
+                "live session detects the previous session's wake-flag "
+                "marker",
+                await_bare_line(live, P3_MARKER_VALUE, timeout=30))
+            live.send_line("source ~/.niubashrc", anchor_timeout=60)
+            live.send_line("echo P3S2_SRC_DONE")
+            try:
+                live.wait_for("P3S2_SRC_DONE", timeout=60)
+                step.check("source ~/.niubashrc completed", True)
+            except TimeoutError as err:
+                step.check("source ~/.niubashrc completed", False, str(err))
+            drain_notices(live)
+            verdict.capture("P3-S2-after-source", live)
+            state["rc_bytes"]["after-source"] = seed.rc_bytes()
+            raws["P3-S2-source"] = live.raw_stripped()
+        finally:
+            live.close()
+
+        # Two fresh terminals (the #168 shape: the rebound shows up when
+        # a NEW session's startup sync rewrites the rc).
+        for i in (1, 2):
+            term = Session(
+                [str(exe)], home, env,
+                raw_log=verdict.transcripts / f"P3-S2-terminal-{i}.raw.ansi",
+                label=f"P3-S2-term{i}",
+                delivery_log=verdict.delivery_events)
+            try:
+                rows[i] = await_first_prompt_row(term)
+                drain_notices(term)
+                verdict.capture(f"P3-S2-terminal-{i}", term)
+                state["rc_bytes"][f"after-term{i}"] = seed.rc_bytes()
+                raws[f"P3-S2-term{i}"] = term.raw_stripped()
+            finally:
+                term.close()
+
+        # (a) rc bytes identical after every source/terminal.
+        for milestone in ("after-reopen", "after-source", "after-term1",
+                          "after-term2"):
+            snap = state["rc_bytes"].get(milestone)
+            stable = bool(snap) and snap == baseline
+            diff = "" if stable else " | ".join(
+                first_diff_lines(baseline, snap or b""))
+            check_theme_stability(
+                step, f"rc bytes identical after {milestone}",
+                stable, f"rc bytes diverged at {milestone}",
+                diff or ("snapshot missing — the earlier step carrying it "
+                         "failed" if snap is None else
+                         "no line-level diff (mode/length change)"))
+
+        # (b) the picked theme's variable still present, unchanged, on
+        # the SAME framework (the rebound re-points or flips it).
+        for milestone in ("after-source", "after-term1", "after-term2"):
+            text = (state["rc_bytes"].get(milestone) or b"").decode(
+                "utf-8", errors="replace")
+            present = bool(theme_line) and theme_line in text
+            flipped = re.search(
+                rf"^{other_var}='powerline-multiline'",
+                text, re.M) is not None
+            check_theme_stability(
+                step,
+                f"{theme_var} still 'powerline-multiline' after "
+                f"{milestone} (same framework)",
+                present and not flipped,
+                "the picked theme's variable was re-pointed or flipped to "
+                "the other framework across session opens"
+                if flipped or not present else "",
+                f"{theme_line!r} present: {present}; "
+                f"{other_var}='powerline-multiline' appeared: {flipped}")
+
+        # (c) the #168 rewrite tell never appears during an
+        # unchanged-spec source/startup.
+        for label in sorted(raws):
+            if not label.startswith(("P3-S1", "P3-S2")):
+                continue
+            raw = raws[label]
+            tell = next((line.strip()[:140] for line in raw.splitlines()
+                         if "selection materialized" in line), "")
+            check_theme_stability(
+                step,
+                f"'selection materialized' never printed during {label}",
+                "selection materialized" not in raw,
+                "the #168 rewrite tell appeared during an unchanged-spec "
+                "source/startup", tell)
+
+        # (d) terminal 2's first prompt row equals terminal 1's modulo
+        # clock digits.
+        row1, row2 = rows.get(1), rows.get(2)
+        if row1 is not None:
+            state["themed_prompt_row"] = normalize_prompt_row(row1)
+        same = (row1 is not None and row2 is not None
+                and normalize_prompt_row(row1) == normalize_prompt_row(row2))
+        check_theme_stability(
+            step, "terminal 2's first prompt row equals terminal 1's "
+            "(modulo clock digits)",
+            same, "the first prompt row differs across fresh terminals",
+            f"t1={(row1 or '(none)').strip()[:100]!r} "
+            f"t2={(row2 or '(none)').strip()[:100]!r}")
+    except Exception as err:  # noqa: BLE001 - a stalled walk is the fail
+        step.check("P3-S2 walk completed", False, f"{err}")
+    step.finish()
+
+
+def p3_s3_first_key(exe, home, env, verdict, seed, state):
+    """P3-S3: first-key integrity as product behavior — the niu#167
+    anti-masking probe. One labeled no-wake probe; on a pass the run's
+    global wake is disabled so the gate stops masking."""
+    global WAKE_ENABLED
+    step = verdict.step(
+        "P3-S3", "first-key integrity as product behavior (niu#167 "
+        "anti-masking)")
+    marker = "NIU167KEY"
+    session = None
+    try:
+        session = Session(
+            [str(exe)], home, env,
+            raw_log=verdict.transcripts / "P3-S3-first-key.raw.ansi",
+            label="P3-S3", delivery_log=verdict.delivery_events)
+        step.check("themed prompt renders",
+                   prompt_alive(session, "P3S3_ALIVE"))
+        # Idle past at least one clock repaint (the themed clock ticks at
+        # 1 Hz) — the exact window where the #167 eat consumed the first
+        # byte of the next command.
+        time.sleep(1.6)
+        session.send_line(f"echo {marker}", wake=False)
+        executed = await_bare_line(session, marker, timeout=30)
+        body = session.transcript() + "\n" + session.raw_stripped()
+        eaten_lines = [line.strip()[:120] for line in body.splitlines()
+                       if re.search(r"\bcho: command not found\b", line)]
+        marker_lines = [line.strip()[:120] for line in body.splitlines()
+                        if marker in line][:3]
+        step.check("first key survives the idle repaint (full word ran)",
+                   executed,
+                   f"the marker never printed as output; screen showed: "
+                   f"{marker_lines}")
+        step.check("no eaten-first-byte evidence in the probe session",
+                   not eaten_lines,
+                   f"{len(eaten_lines)} line(s), first: "
+                   f"{eaten_lines[0] if eaten_lines else ''}")
+        verdict.capture("P3-S3-first-key", session)
+        if executed and not eaten_lines:
+            WAKE_ENABLED = False
+            step.note("first-key integrity holds — WAKE_ENABLED flipped "
+                      "off: every later send in this run goes without the "
+                      "Ctrl-U wake (the gate stops masking #167)")
+        else:
+            step.note("probe FAILED — WAKE_ENABLED stays True so the rest "
+                      "of the run still delivers (the wake stays for "
+                      "everything else); this red is a #167 regression")
+    except Exception as err:  # noqa: BLE001
+        step.check("P3-S3 walk completed", False, f"{err}")
+        if session is not None:
+            verdict.capture("P3-S3-stalled", session)
+    finally:
+        if session is not None:
+            session.close()
+    step.finish()
+
+
+def p3_s4_aged_state(exe, home, env, verdict, seed, state):
+    """P3-S4: aged state — a damaged trusted tree plus a seeded F5
+    bootstrap-failures ledger. Bounded startup, documented one-line
+    notices, guarded-loader silence, explicit-verb repair, silent after."""
+    step = verdict.step(
+        "P3-S4", "aged state: damaged tree + bootstrap-failures ledger "
+        "(changelog 1.3.1 F5)")
+    try:
+        # ── seed between sessions (the `seed` capability) ──
+        missing = seed.home / ".journey-missing-origin"
+        target = missing.as_posix()
+        seed.add_spec_source(f'target = "{target}"\n'
+                             'id = "journey-missing-origin"')
+        seed.seed_bootstrap_failure(
+            target=target,
+            error="seeded by the journey (the previous session's install "
+                  "failed)")
+        step.check("bootstrap-failures.toml ledger seeded for the "
+                   "declared-but-missing origin",
+                   seed.ledger_path.is_file()
+                   and target in seed.ledger_path.read_text(encoding="utf-8"),
+                   f"ledger: {seed.ledger_path}")
+        old, new = seed.damage_source_file("oh-my-bash", "oh-my-bash.sh")
+        step.check("trusted tree damaged (the guarded loader's entry file "
+                   "renamed)",
+                   new.is_file() and not old.exists(),
+                   f"{old.name} -> {new.name}")
+
+        # ── fresh terminal: bounded startup, documented notices ──
+        started = time.time()
+        term = Session(
+            [str(exe)], home, env,
+            raw_log=verdict.transcripts / "P3-S4-damaged.raw.ansi",
+            label="P3-S4-damaged", delivery_log=verdict.delivery_events)
+        try:
+            secs = time_to_first_prompt(term, timeout=10.0, started=started)
+            step.check("prompt within 10s (the failed install is deferred, "
+                       "not retried at startup)",
+                       secs is not None,
+                       "no prompt within 10s"
+                       if secs is None else f"{secs:.1f}s to first prompt")
+            prompt_alive(term, "P3S4_ALIVE")
+            drain_notices(term)
+            body = term.transcript() + "\n" + term.raw_stripped()
+            deferred = sync_row_keys(body, "deferred")
+            failed = sync_row_keys(body, "failed")
+            degraded = sync_row_keys(body, "degraded") | {
+                line.strip()[:60] for line in body.splitlines()
+                if "tree missing" in line}
+            nags = sync_row_keys(body, "awaiting-trust")
+            first = next(iter(sorted(deferred | failed | degraded)),
+                         "(none)")
+            step.check("at most the documented one-line notices (the "
+                       "deferred memo line; no failed/degraded rows)",
+                       len(deferred) == 1 and not failed and not degraded,
+                       f"deferred={sorted(deferred)} failed={sorted(failed)} "
+                       f"degraded={sorted(degraded)}; first: "
+                       f"{first.strip()[:140]}")
+            step.check("awaiting-trust notices stay documented (<=2)",
+                       len(nags) <= 2,
+                       f"{len(nags)} source(s): {sorted(nags)}")
+            storm = {line.strip()[:120] for line in body.splitlines()
+                     if "command not found" in line}
+            step.check("guarded loader no-ops silently (no error storm)",
+                       not storm,
+                       f"{len(storm)} line(s), first: "
+                       f"{sorted(storm)[0] if storm else ''}")
+            verdict_for_syntax_errors(
+                step, "zero syntax errors with the damaged tree",
+                all_syntax_errors(term))
+            verdict.capture("P3-S4-damaged-terminal", term)
+
+            # ── explicit verbs retry and repair ──
+            term.send_line("niu plugin sync", anchor_timeout=300)
+            try:
+                term.wait_for("journey-missing-origin", timeout=120)
+                retry_body = term.raw_stripped()
+                # The interactive verb's rows have no `niu plugin sync:`
+                # prefix (that is the bootstrap form): `  failed <id>  …`.
+                readable = any(
+                    re.search(r"failed\s+journey-missing-origin\b", line)
+                    for line in retry_body.splitlines())
+                step.check("explicit sync retries the missing origin "
+                           "(readable per-source failure)", readable,
+                           "the origin was named but no failed row carried "
+                           "it")
+            except TimeoutError as err:
+                step.check("explicit sync retries the missing origin "
+                           "(readable per-source failure)", False, str(err))
+            # The restore fetches the pinned commit from the origin; on a
+            # degraded network this is the long pole (the five TLS-burned
+            # release runs), so it carries the largest bound in the group
+            # and fails fast on the transport error instead of timing out.
+            term.send_line("niu plugin restore oh-my-bash",
+                           anchor_timeout=900)
+            try:
+                needle = term.wait_for("Restored source 'oh-my-bash'",
+                                       "git clone exited", timeout=600)
+                step.check("`niu plugin restore oh-my-bash` rebuilt the "
+                           "pinned tree",
+                           needle == "Restored source 'oh-my-bash'",
+                           f"restore returned: {needle}")
+            except TimeoutError as err:
+                step.check("`niu plugin restore oh-my-bash` rebuilt the "
+                           "pinned tree", False, str(err))
+            guarded = seed.sources_root / "oh-my-bash" / "oh-my-bash.sh"
+            step.check("the damaged file is back after restore (tree "
+                       "matches the lockfile pin)", guarded.is_file(),
+                       f"{guarded}")
+            # Heal the spec the documented way (hand-edit the declaration
+            # away); the ledger entry — already cleared by the explicit
+            # retry's clear-before-install — is inert either way.
+            dropped = seed.drop_spec_source(".journey-missing-origin")
+            step.check("healed: the missing origin's declaration dropped "
+                       "from the spec", dropped)
+            step.note("the spec heal is the documented hand-edit workflow "
+                      "(plugins-guide: 'you can equally hand-edit the "
+                      "spec and run niu plugin sync')")
+        finally:
+            term.close()
+
+        # ── the terminal after repair is silent ──
+        started = time.time()
+        healed = Session(
+            [str(exe)], home, env,
+            raw_log=verdict.transcripts / "P3-S4-healed.raw.ansi",
+            label="P3-S4-healed", delivery_log=verdict.delivery_events)
+        try:
+            secs = time_to_first_prompt(healed, timeout=10.0, started=started)
+            step.check("terminal after repair reaches a prompt within 10s",
+                       secs is not None,
+                       "no prompt within 10s"
+                       if secs is None else f"{secs:.1f}s to first prompt")
+            prompt_alive(healed, "P3S4B_ALIVE")
+            drain_notices(healed)
+            body = healed.transcript() + "\n" + healed.raw_stripped()
+            bad = [line for line in body.splitlines()
+                   if re.search(r"niu plugin sync: (deferred|failed|"
+                                "degraded)\b", line)]
+            step.check("terminal after repair is silent (no deferred/"
+                       "failed/degraded rows)", not bad,
+                       f"{len(bad)} line(s), first: "
+                       f"{bad[0].strip()[:140] if bad else ''}")
+            nags = sync_row_keys(body, "awaiting-trust")
+            step.check("only the documented awaiting-trust lines remain",
+                       len(nags) <= 2,
+                       f"{len(nags)} source(s): {sorted(nags)}")
+            verdict_for_syntax_errors(
+                step, "zero syntax errors after repair",
+                all_syntax_errors(healed))
+            verdict.capture("P3-S4-healed-terminal", healed)
+        finally:
+            healed.close()
+    except Exception as err:  # noqa: BLE001
+        step.check("P3-S4 walk completed", False, f"{err}")
+    step.finish()
+
+
+def p8_s4_remove_active_theme_source(exe, home, env, verdict, seed, state):
+    """P8-S4: `niu plugin source remove oh-my-bash` while its theme is
+    applied — the F4 resurrection guard (spec declaration drops, no
+    resurrection at the next startup) plus the degradation contract
+    (guarded loader no-ops, floor prompt, no syntax-error storm), then
+    re-add + re-enable restores the theme with no orphan rc blocks."""
+    step = verdict.step(
+        "P8-S4", "remove the source providing the ACTIVE theme "
+        "(changelog 1.3.1 F4)")
+    theme_line = state.get("theme_line") or ""
+    tree = seed.sources_root / "oh-my-bash"
+    registry_path = seed.sources_root / "registry.toml"
+    try:
+        rc_text = seed.rc_bytes().decode("utf-8", errors="replace")
+        ready = (bool(theme_line) and theme_line in rc_text
+                 and "oh-my-bash" in seed.spec_text() and tree.is_dir())
+        step.check("precondition: oh-my-bash installed with the picked "
+                   "theme active", ready,
+                   f"theme line present: {theme_line in rc_text}; declared: "
+                   f"{'oh-my-bash' in seed.spec_text()}; tree: {tree.is_dir()}")
+
+        remover = Session(
+            [str(exe)], home, env,
+            raw_log=verdict.transcripts / "P8-S4-remove.raw.ansi",
+            label="P8-S4-remove", delivery_log=verdict.delivery_events)
+        try:
+            prompt_alive(remover, "P8S4_ALIVE")
+            # Self-heal first: the removal contract only deletes a tree it
+            # can fingerprint (sources.rs remove_source verifies the
+            # adapter layout), so a tree still damaged from P3-S4 (whose
+            # restore is network-bound) is repaired to the pin before the
+            # removal — the documented repair verb, then the removal.
+            entry_file = tree / "oh-my-bash.sh"
+            if not entry_file.is_file():
+                step.note("tree still damaged from P3-S4 — running the "
+                          "documented repair (`niu plugin restore "
+                          "oh-my-bash`) before the removal")
+                remover.send_line("niu plugin restore oh-my-bash",
+                                  anchor_timeout=900)
+                try:
+                    needle = remover.wait_for("Restored source 'oh-my-bash'",
+                                              "git clone exited", timeout=600)
+                    step.check("repair before removal (network-bound)",
+                               needle == "Restored source 'oh-my-bash'",
+                               f"restore returned: {needle}")
+                except TimeoutError as err:
+                    step.check("repair before removal (network-bound)",
+                               False, str(err))
+            remover.send_line("niu plugin source remove oh-my-bash",
+                              anchor_timeout=120)
+            try:
+                remover.wait_for("Removed source 'oh-my-bash'", timeout=90)
+                step.check("`niu plugin source remove oh-my-bash` reported "
+                           "removal", True)
+            except TimeoutError as err:
+                step.check("`niu plugin source remove oh-my-bash` reported "
+                           "removal", False, str(err))
+        finally:
+            remover.close()
+
+        # F4's resurrection guard, on disk, immediately.
+        step.check("F4: the spec declaration dropped",
+                   "oh-my-bash" not in seed.spec_text(),
+                   "plugins.toml still names oh-my-bash")
+        registry_text = (registry_path.read_text(encoding="utf-8")
+                         if registry_path.is_file() else "")
+        step.check("F4: the registry record dropped",
+                   "oh-my-bash" not in registry_text,
+                   "registry.toml still records oh-my-bash")
+        step.check("F4: the tree is gone", not tree.exists(),
+                   f"{tree} still present")
+
+        # Fresh terminal: floor prompt, no resurrection, no error storm.
+        floor = Session(
+            [str(exe)], home, env,
+            raw_log=verdict.transcripts / "P8-S4-floor.raw.ansi",
+            label="P8-S4-floor", delivery_log=verdict.delivery_events)
+        try:
+            row = await_first_prompt_row(floor)
+            step.check("fresh terminal without the theme source: prompt "
+                       "renders (floor)", row is not None,
+                       "no prompt-ish row ever rendered")
+            drain_notices(floor)
+            body = floor.transcript() + "\n" + floor.raw_stripped()
+            step.check("no resurrection: no 'Cloning into' at the fresh "
+                       "terminal", "Cloning into" not in body,
+                       next((line.strip()[:120] for line in body.splitlines()
+                             if "Cloning into" in line), ""))
+            step.check("no resurrection: the spec still lacks oh-my-bash",
+                       "oh-my-bash" not in seed.spec_text())
+            verdict_for_syntax_errors(
+                step, "no syntax-error storm after removal",
+                all_syntax_errors(floor))
+            themed = state.get("themed_prompt_row")
+            if themed is not None and row is not None:
+                step.check("prompt fell back to the floor (no longer the "
+                           "themed row)",
+                           normalize_prompt_row(row) != themed,
+                           f"floor row: {row.strip()[:100]!r}")
+            rc_after = seed.rc_bytes().decode("utf-8", errors="replace")
+            orphan = ">>> niu source oh-my-bash" in rc_after
+            state["orphan_block_after_fresh_terminal"] = orphan
+            step.note(
+                "rc block status after the removal + one fresh terminal: "
+                + ("an orphan oh-my-bash block is still in the rc (inert: "
+                   "its guarded loader no-ops on the missing tree); the "
+                   "steady-state no-orphan gate is asserted after the "
+                   "re-add below" if orphan else
+                   "the block was dropped — no orphan remained"))
+            verdict.capture("P8-S4-floor-terminal", floor)
+        finally:
+            floor.close()
+
+        # Re-add + trust + re-enable (the manifest's restore path).
+        restorer = Session(
+            [str(exe)], home, env,
+            raw_log=verdict.transcripts / "P8-S4-restore.raw.ansi",
+            label="P8-S4-restore", delivery_log=verdict.delivery_events)
+        try:
+            prompt_alive(restorer, "P8S4B_ALIVE")
+            # The re-clone is the one network-bound leg of the group (the
+            # TLS-reset family burned five release runs): one bounded
+            # retry when the add fails CLEANLY (a reported clone failure,
+            # not a wedge) — a second failure rules. Delivery/transport
+            # retry only; the step's assertions still decide the verdict.
+            installed = None
+            add_detail = ""
+            for add_attempt in (1, 2):
+                restorer.send_line("niu plugin add oh-my-bash",
+                                   anchor_timeout=900)
+                try:
+                    needle = restorer.wait_for(
+                        "Installed source 'oh-my-bash'",
+                        "could not install 'oh-my-bash'", timeout=600)
+                    installed = needle == "Installed source 'oh-my-bash'"
+                    add_detail = f"attempt {add_attempt}: {needle}"
+                except TimeoutError as err:
+                    installed = None
+                    add_detail = f"attempt {add_attempt}: {err}"
+                if installed or restorer.dead:
+                    break
+                if add_attempt == 1 and installed is False:
+                    step.note("the re-add clone failed (TLS/transport "
+                              "reset family) — retrying the add once; a "
+                              "second failure rules")
+                else:
+                    break
+            step.check("`niu plugin add oh-my-bash` re-installed the "
+                       "source", installed is True, add_detail)
+            restorer.send_line("niu plugin trust oh-my-bash",
+                               anchor_timeout=90)
+            try:
+                restorer.wait_for("is now trusted", timeout=90)
+                step.check("`niu plugin trust oh-my-bash` reported trusted",
+                           True)
+            except TimeoutError as err:
+                step.check("`niu plugin trust oh-my-bash` reported trusted",
+                           False, str(err))
+            restorer.send_line("niu plugin enable oh-my-bash/"
+                               "powerline-multiline", anchor_timeout=120)
+            try:
+                restorer.wait_for("Enabled", timeout=90)
+                step.check("`niu plugin enable "
+                           "oh-my-bash/powerline-multiline` re-applied the "
+                           "theme", True)
+            except TimeoutError as err:
+                step.check("`niu plugin enable "
+                           "oh-my-bash/powerline-multiline` re-applied the "
+                           "theme", False, str(err))
+        finally:
+            restorer.close()
+
+        # Steady state: the theme is back and no orphan blocks remain.
+        final = Session(
+            [str(exe)], home, env,
+            raw_log=verdict.transcripts / "P8-S4-restored.raw.ansi",
+            label="P8-S4-restored", delivery_log=verdict.delivery_events)
+        try:
+            row = await_first_prompt_row(final)
+            step.check("fresh terminal after re-add: prompt renders",
+                       row is not None,
+                       "no prompt-ish row ever rendered")
+            drain_notices(final)
+            verdict.capture("P8-S4-restored-terminal", final)
+            rc_text = seed.rc_bytes().decode("utf-8", errors="replace")
+            blocks = rc_text.count(">>> niu source oh-my-bash")
+            step.check("theme restored: the picked theme line is active in "
+                       "the rc again",
+                       bool(theme_line) and theme_line in rc_text,
+                       f"expected {theme_line!r}")
+            step.check("no orphan blocks: exactly one oh-my-bash managed "
+                       "block", blocks == 1,
+                       f"{blocks} oh-my-bash block(s) in the rc")
+            step.check("the spec declares oh-my-bash again",
+                       "oh-my-bash" in seed.spec_text())
+            verdict_for_syntax_errors(
+                step, "zero syntax errors after the restore",
+                all_syntax_errors(final))
+            themed = state.get("themed_prompt_row")
+            if themed is not None and row is not None:
+                step.check("the themed prompt renders again",
+                           normalize_prompt_row(row) == themed,
+                           f"row now: {row.strip()[:100]!r}")
+        finally:
+            final.close()
+    except Exception as err:  # noqa: BLE001
+        step.check("P8-S4 walk completed", False, f"{err}")
+    step.finish()
+
+
 # ── The journey steps ───────────────────────────────────────────────────────
+# One driver, one phase mechanism (the wt86/jmerge resolution): the base
+# J1–J7 gate below always runs; registered phases compose AFTER it via
+# PHASE_RUNNERS + --phases (see the phase section). `seed`/`state` thread
+# the W1 capabilities + ordered facts (rc byte snapshots keyed by
+# milestone, the picked theme line, the first themed prompt row) from the
+# wizard block into every phase runner.
 def journey(exe: Path, root: Path, verdict: Verdict,
             phases: list = None) -> str:
     home = (root / "home").resolve()
     home.mkdir(parents=True, exist_ok=True)
     env = build_env(home, exe)
+    seed = SandboxSeed(home)
+    state = {
+        "rc_bytes": {},      # milestone -> rc bytes (P3-S2's equality grid)
+        "raw_texts": {},     # label -> ANSI-stripped raw stream
+        "theme_line": None,  # the exact rc theme line the wizard wrote
+        "theme_var": None,   # OSH_THEME / BASH_IT_THEME
+        "themed_prompt_row": None,
+        "marker_file": P3_MARKER_FILE,
+        "marker_value": P3_MARKER_VALUE,
+    }
     phases = [p for p in (phases or []) if p in PHASE_RUNNERS]
 
     # ── J1 + J2 share one session: on a fresh install `niu` IS the wizard.
@@ -903,6 +1920,11 @@ def journey(exe: Path, root: Path, verdict: Verdict,
     def block_rest(reason):
         for later in ("J2", "J3", "J4", "J5", "J6", "J7"):
             verdict.step(later, f"{later} (blocked: {reason})").finish(
+                status="blocked")
+        # The selected phases never run on a broken base gate (nothing to
+        # walk on) — record them blocked so the verdict stays honest.
+        for phase_id in phases:
+            verdict.step(phase_id, f"{phase_id} (blocked: {reason})").finish(
                 status="blocked")
 
     if not j1_ok:
@@ -1089,6 +2111,16 @@ def journey(exe: Path, root: Path, verdict: Verdict,
         step.check("cloned oh-my-bash carries >60 themes on disk",
                    count > 60, f"{count} theme directories")
     step.finish()
+
+    # W1 baseline for P3-S2's byte-stability grid: the rc exactly as the
+    # wizard left it, plus the picked theme's exact line and variable.
+    state["rc_bytes"]["after-wizard"] = rc_path.read_bytes() \
+        if rc_path.is_file() else b""
+    picked = re.search(r"^((?:OSH|BASH_IT)_THEME)='powerline-multiline'$",
+                       rc, re.M)
+    if picked:
+        state["theme_var"] = picked.group(1)
+        state["theme_line"] = picked.group(0)
 
     if step.record["status"] == "fail":
         block_rest("J2 failed")
@@ -1446,13 +2478,14 @@ def journey(exe: Path, root: Path, verdict: Verdict,
 
     # ── Spec phases (journey-spec.md §3/§7; wave lanes) ─────────────────────
     # Composed after the base gate on the same sandbox: every phase walks on
-    # the installed state J1–J6 leave. Runner functions register themselves
+    # the installed state J1–J7 leave. Runner functions register themselves
     # under their spec phase id in PHASE_RUNNERS (see the phase section
-    # below); --phases selects. A base-gate failure blocks them (nothing to
-    # walk on), exactly like the early block_rest returns above.
+    # below); --phases selects (default: every registered phase, spec
+    # order). A base-gate failure blocks them (nothing to walk on), exactly
+    # like the early block_rest returns above.
     for phase_id in phases:
         try:
-            PHASE_RUNNERS[phase_id](exe, home, env, verdict)
+            PHASE_RUNNERS[phase_id](exe, home, env, verdict, seed, state)
         except Exception as err:  # noqa: BLE001 - a crashed phase must not
             # crash the gate out of the verdict: mark it blocked, seal the
             # rest of the run honestly.
@@ -1471,11 +2504,13 @@ def journey(exe: Path, root: Path, verdict: Verdict,
 # their diffs to this file cannot collide: wt79/jw1-persistence registers
 # P3 (+ P8-S4), wt80/jw2-wizardspec registers P4 + P7.
 #
-# Composition: `--phases base` (the default) is J1–J6, the release gate,
-# unchanged. Selected phases compose AFTER the base gate on the same
-# sandbox — every phase walks on the installed state the base gate leaves —
-# so a lane's local run is `--phases base,P4,P7` and the full walk is
-# `--phases all`.
+# Composition: the DEFAULT run is the base gate (J1–J7) followed by every
+# registered phase in spec order (P3, P4, P7, P8) — the gate exercises
+# everything. `--phases` selects subsets (`base` = the bare release gate);
+# the wt79 single-value vocabulary folds in (full=all, gate=base,
+# persist=P3,P8). Phases compose AFTER the base gate on the same sandbox —
+# every phase walks on the installed state the base gate leaves — so a
+# lane's local run is `--phases base,P4,P7`.
 # ═════════════════════════════════════════════════════════════════════════════
 
 PHASE_RUNNERS = {}
@@ -1778,12 +2813,13 @@ def hop_terminal_asserts(step, verdict: Verdict, exe, home, env, tag: str,
 # ── P4 — re-running setup + switching themes (wave lane W2, wt80) ────────────
 
 @register_phase("P4")
-def phase_p4(exe, home, env, verdict):
+def phase_p4(exe, home, env, verdict, seed=None, state=None):
     """journey-spec P4 — the #168 entry door (owner: 向导重选后) plus the first
     regression walk of the most-burned rc writer (#157/#159), the
     hand-migrated rc coexistence (#143), and the dual-framework same-name
     routing (#168 mechanics / wt61 G2). Runs on the base gate's sandbox:
-    theme A ('powerline-multiline') active in rc + spec from J2's pick."""
+    theme A ('powerline-multiline') active in rc + spec from J2's pick.
+    (seed/state are the shared runner protocol; P4 walks the live files.)"""
     rc_path = home / ".niubashrc"
     spec_path = home / ".niubash" / "plugins.toml"
     journal_path = home / ".niubash" / "setup-journal.toml"
@@ -2080,14 +3116,15 @@ def phase_p4(exe, home, env, verdict):
 # ── P7 — spec hand-editing (wave lane W2, wt80) ──────────────────────────────
 
 @register_phase("P7")
-def phase_p7(exe, home, env, verdict):
+def phase_p7(exe, home, env, verdict, seed=None, state=None):
     """journey-spec P7 — the documented power-user workflow: hand-edit
     `~/.niubash/plugins.toml` + `niu plugin sync` (plugins-guide 'Merge
     semantics: spec vs your hand edits', design §14.6), its corruption
     behavior (a wedged startup bricks every terminal — the hang class),
     and #168's inverse invariant (sync claims only what the spec declares).
     Theme-agnostic by design: it runs after whatever state P4 (or the bare
-    base gate) left, snapshotting bytes before each mutation."""
+    base gate) left, snapshotting bytes before each mutation.
+    (seed/state are the shared runner protocol; P7 writes the live files.)"""
     rc_path = home / ".niubashrc"
     spec_path = home / ".niubash" / "plugins.toml"
     fixture_root = home / "plugin-fixtures" / "tinysh"
@@ -2340,6 +3377,49 @@ def phase_p7(exe, home, env, verdict):
     step.finish()
 
 
+# ── P3 — wave-1 persistence (wt79/jw1-persistence, journey-spec P3) ──────────
+# Registered under the wt80 PHASE_RUNNERS mechanism (the wt86/jmerge
+# resolution): the step functions above are the lane's own code, verbatim;
+# this runner is their composition — S1 reopen, S2 rc byte-stability
+# (#168 grid), S3 #167 no-wake first-key probe, S4 aged-state battery —
+# in spec order, blocked as a group when the wizard left no theme line.
+
+@register_phase("P3")
+def phase_p3(exe, home, env, verdict, seed, state):
+    p_steps = (
+        ("P3-S1", p3_s1_reopen),
+        ("P3-S2", p3_s2_rc_stability),
+        ("P3-S3", p3_s3_first_key),
+        ("P3-S4", p3_s4_aged_state),
+    )
+    blocked = None
+    if state.get("theme_line") is None:
+        blocked = ("no wizard theme line (J2 failed) — the aged-state "
+                   "assertions need the picked theme")
+    for step_id, fn in p_steps:
+        if blocked is not None:
+            verdict.step(step_id, f"{step_id} (blocked: {blocked})").finish(
+                status="blocked")
+            continue
+        fn(exe, home, env, verdict, seed, state)
+
+
+# ── P8 — wave-1 persistence, S4 only (wt79/jw1-persistence, journey-spec
+# P8-S4): remove the source providing the ACTIVE theme (F4), then restore.
+# Composes after P3 in spec order, so the tree it may need to self-heal is
+# exactly what P3-S4 left.
+
+@register_phase("P8")
+def phase_p8(exe, home, env, verdict, seed, state):
+    if state.get("theme_line") is None:
+        verdict.step(
+            "P8-S4", "P8-S4 (blocked: no wizard theme line (J2 failed) — "
+            "the aged-state assertions need the picked theme)").finish(
+                status="blocked")
+        return
+    p8_s4_remove_active_theme_source(exe, home, env, verdict, seed, state)
+
+
 def main() -> int:
     # CI runners default to a charmap console; the journey transcript carries
     # CJK/emoji wizard text (the owner's own wording). Force UTF-8 stdio.
@@ -2355,14 +3435,19 @@ def main() -> int:
     parser.add_argument("--keep-sandbox", type=Path, default=None,
                         help="create the sandbox under this directory "
                              "(kept on failure for diagnosis)")
-    # Phase composition (journey-spec.md §7 lane split): comma-separated
-    # spec phase ids to run AFTER the base J1–J6 gate on the same sandbox.
-    # 'base' alone is the release gate, unchanged; 'all' adds every
-    # registered phase. Lanes register phases in PHASE_RUNNERS.
-    parser.add_argument("--phases", type=str, default="base",
-                        help="comma-separated spec phases to compose after "
-                             "the base gate (e.g. --phases P4,P7; 'all' = "
-                             "every registered phase; default: base = J1-J6)")
+    # Phase composition (journey-spec.md §7 lane split; the wt86/jmerge
+    # unified mechanism): comma-separated entries. The base J1–J7 gate
+    # ALWAYS runs first; then the registered phases named here. 'all'
+    # (the DEFAULT) = every registered phase in spec order — the gate
+    # exercises everything; 'base' = the bare release gate. The wt79
+    # single-value --phase vocabulary folds in: full=all, gate=base,
+    # persist=P3,P8. Lanes register phases in PHASE_RUNNERS.
+    parser.add_argument("--phases", type=str, default="all",
+                        help="comma-separated phases to compose after the "
+                             "base gate (e.g. --phases P4,P7; 'all' = every "
+                             "registered phase [default]; 'base' = J1-J7 "
+                             "only; legacy --phase words accepted: full, "
+                             "gate, persist)")
     # Hidden stress harness (owner-approved validation shape, not a user
     # knob): a randomized 0..N ms pause before every send's settle check,
     # simulating runner slowness — the shape that broke release runs
@@ -2375,7 +3460,19 @@ def main() -> int:
     STRESS_DELAY_MS = max(0, args.stress_delay_ms)
     selected = [p.strip() for p in args.phases.split(",") if p.strip()]
     if not selected:
-        selected = ["base"]
+        selected = ["all"]
+    # The wt79 single-value --phase vocabulary, folded into --phases.
+    folded = []
+    for entry in selected:
+        if entry == "full":
+            folded.append("all")
+        elif entry == "gate":
+            folded.append("base")
+        elif entry == "persist":
+            folded.extend(["P3", "P8"])
+        else:
+            folded.append(entry)
+    selected = folded
     unknown = [p for p in selected
                if p not in ("base", "all") and p not in PHASE_RUNNERS]
     if unknown:
@@ -2383,7 +3480,7 @@ def main() -> int:
               f"{sorted(PHASE_RUNNERS) or '(none)'}")
         return 2
     phases = sorted(PHASE_RUNNERS) if "all" in selected \
-        else [p for p in selected if p in PHASE_RUNNERS]
+        else list(dict.fromkeys(p for p in selected if p in PHASE_RUNNERS))
     exe = args.niu.resolve()
     if not exe.is_file():
         print(f"SKIP: niu binary not found: {exe}")

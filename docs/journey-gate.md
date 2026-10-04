@@ -2,9 +2,9 @@
 
 > **Successor spec:** [journey-spec.md](journey-spec.md) (+ the
 > machine-readable [journey-steps.json](journey-steps.json)) — the phased
-> P1–P10 expansion covering the blind spots J1–J6 cannot see (state
+> P1–P10 expansion covering the blind spots J1–J7 cannot see (state
 > persistence, setup re-runs, network failure, trust/spec lifecycle,
-> upgrade, drift). J1–J6 below stay the release gate; the P-phases extend
+> upgrade, drift). J1–J7 below stay the release gate; the P-phases extend
 > it lane by lane.
 
 The owner's directive (2026-10-04, verbatim intent):
@@ -32,6 +32,44 @@ sandbox and the real `~/.niubash` is never touched).
 | J5 daily battery | `ls \| wc -l`, `echo hi \| cat -n`, `cd ~ && pwd`, `[[ a != b ]] && echo ok` | each produces output, not errors; prompt still alive after each |
 | J6 trust + activate bash-completion | `niu plugin trust bash-completion` → `source ~/.niubashrc` → new terminal | trust reports success; ZERO syntax errors — bash_completion included |
 | J7 gallery live preview (niubash#170) | re-run `niu setup`, walk the theme gallery | the pane below the highlight renders that theme's real PS1 (header follows the highlight; the old static sentence is gone; Esc fast-forwards, Cancel writes nothing) |
+
+### The wave-1 persistence group (P3-S1…S4 + P8-S4, lane wt79/jw1-persistence)
+
+Registered as phases `P3` and `P8` in `PHASE_RUNNERS` (the unified
+mechanism — wt86/jmerge folded wt79's single `--phase` into `--phases`):
+like every phase they compose AFTER the base gate on the same sandbox,
+walking on the installed state J1–J7 leave (the theme-bearing source is
+still installed — J6 only trusts bash-completion — and P8-S4 restores
+what it removes). The wt79 vocabulary survives as `--phases` aliases:
+`full` = all, `gate` = base, `persist` = P3,P8.
+
+| Step | The user's move | The gate asserts |
+| --- | --- | --- |
+| P3-S1 reopen sandbox session | fresh terminal after J5; write a marker file through the shell | prompt renders; the wizard's theme line still in the rc; spec still declares oh-my-bash + the theme; the marker round-trips through the shell (previous-session state detection) |
+| P3-S2 rc byte-stability + theme identity (niu#168) | `source ~/.niubashrc` in a live session; two fresh terminals; byte snapshots after every open | (a) rc bytes identical after every source/terminal; (b) the picked theme's variable unchanged, same framework; (c) `selection materialized` never printed during an unchanged-spec source/startup; (d) terminal 2's prompt block equals terminal 1's modulo clock digits |
+| P3-S3 first-key integrity (niu#167 anti-masking) | idle the themed prompt ≥1.2 s (≥1 clock repaint), then `echo NIU167KEY` with the Ctrl-U wake DISABLED, no retry | the full word executes (bare marker output); never `cho: command not found`. On a pass the run FLIPS `WAKE_ENABLED` off — every later send goes wake-free (the gate stops masking) |
+| P3-S4 aged state (F5) | seed between sessions: rename `oh-my-bash.sh` inside the trusted tree, hand-declare a missing origin + seed its `bootstrap-failures.toml` memo | prompt ≤10 s; exactly one `deferred` row + the documented awaiting-trust lines; guarded loader no-ops (no error storm); explicit `niu plugin sync` retries the missing origin readably; `niu plugin restore` rebuilds the tree; after healing the spec, the next terminal is silent |
+| P8-S4 remove the source with the ACTIVE theme (F4) | `niu plugin source remove oh-my-bash` while its theme is applied, then re-add + trust + re-enable | spec declaration, registry record and tree drop; no resurrection at the fresh terminal (no re-clone); floor prompt, zero syntax-error storm; re-add restores the theme; exactly one oh-my-bash managed block at steady state (no orphan blocks) |
+
+Driver capabilities this lane landed (journey-steps.json `driver_capabilities`,
+owner W1): **wake-flag** — `send_line(..., wake=False)` (no sacrificial
+Ctrl-U, no retry: a retry would mask the first-key behavior the probe
+exists to observe) plus the previous-session marker file; **seed** — the
+`SandboxSeed` helper (rc byte snapshots, spec stanza add/drop, the
+product-format F5 ledger write, tree-file damage), all under the sandbox
+home between sessions.
+
+Observed verdicts (first landing runs, 2026-10-04, release 1.3.3):
+P3-S2 went **green** — the #168 rebound does not fire for the
+oh-my-bash/`powerline-multiline` wizard shape (rc bytes byte-stable
+across every open; the `wt73-168-theme-rebound` registration stays and
+labels any future red of this class). P3-S3 passed and the run continued
+wake-free. One product observation recorded, not yet a ticket: after
+`niu plugin source remove` + a fresh terminal the removed source's
+managed rc block REMAINS (inert — its guarded loader no-ops on the
+missing tree; `remove_source` also will not delete a tree whose layout
+no longer fingerprints); the block is only replaced once the source is
+re-added. F4-adjacent orphan-block sweep is a candidate follow-up.
 
 Exit code `0` only if every assertion holds. The run writes:
 
@@ -185,10 +223,10 @@ network access to github.com.
 Options: `--artifacts DIR` (default
 `target/journey-results/<timestamp>`), `--keep-sandbox DIR` (create the
 sandbox under a directory you choose; it is kept on red, removed on
-green), `--phases IDS` (comma-separated spec phase ids from
-[journey-steps.json](journey-steps.json) to compose after the base gate,
-e.g. `--phases P4,P7`; `all` = every registered phase; default `base` =
-J1–J6, the release gate, unchanged).
+green), `--phases IDS` (comma-separated: the base J1–J7 gate always runs
+first, then the named registered phases; `all` = every registered phase —
+the DEFAULT, the gate exercises everything; `base` = the bare release
+gate; legacy `--phase` words accepted: `full`, `gate`, `persist`).
 
 ### Phase composition (--phases)
 
@@ -200,10 +238,12 @@ in `PHASE_RUNNERS` (`wt79/jw1-persistence` → `P3` + `P8-S4`,
 are the only shared surface, so lanes cannot collide in step code.
 
 Selected phases run AFTER the base gate on the same sandbox — every phase
-walks on the installed state J1–J6 leave — so a lane's local run is
-`--phases base,P4,P7` and the whole-spec walk is `--phases all`. A
-base-gate failure blocks the phases (nothing to walk on), exactly like it
-blocks J2–J6 today. Phase verdicts appear in the same
+walks on the installed state J1–J7 leave — so a lane's local run is
+`--phases base,P4,P7`. The DEFAULT run is the base gate followed by EVERY
+registered phase in spec order (P3, P4, P7, P8): the gate exercises
+everything unless a subset is asked for. A base-gate failure blocks the
+phases (nothing to walk on), exactly like it blocks J2–J7 today. Phase
+verdicts appear in the same
 `verdict.{json,txt}` as steps; expected-red phase steps carry their
 registered KNOWN-FAIL labels (e.g. `wt73-168-theme-rebound`) and never
 pass silently.
