@@ -61,6 +61,24 @@ SAFE_COMMAND_RE = re.compile(r"^[A-Za-z0-9_.+\[\]-]+$")
 INVENTORY_RE = re.compile(r"^\s{2,}([A-Za-z0-9_.+\[\]-]+)\s{2,}(.+?)\s*$")
 OPTION_START_RE = re.compile(r"^\s{2,}(-[A-Za-z0-9?]|--[A-Za-z0-9][A-Za-z0-9_.-]*|-\d)")
 OPTION_LINE_RE = re.compile(r"^\s{2,}(.+?)(?:\s{2,}(.+))?$")
+# GNU projects (gawk 5.4.1 is the first live source, niubash#189) print
+# options with SINGLE-TAB indentation in the classic dual-column layout:
+# "\t-f progfile\t\t--file=progfile". WinuxCmd's own help indents with 2+
+# spaces and separates the description column the same way, so the tab form
+# is gated on a literal leading tab everywhere below: space-only transcripts
+# parse exactly as before (the golden corpus is byte-identical proof).
+TAB_OPTION_START_RE = re.compile(r"^\t(-[A-Za-z0-9?]|--[A-Za-z0-9][A-Za-z0-9_.-]*|-\d)")
+TAB_OPTION_LINE_RE = re.compile(r"^\t(\S.*)$")
+# GNU dual-column section header ("POSIX options:\t\tGNU long options:
+# (standard)"): the first tab-delimited cell is the header text. An option
+# line's first cell is empty (the line starts with the tab), so it never
+# qualifies.
+def is_tab_section_header(line: str) -> bool:
+    if "\t" not in line:
+        return False
+    first_cell = line.split("\t", 1)[0]
+    text = first_cell.strip()
+    return bool(text) and text.endswith(":")
 LONG_OPTION_RE = re.compile(r"^(--[A-Za-z0-9][A-Za-z0-9_.-]*)(.*)$")
 SHORT_OPTION_RE = re.compile(r"^(-[A-Za-z0-9?][A-Za-z0-9_.-]*|-\d+)(.*)$")
 VALUE_HINT_RE = re.compile(r"(?:^|[\s=\[<])(ARG|ARGS|NUM|NUMBER|FILE|FILES|DIR|DIRECTORY|PATH|PATTERN|WHEN|WORD|MODE|SIZE|TYPE|NAME|COMMAND|FORMAT|STYLE|COLOR|KEY|VALUE|N)(?:\]|\>|$|\s)", re.I)
@@ -267,9 +285,14 @@ def parse_description(help_text: str, fallback: str | None) -> str | None:
             continue
         if is_option_section_header(stripped) or lower in SECTION_END_HEADERS:
             break
+        if is_tab_section_header(line):
+            # GNU dual-column header ("POSIX options:\tGNU long options: ...
+            # (standard)"): the option table starts here; the description
+            # region is over.
+            break
         if FOOTER_RE.match(stripped):
             break
-        if OPTION_START_RE.match(line):
+        if OPTION_START_RE.match(line) or TAB_OPTION_START_RE.match(line):
             # Headerless help (e.g. top 1.1.5) starts its option list directly
             # after the usage line; the description must stop there.
             break
@@ -327,6 +350,31 @@ def parse_subcommands(help_text: str) -> list[Subcommand]:
     return subcommands
 
 
+def canonicalize_gnu_spec(spec: str) -> str:
+    """Canonicalize a GNU dual-column spec to WinuxCmd comma style.
+
+    "\t-f progfile\t\t--file=progfile" becomes "-f progfile, --file=progfile"
+    so parse_flag_spec sees the same "-x, --long" shape as native WinuxCmd
+    help. Cells before the first long option are the short option plus its
+    value hint (joined with single spaces); every long option cell is joined
+    with ", ". Space-only specs never reach this function (tab-gated), so
+    native transcripts are untouched.
+    """
+    cells = [cell for cell in (part.strip() for part in re.split(r"\t+|\s{2,}", spec)) if cell]
+    head: list[str] = []
+    longs: list[str] = []
+    for cell in cells:
+        if cell.startswith("--"):
+            longs.append(cell)
+        elif not longs:
+            head.append(cell)
+    pieces = []
+    if head:
+        pieces.append(" ".join(head))
+    pieces.extend(longs)
+    return ", ".join(pieces)
+
+
 def parse_flags(command: str, help_text: str) -> list[Flag]:
     lines = help_text.splitlines()
     if any(is_option_section_header(line.strip()) for line in lines):
@@ -360,6 +408,7 @@ def _scan_option_blocks(
     in_options = start_in_options
     current_spec: str | None = None
     current_desc: list[str] = []
+    seen_option = False
 
     for line in lines:
         stripped = line.strip()
@@ -381,19 +430,52 @@ def _scan_option_blocks(
             break
         if FOOTER_RE.match(stripped):
             break
+        # GNU dual-column section headers sit flush-left ("POSIX options:\t
+        # GNU long options: (standard)"), so the tab-header check must run
+        # BEFORE the flush-left prose pause below: a header continues the
+        # scan into the next table, prose merely pauses it.
+        if is_tab_section_header(line):
+            flush_block(blocks, current_spec, current_desc)
+            current_spec = None
+            current_desc = []
+            continue
+        # Flush-left non-header line: GNU help interleaves such prose with
+        # option tables two ways — mid-help interludes (echo 1.1.5: "`echo`
+        # interprets the following backslash-escaped characters:" followed by
+        # MORE options) and terminal notices (gawk 5.4.1: the GPL block).
+        # Either way the current flag's description is over: flush the block
+        # and PAUSE the table (drop continuation lines) but keep scanning, so
+        # later options still parse and prose never glues onto a flag.
+        if seen_option and line and not line[0].isspace():
+            flush_block(blocks, current_spec, current_desc)
+            current_spec = None
+            current_desc = []
+            continue
         if stripped.endswith(":") and not OPTION_START_RE.match(line):
             # fzf-style subgroups inside the options section; keep parsing.
             continue
 
-        if OPTION_START_RE.match(line):
+        tab_line = TAB_OPTION_START_RE.match(line)
+        space_line = OPTION_START_RE.match(line)
+        if space_line or tab_line:
             flush_block(blocks, current_spec, current_desc)
-            match = OPTION_LINE_RE.match(line)
-            if not match:
-                current_spec = None
+            if tab_line:
+                # GNU dual-column layout: the whole tab-led remainder is the
+                # spec column (short option, value hint, long alias); there
+                # is no description column.
+                current_spec = canonicalize_gnu_spec(
+                    TAB_OPTION_LINE_RE.match(line).group(1)
+                )
                 current_desc = []
-                continue
-            current_spec = match.group(1).strip()
-            current_desc = [match.group(2).strip()] if match.group(2) else []
+            else:
+                match = OPTION_LINE_RE.match(line)
+                if not match:
+                    current_spec = None
+                    current_desc = []
+                    continue
+                current_spec = match.group(1).strip()
+                current_desc = [match.group(2).strip()] if match.group(2) else []
+            seen_option = True
         elif current_spec is not None:
             current_desc.append(stripped)
 
