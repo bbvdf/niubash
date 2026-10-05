@@ -1118,3 +1118,261 @@ fn multiline_right_align_theme_cjk_tail_width_matches_editor_columns() {
     s.expect("i169-cjk-ok");
     s.expect("i7>");
 }
+
+// ---------------------------------------------------------------------------
+// Matrix 8: vi editing mode (niubash#184)
+// ---------------------------------------------------------------------------
+//
+// `set -o vi` / `set -o emacs` must switch the LIVE line editor, like GNU
+// bash: both options route to one readline editing-mode state
+// (builtins/set.def:200/235 -> set_edit_mode, set.def:424), whose
+// `rl_variable_bind("editing-mode")` rebinds the active keymap immediately
+// (lib/readline/bind.c:2001 sv_editmode, bind.c:2092/2104). Every fresh
+// line starts in insert mode even in vi mode (lib/readline/readline.c:
+// 1243-1249). The journeys drive the real editor: ESC enters normal mode,
+// `k` recalls history, `dd` kills the line, and the vi-mode indicator
+// tracks insert/normal on the floor prompt.
+//
+// Assertion style: the syntax highlighter wraps command words in ANSI,
+// output lines carry a trailing erase, and ConPTY re-renders wrapped lines
+// and elides redundant SGR runs — so multi-token substrings and
+// escape-anchored matches never survive. Every marker below is a single
+// token counted in the transcript, and [`settle_and_drain`] runs after
+// every submitted line so keystrokes always land on a settled prompt.
+
+/// ESC as sent through the pty input pipe.
+const ESC_KEY: &str = "\u{1b}";
+
+/// Send ESC as its own pty write, then wait a beat before the vi motion.
+/// A lone ESC byte that shares one read chunk with the following key is
+/// parsed by crossterm as Alt+<key>, not as the vi ESC — the separate
+/// write (and the gap) is what makes it a standalone Esc key event.
+fn send_esc(s: &mut NiuSession) {
+    s.send(ESC_KEY);
+    std::thread::sleep(Duration::from_millis(200));
+}
+
+/// Let the shell finish the submitted line (execute + per-prompt editor
+/// rebuild) and consume every pending paint, so the next keystrokes land
+/// on a settled prompt and no later assertion depends on which repaint a
+/// consuming match lands in.
+fn settle_and_drain(s: &mut NiuSession) {
+    std::thread::sleep(Duration::from_millis(400));
+    s.drain_screen();
+}
+
+/// Count occurrences of `needle` in everything seen so far.
+fn transcript_count(s: &NiuSession, needle: &str) -> usize {
+    s.transcript().matches(needle).count()
+}
+
+/// Wait until `needle` has been seen at least `at_least` times and return
+/// the count; panics with the transcript on timeout.
+fn wait_for_count(s: &NiuSession, needle: &str, at_least: usize, timeout: Duration) -> usize {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let count = transcript_count(s, needle);
+        if count >= at_least {
+            return count;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!(
+                "expected {needle:?} seen {at_least} times (now {}); transcript: {}",
+                count,
+                s.transcript()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(15));
+    }
+}
+
+/// rc-set `set -o vi` (the standard bashrc line) must put the editor in vi
+/// mode from the first prompt: ESC + `k` recalls the previous history line,
+/// and Enter re-runs it. In emacs mode `k` would type the letter instead.
+#[test]
+fn vi_rc_set_o_vi_recalls_history_with_k_at_startup() {
+    if !require_pty_or_skip("vi_rc_set_o_vi_recalls_history_with_k_at_startup") {
+        return;
+    }
+    let mut rc = driver::default_rc();
+    rc.push_str("set -o vi\n");
+    let mut s = NiuSession::spawn_custom("vi-rc-startup", &rc, &[], (120, 30), DEFAULT_TIMEOUT);
+    s.wait_ready();
+    s.send_line("echo vi_rc_m1");
+    // Typed-buffer paint + echo output.
+    let baseline = wait_for_count(&s, "vi_rc_m1", 2, DEFAULT_TIMEOUT);
+    settle_and_drain(&mut s);
+
+    // ESC -> normal mode, then k -> previous history entry repaints it.
+    send_esc(&mut s);
+    s.send("k");
+    let recalled = wait_for_count(&s, "vi_rc_m1", baseline + 1, DEFAULT_TIMEOUT);
+    s.send("\r");
+    // Enter re-runs the recalled echo.
+    wait_for_count(&s, "vi_rc_m1", recalled + 1, DEFAULT_TIMEOUT);
+}
+
+/// The floor prompt's vi-mode indicator follows the live reedline mode:
+/// `i ` in insert, `- ` in normal, right after the prompt's `% `. A
+/// claimed PS1 renders no product indicator by design (whoever sets PS1
+/// owns the prompt slot, like GNU bash where vi-mode plugins add their own
+/// marker), so this journey runs on the unclaimed floor prompt.
+#[test]
+fn vi_floor_indicator_follows_esc_live() {
+    if !require_pty_or_skip("vi_floor_indicator_follows_esc_live") {
+        return;
+    }
+    let rc = "set -o vi\nNIU_DISABLE_DEFAULT_PLUGINS=1\n".to_string();
+    let mut s =
+        NiuSession::spawn_custom("vi-floor-indicator", &rc, &[], (120, 30), DEFAULT_TIMEOUT);
+    s.expect("Niubash");
+    // Shrink the cwd so the prompt cannot wrap: ConPTY re-renders wrapped
+    // lines with injected breaks, which would split `% ` from the
+    // indicator.
+    s.send_line("cd /");
+    // Insert-mode indicator after the prompt's `% `. (No trailing space in
+    // the pattern: with an empty buffer ConPTY elides the space into the
+    // erase-to-EOL.)
+    s.expect("% i");
+    settle_and_drain(&mut s);
+
+    s.send("abc");
+    // ESC flips the live mode; the repaint carries the normal indicator.
+    send_esc(&mut s);
+    s.expect("% - ");
+    settle_and_drain(&mut s);
+    // Normal-mode dd kills the line; back to insert for a clean one.
+    s.send("dd");
+    s.send("i");
+    s.send_line("echo floor_ok_out");
+    wait_for_count(&s, "floor_ok_out", 2, DEFAULT_TIMEOUT);
+    assert!(
+        !s.transcript().contains("floor_ok_outN"),
+        "leftover tail after dd: {}",
+        s.transcript()
+    );
+}
+
+/// `set -o vi` typed mid-session must switch the live editor (normal-mode
+/// motions active at the very next prompt), `set -o emacs` must return to
+/// emacs (ESC stays a no-op and k types the letter), and `set -o vi` must
+/// come back (normal-mode dd works again).
+#[test]
+fn vi_set_o_live_switch_vi_emacs_vi_journey() {
+    if !require_pty_or_skip("vi_set_o_live_switch_vi_emacs_vi_journey") {
+        return;
+    }
+    let mut s = NiuSession::spawn("vi-live-switch");
+    s.wait_ready();
+
+    // Enter vi mode mid-session.
+    s.send_line("set -o vi");
+    settle_and_drain(&mut s);
+    s.send_line("echo live_vi_one");
+    // Typed-buffer paint + echo output.
+    let baseline = wait_for_count(&s, "live_vi_one", 2, DEFAULT_TIMEOUT);
+    settle_and_drain(&mut s);
+    // In vi normal mode, k recalls the history line...
+    send_esc(&mut s);
+    s.send("k");
+    let recalled = wait_for_count(&s, "live_vi_one", baseline + 1, DEFAULT_TIMEOUT);
+    // ...and Enter re-runs it.
+    s.send("\r");
+    wait_for_count(&s, "live_vi_one", recalled + 1, DEFAULT_TIMEOUT);
+    settle_and_drain(&mut s);
+
+    // Back to emacs: ESC is a no-op and k must TYPE the letter, not recall
+    // history and not re-run the echo — the marker count must not move.
+    s.send_line("set -o emacs");
+    settle_and_drain(&mut s);
+    let frozen = transcript_count(&s, "live_vi_one");
+    send_esc(&mut s);
+    s.send("k");
+    s.send("\r");
+    std::thread::sleep(ABSENT_WINDOW);
+    assert_eq!(
+        transcript_count(&s, "live_vi_one"),
+        frozen,
+        "in emacs mode k must type the letter, not recall history; transcript: {}",
+        s.transcript()
+    );
+    settle_and_drain(&mut s);
+
+    // And `set -o vi` returns: normal-mode dd works again. (k cannot prove
+    // this leg — the most recent history entries are the `set -o` commands
+    // themselves, so recall would repaint those, not the marker.)
+    s.send_line("set -o vi");
+    settle_and_drain(&mut s);
+    s.send("zz_final_q");
+    send_esc(&mut s);
+    s.send("dd");
+    s.send("i");
+    s.send_line("echo final_ok_out");
+    // Typed-buffer paint + echo output: only reachable with the vi normal
+    // keymap active (in emacs, ESC/dd/i would type literally and the line
+    // would never execute cleanly).
+    wait_for_count(&s, "final_ok_out", 2, DEFAULT_TIMEOUT);
+    assert!(
+        !s.transcript().contains("final_ok_outq"),
+        "leftover tail after dd in the returned vi mode: {}",
+        s.transcript()
+    );
+}
+
+/// In vi normal mode `dd` kills the whole line (reedline maps it to a
+/// line-wise Cut), so only the re-typed command runs.
+#[test]
+fn vi_normal_dd_kills_line_before_insert() {
+    if !require_pty_or_skip("vi_normal_dd_kills_line_before_insert") {
+        return;
+    }
+    let mut s = NiuSession::spawn("vi-dd");
+    s.wait_ready();
+    s.send_line("set -o vi");
+    settle_and_drain(&mut s);
+    // Type a broken line, ESC, dd the whole line, then insert a clean one.
+    s.send("echo zz_dd_broken");
+    send_esc(&mut s);
+    s.send("dd");
+    s.send("i");
+    s.send_line("echo dd_ok_out");
+    // Typed-buffer paint + echo output.
+    wait_for_count(&s, "dd_ok_out", 2, DEFAULT_TIMEOUT);
+    let transcript = s.transcript();
+    // If dd had failed, the clean text would have been inserted before the
+    // ESC cursor (one char before the line end), leaving the broken tail
+    // glued right after it in the executed line and its output.
+    assert!(
+        !transcript.contains("dd_ok_outN"),
+        "leftover broken-line tail after dd: {transcript:?}"
+    );
+    assert!(
+        !transcript.contains("zz_dd_broken:"),
+        "the broken line must never be executed as a command: {transcript:?}"
+    );
+}
+
+/// A session that never enabled vi stays emacs: with no vi flag, ESC + k
+/// must type the letter (the resolver stays quiet on the all-off default
+/// and the emacs keymap never switches).
+#[test]
+fn vi_default_emacs_keeps_k_typing() {
+    if !require_pty_or_skip("vi_default_emacs_keeps_k_typing") {
+        return;
+    }
+    let mut s = NiuSession::spawn("vi-default-emacs");
+    s.wait_ready();
+    s.send_line("echo emacs_m5");
+    let baseline = wait_for_count(&s, "emacs_m5", 2, DEFAULT_TIMEOUT);
+    settle_and_drain(&mut s);
+    send_esc(&mut s);
+    s.send("k");
+    s.send("\r");
+    std::thread::sleep(ABSENT_WINDOW);
+    assert_eq!(
+        transcript_count(&s, "emacs_m5"),
+        baseline,
+        "with no vi flag, k must type the letter (emacs default); transcript: {}",
+        s.transcript()
+    );
+}
