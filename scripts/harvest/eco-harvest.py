@@ -73,6 +73,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -258,12 +259,18 @@ def log(msg: str):
 
 
 class Github:
+    # Sustained secondary/abuse limiting: after this many consecutive
+    # backoff waits without a successful call, give up and let the tier
+    # supervisor retry (a pathological token/policy problem, not a window).
+    MAX_SECONDARY_WAITS = 40
+
     def __init__(self, token: str, budget_log: Path):
         self.token = token
         self.budget_log = budget_log
         self.budget_lock = threading.Lock()
         self.calls = 0
         self.waited_seconds = 0.0
+        self._secondary_waits = 0
 
     def _log_budget(self, kind: str, resp):
         try:
@@ -279,23 +286,47 @@ class Github:
                     "remaining": rem, "limit": lim, "reset": reset}) + "\n")
 
     def _wait_for_reset(self, resp, kind: str):
+        """Rate-limit class failure: wait out the window. The old design
+        slept at most 700s x 4 attempts and then RAISED — any reset window
+        further away than ~47min (core windows run to a full hour) or any
+        sustained secondary/abuse limit killed the whole unattended run.
+        Now: primary exhaustion (x-ratelimit-remaining == 0) sleeps until
+        the reset header, looping as often as needed; secondary limits
+        (Retry-After or no reset info) take a bounded exponential backoff
+        and give up only after MAX_SECONDARY_WAITS consecutive waits.
+        Neither consumes the caller's retry attempts (wt97b)."""
         try:
             reset = int(resp.headers.get("x-ratelimit-reset", "0"))
         except ValueError:
             reset = 0
-        sleep_s = max(1, min(reset - int(time.time()) + 2, 700))
+        try:
+            retry_after = float(resp.headers.get("retry-after", "0") or 0)
+        except ValueError:
+            retry_after = 0.0
+        now = int(time.time())
+        target = max(reset, now + int(retry_after))
+        if target > now:
+            sleep_s = min(target - now + 2, 3500)
+        else:
+            self._secondary_waits += 1
+            if self._secondary_waits > self.MAX_SECONDARY_WAITS:
+                raise RuntimeError(
+                    f"{kind}: secondary rate limit persisted through "
+                    f"{self._secondary_waits} consecutive backoff waits")
+            sleep_s = min(30 * 2 ** min(self._secondary_waits - 1, 5), 900)
         log(f"RATE {kind}: budget exhausted; sleeping {sleep_s}s "
             f"(lane rule: log budget, never burn the run)")
         time.sleep(sleep_s)
         self.waited_seconds += sleep_s
 
     def get(self, path: str, kind: str = "core", retries: int = 4):
-        """GET an API path, returning parsed JSON. Sleeps through secondary
-        rate limits (403/429), retries transient 5xx/network faults."""
+        """GET an API path, returning parsed JSON. Rate-limit responses
+        (403/429 with an exhausted window) sleep until reset WITHOUT
+        consuming retries; other 403/429 (abuse/secondary) back off within
+        the retry budget; transient 5xx and network faults retry."""
         url = path if path.startswith("http") else API + path
         attempt = 0
         while True:
-            attempt += 1
             self.calls += 1
             req = urllib.request.Request(url, headers={
                 "Authorization": f"Bearer {self.token}",
@@ -306,25 +337,33 @@ class Github:
             try:
                 with urllib.request.urlopen(req, timeout=60) as resp:
                     self._log_budget(kind, resp)
+                    self._secondary_waits = 0
                     return json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as err:
                 self._log_budget(kind, err)
-                if err.code in (403, 429) and attempt <= retries:
+                if err.code in (403, 429):
                     body = err.read().decode("utf-8", "replace").lower()
                     if err.headers.get("x-ratelimit-remaining") == "0" or \
                             "rate limit" in body:
                         self._wait_for_reset(err, kind)
                         continue
-                    time.sleep(2 * attempt)  # abuse / secondary limit backoff
-                    continue
-                if err.code >= 500 and attempt <= retries:
-                    time.sleep(2 * attempt)
-                    continue
+                    attempt += 1
+                    if attempt <= retries:
+                        time.sleep(2 * attempt)  # abuse / secondary backoff
+                        continue
+                    raise
+                if err.code >= 500:
+                    attempt += 1
+                    if attempt <= retries:
+                        time.sleep(2 * attempt)
+                        continue
+                    raise
                 if err.code in (404, 409):
                     # 409: empty repository (no commits) — nothing to harvest.
                     return None
                 raise
             except (urllib.error.URLError, TimeoutError, ConnectionError):
+                attempt += 1
                 if attempt <= retries:
                     time.sleep(2 * attempt)
                     continue
@@ -399,7 +438,8 @@ class Manifest:
         manifest_dir.mkdir(parents=True, exist_ok=True)
         self.dir = manifest_dir
         self.db = sqlite3.connect(manifest_dir / "eco-manifest.sqlite",
-                                  check_same_thread=False)
+                                  check_same_thread=False,
+                                  timeout=30)  # coexist with eco-test verdict writes
         self.db.executescript(SCHEMA)
         self.lock = threading.RLock()
         self.jsonl = manifest_dir / "assets.jsonl"
@@ -623,10 +663,17 @@ def t3_t5_run(gh: Github, man: Manifest, tier: str, max_repos: int,
     per_query = (max(max_repos // len(queries), 1) if max_repos
                  else 50_000)
     for q in queries:
-        for repo in search_repos(gh, tier, q, per_query, state, state_path):
-            if repo.lower() not in seen:
-                seen.add(repo.lower())
-                repos.append(repo)
+        # One query failing after retries must not kill the whole run
+        # (wt97b: unattended survival) — keep the repos gathered so far.
+        try:
+            for repo in search_repos(gh, tier, q, per_query, state,
+                                     state_path):
+                if repo.lower() not in seen:
+                    seen.add(repo.lower())
+                    repos.append(repo)
+        except Exception as err:
+            log(f"{tier} search '{q}' failed: {err} — continuing with "
+                f"{len(repos)} repos gathered so far")
     log(f"{tier} {label}: {len(repos)} repos to enumerate "
         f"(cap {cap} entry-points each)")
     done = 0
@@ -644,6 +691,10 @@ def t3_t5_run(gh: Github, man: Manifest, tier: str, max_repos: int,
             if done % 25 == 0:
                 log(f"{tier}: {done}/{len(repos)} repos enumerated; "
                     f"assets={man.census()['assets_total']}")
+                # Heartbeat (wt97b): enumeration can run ~an hour between
+                # search-phase saves; touch the state file so its age stays
+                # a meaningful liveness signal for monitors.
+                save_state(state, state_path)
     save_state(state, state_path)
 
 
@@ -671,6 +722,13 @@ def t4_run(gh: Github, man: Manifest, state: dict, state_path: Path,
                 repo = it.get("repository", {}).get("full_name")
                 path = it.get("path")
                 if not repo or not path:
+                    continue
+                # Code-search hits are NOT filtered by the tree harvester's
+                # printable-path rule; control characters in a path produce
+                # a raw URL urllib can never fetch ("URL can't contain
+                # control characters") — a permanent FETCH-FAILED. Skip at
+                # harvest time (wt97b; 18 such rows had already accumulated).
+                if not all(ch.isprintable() for ch in path):
                     continue
                 sha = it.get("sha") or f"t4:{repo}:{path}"
                 man.add_asset(sha, "code-search-sha", repo, path, None,
@@ -742,8 +800,8 @@ def main(argv=None):
 
     tiers = ([t.strip() for t in args.tier.split(",")]
              if args.tier != "all" else ["t1", "t2", "t3", "t4", "t5"])
-    t0 = time.time()
-    for tier in tiers:
+
+    def run_tier(tier: str):
         if tier == "t1":
             t1_t2_run(gh, man, "t1", T1_SOURCES, args.workers,
                       args.t1_max_files_per_repo)
@@ -766,6 +824,26 @@ def main(argv=None):
         else:
             print(f"unknown tier {tier}")
             return 2
+        return 0
+
+    # Tier-level supervisor (wt97b unattended-survival fix): a tier that
+    # still crashes after the retry ladder is logged and SKIPPED so the
+    # remaining tiers (and the census write) still happen; everything is
+    # resumable, so the next scheduled run continues where this stopped.
+    t0 = time.time()
+    for tier in tiers:
+        for attempt in range(1, 4):
+            try:
+                if run_tier(tier) == 2:
+                    return 2
+                break
+            except Exception:
+                log(f"tier {tier} attempt {attempt}/3 crashed:\n"
+                    f"{traceback.format_exc()}")
+                if attempt < 3:
+                    time.sleep(60 * attempt)
+        else:
+            log(f"tier {tier}: giving up after 3 crashed attempts")
 
     if args.backfill_repo_meta:
         n = man.backfill_repo_meta(gh, args.backfill_repo_meta)
