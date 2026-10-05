@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "name": "niubash-release-preinstall",
+  "description": "Release CI pre-install manifest (niubash#189). The release workflow installs every entry of `packages` into the staged WinuxCmd root with `winuxcmd wpm install <name> --root <staged-root> --yes`, then materializes every entry of `shims` as a winuxcmd.exe hardlink in usr\\bin. The package index lives in unixwin/wpm-source (index.json); wpm itself ships inside winuxcmd.exe (`winuxcmd wpm ...`), so no separate wpm.exe is needed.",
+  "packages": [
+    {
+      "name": "gawk",
+      "purpose": "GNU Awk 5.4.1. bash-it plugins and completions hard-depend on awk (the gradle completion pipes through `awk '{print $1}'` on every use); gawk IS the GNU implementation, so plugin scripts written against GNU awk keep their dialect. The wpm `gawk` package is layout=shim: the payload (gawk.exe, awk.exe, and its five DLLs) lands in <root>\\opt\\gawk and usr\\bin\\gawk.exe is a winuxcmd.exe hardlink shim that forwards there."
+    }
+  ],
+  "shims": [
+    {
+      "name": "awk",
+      "target": "gawk",
+      "reason": "bash-it calls plain `awk`, not `gawk`. The wpm gawk package only registers `commands: [gawk]`, so wpm alone leaves usr\\bin without an awk.exe and winuxcmd has no awk builtin to catch the name. The release step hardlinks usr\\bin\\awk.exe to usr\\bin\\winuxcmd.exe (exactly what wpm's create_package_shims does); the shim dispatcher then forwards `awk` to opt\\gawk\\awk.exe from the package payload. This mirrors how MSYS presents gawk as awk."
+    }
+  ],
+  "notes": [
+    "Fail-open contract: a failed install is a loud warning (GITHUB_STEP_SUMMARY + ::warning), never a release blocker. Pre-installing is an enhancement, not a promise; users can always run `winuxcmd wpm install gawk` against an installed package.",
+    "Architecture: the wpm index currently carries windows-x64 artifacts only for these packages. On the arm64 release leg the install fails by design and the leg ships without awk/gawk; the post-package verify step asserts only on legs where the binaries exist.",
+    "The staged package ships <root>\\usr\\bin shims and the <root>\\opt payload tree only - never the .wpm state directory (cache/staging/index)."
+  ],
+  "excluded": [
+    {
+      "name": "goawk",
+      "reason": "Owner decision (gawk only): goawk is forbidden in the pre-install manifest. Plugins target GNU awk; a second awk dialect on PATH is a compatibility hazard, not an enhancement. (The separate wpm `awk` package is likewise not installed: it is the same upstream artifact as `gawk` — gawk-5.4.1, same SHA-256 — and the awk command is provided by the shims entry above.)"
+    },
+    {
+      "name": "bzip2",
+      "reason": "Owner decision: no compression tools in the pre-install manifest. Users install bzip2 themselves via `winuxcmd wpm install bzip2` when they need it."
+    },
+    {
+      "name": "gzip",
+      "reason": "Owner decision: no compression tools in the pre-install manifest. Users install gzip themselves via `winuxcmd wpm install gzip` when they need it."
+    },
+    {
+      "name": "link",
+      "reason": "Owner directive: FORBIDDEN FOREVER. The name collides with the MSVC link.exe toolchain binary; it must never appear in packages or shims of any manifest revision."
+    }
+  ]
+}

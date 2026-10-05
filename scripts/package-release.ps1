@@ -6,6 +6,14 @@ param(
     [string]$Arch,
     [string]$BashShimPath,
     [string]$ShShimPath,
+    # Staged wpm pre-install root (niubash#189): a WinuxCmd root whose
+    # usr\bin holds the pre-install shims (gawk.exe, awk.exe) and whose opt\
+    # holds the package payloads with their private DLLs. Its usr\bin *.exe
+    # (except winuxcmd.exe itself, which is staged from -WinuxCmdPath) and
+    # its whole opt\ tree are copied into the package's winuxcmd\ directory,
+    # so the shim dispatch (<root>\usr\bin\<cmd>.exe -> <root>\opt\<pkg>\)
+    # resolves inside the shipped layout. Never ships the .wpm state dir.
+    [string]$PreinstallRoot,
     [switch]$AllowPathWinuxCmd
 )
 
@@ -161,6 +169,28 @@ try {
     Copy-Item -LiteralPath $bashShimExe -Destination (Join-Path $stageDir "winuxcmd\bin\bash.exe") -Force
     Copy-Item -LiteralPath $shShimExe -Destination (Join-Path $stageDir "winuxcmd\bin\sh.exe") -Force
     Copy-Item -LiteralPath $activationScript -Destination (Join-Path $stageDir "winuxcmd\usr\bin\activate-winuxcmd.sh") -Force
+
+    # niubash#189: pre-installed wpm packages (see -PreinstallRoot above).
+    if ($PreinstallRoot) {
+        if (-not (Test-Path -LiteralPath (Join-Path $PreinstallRoot "usr\bin"))) {
+            throw "PreinstallRoot has no usr\bin: $PreinstallRoot"
+        }
+        $preinstallShims = Get-ChildItem -LiteralPath (Join-Path $PreinstallRoot "usr\bin") -Filter *.exe |
+            Where-Object { $_.Name -ne "winuxcmd.exe" }
+        foreach ($shim in $preinstallShims) {
+            Copy-Item -LiteralPath $shim.FullName -Destination (Join-Path $stageDir "winuxcmd\usr\bin\$($shim.Name)") -Force
+        }
+        if (Test-Path -LiteralPath (Join-Path $PreinstallRoot "opt")) {
+            Copy-Item -LiteralPath (Join-Path $PreinstallRoot "opt") -Destination (Join-Path $stageDir "winuxcmd\opt") -Recurse -Force
+        }
+        if ($preinstallShims.Count -gt 0) {
+            Write-Host "Pre-installed shims: $($preinstallShims.Name -join ', ')"
+        }
+        else {
+            Write-Warning "PreinstallRoot was set but usr\bin has no shims; shipping without pre-installed packages (fail-open)"
+        }
+    }
+
     foreach ($iconFile in $iconFiles) {
         Copy-Item -LiteralPath $iconFile -Destination (Join-Path $stageDir "assets") -Force
     }

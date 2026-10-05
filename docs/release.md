@@ -95,6 +95,29 @@ release notes.
 installers, WinuxCmd bundling from a matched release, and `niubash-win-*`
 latest-compatible aliases. Unix jobs deliberately do not add such aliases.
 
+One stage was added between WinuxCmd staging and packaging
+(niubash#189): **manifest-driven pre-install**. The workflow reads
+`scripts/release/preinstall.json`, installs each named package into a
+staged WinuxCmd root with `winuxcmd wpm install <pkg> --root <root>
+--yes` (wpm ships inside winuxcmd.exe — the binary the download step
+extracted is the package manager), materializes the manifest's command
+shims as winuxcmd.exe hardlinks, and package-release.ps1 copies the
+root's `usr\bin` shims plus the whole `opt\` payload tree into the
+package (the .iss `recursesubdirs` copy carries them into the installer
+for free). First entry: gawk 5.4.1 with an `awk` shim — bash-it plugins
+and completions call plain `awk`, and wpm's gawk package registers only
+`gawk`. The exclusions (compression tools, `goawk`, and `link` —
+forbidden forever, MSVC collision) are recorded policy in the manifest
+and pinned by `tests/preinstall_manifest.rs`. Installs are **fail-open**:
+three attempts with backoff (the local proxy `http://127.0.0.1:7897` as
+the final-attempt fallback, same convention as the perfbudget gate), and
+a failure warns (`::warning` + step summary + release-notes caveat)
+instead of blocking the release — currently that only bites the arm64
+legs, whose wpm index has no artifact. Whatever DID install is
+hard-verified in the staged package before upload (`--version` per shim
+plus a plugin-shaped `awk '{print $1}'` pipeline through the packaged
+niu.exe); a package that installed but does not run FAILS the job.
+
 ## Dispatching a dry run (captain)
 
 The workflow validates `tag` against `^v\d+\.\d+\.\d+$` and against the
