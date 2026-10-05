@@ -90,7 +90,7 @@ SOURCE_TIMEOUT = 12.0
 ENTER_TIMEOUT = 6.0
 GNU_SYNTAX_TIMEOUT = 15.0
 GNU_RUNTIME_TIMEOUT = 10.0
-FETCH_RETRIES = 5
+FETCH_RETRIES = 6  # CDN throttle bursts outlast short ladders (wt97b)
 
 STORM_LINES = 100       # >= this many error-pattern lines -> ERROR-STORM
 STORM_BYTES = 512_000   # > this much stripped output -> ERROR-STORM
@@ -166,12 +166,12 @@ def fetch_asset(asset: dict, token: str | None) -> Path | None:
                     data = resp.read()
                 break
             except urllib.error.HTTPError as err:
-                if err.code in (429, 502, 503, 504) and \
+                if err.code in (403, 429, 502, 503, 504) and \
                         attempt < FETCH_RETRIES:
                     retry_after = err.headers.get("Retry-After")
                     time.sleep(min(float(retry_after) if
                                    (retry_after or "").isdigit() else
-                                   3 * attempt, 60))
+                                   5 * attempt, 60))
                     continue
                 if attempt == FETCH_RETRIES:
                     return None
@@ -247,7 +247,12 @@ class GnuBash:
             return "hang", "GNU timeout(1) killed it (rc=124)"
         n, _ = error_line_count(strip_ansi((r.stderr or "") +
                                            (r.stdout or "")))
-        if r.returncode not in (0,) and n >= STORM_LINES:
+        # wt97b triage fix: ANY error-pattern line with rc != 0 is a GNU
+        # failure. The old gate (>= STORM_LINES) stamped `ok` for rc=2 with
+        # 1-2 syntax-error lines, which mis-classified 5 assets
+        # (bash-completion 7z/cvs/ps, ohmyzsh changelog/check_for_upgrade)
+        # as SYNTAX-REJECT-RUBASH-ONLY instead of GNU-ALSO-FAILS.
+        if r.returncode not in (0,) and n >= 1:
             return "error", f"GNU rc={r.returncode} with {n} error lines"
         return "ok", f"GNU rc={r.returncode}"
 
@@ -534,6 +539,15 @@ def test_one(asset: dict, cfg) -> dict:
         "niu": str(cfg.niu), "rubash": str(cfg.rubash),
     }
     work = None
+    # Permanent pre-fetch guard (wt97b): a raw URL carrying control
+    # characters can NEVER be fetched ("URL can't contain control
+    # characters" — 18 such rows burned retries every resume). Badge it
+    # once, permanently; UNFETCHABLE-URL is not in the transient set, so
+    # resume skips it. (eco-harvest now filters these at t4 harvest time.)
+    if not all(ch.isprintable() for ch in (asset.get("source_url") or "")):
+        rec.update(verdict="UNFETCHABLE-URL",
+                   detail="control characters in raw URL (unfetchable)")
+        return rec
     try:
         work = fetch_asset(asset, cfg.token)
     except Exception as err:
@@ -598,6 +612,23 @@ def test_one(asset: dict, cfg) -> dict:
                 rec["niu_sources"] = out["verdict"]
             except Exception as err:
                 rec["niu_sources"] = f"HARNESS-ERROR: {err!r}"[:120]
+            # wt97b triage fix: when GNU bash -n ALSO rejects the file AND
+            # niu's runtime sources it clean, both engines' -n share the
+            # same strictness while both runtimes accept it (the
+            # extglob-after-shopt class: `shopt -s extglob` makes a later
+            # `case x in @(a|b))` legal at runtime under bash, which
+            # `bash -n` never executes — oh-my-bash lib/cli.bash). That is
+            # NOT a rubash-only divergence: stamp OK with the -n note
+            # instead of a false gold.
+            if not gnu_ok and rec.get("niu_sources") in ("OK", "SLOW"):
+                rec.update(verdict="OK",
+                           detail="bash -n rejects under BOTH engines "
+                                  "(pre-execution strictness, e.g. "
+                                  "extglob-before-shopt); runtimes OK",
+                           signature="ok:nn-reject-both-runtimes-clean",
+                           ms=int((time.time() - t0) * 1000))
+                cleanup_work(work)
+                return rec
             rec.update(verdict="SYNTAX-REJECT-RUBASH-ONLY",
                        signature=syntax_signature(rub_err, work),
                        rubash_err=rub_err, ms=int((time.time() - t0) * 1000))
@@ -767,7 +798,8 @@ def main(argv=None):
     import sqlite3
     manifest_dir = Path(args.manifest_dir)
     db = sqlite3.connect(manifest_dir / "eco-manifest.sqlite",
-                         check_same_thread=False)
+                         check_same_thread=False,
+                         timeout=30)  # harvest+test can run concurrently
     tier_list = [t.strip() for t in args.tiers.split(",") if t.strip()]
     qmarks = ",".join("?" * len(tier_list))
 
