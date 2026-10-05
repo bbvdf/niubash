@@ -16,6 +16,10 @@ pub static WINUXCMD_COMPLETION_TOMLS: &[(&str, &str)] = &[
         include_str!("../../assets/completions/winuxcmd/arch.toml"),
     ),
     (
+        "awk",
+        include_str!("../../assets/completions/winuxcmd/awk.toml"),
+    ),
+    (
         "b2sum",
         include_str!("../../assets/completions/winuxcmd/b2sum.toml"),
     ),
@@ -210,6 +214,10 @@ pub static WINUXCMD_COMPLETION_TOMLS: &[(&str, &str)] = &[
     (
         "free",
         include_str!("../../assets/completions/winuxcmd/free.toml"),
+    ),
+    (
+        "gawk",
+        include_str!("../../assets/completions/winuxcmd/gawk.toml"),
     ),
     (
         "getconf",

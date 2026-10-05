@@ -53,7 +53,7 @@ rubash's `docs/COMPATIBILITY-STATUS.md`). What it is not matters as much:
 
 <!-- BEGIN GENERATED:capability-snapshot -->
 - **77 shell built-ins & reserved words** — the GNU bash 5.3 `shell_builtins[]` table (`alias`, `cd`, `declare`, `printf`, `set`, `trap`, `if`/`while`/`case`, ...); every one documents itself via `help <name>`.
-- **178 winuxcmd applets** on PATH (`ls`, `grep`, `sed`, `awk`, `find`, `tar`, `top`, `xxd`, ...) — real Windows binaries, not emulated inside the shell; full inventory in `references/quickref.md`.
+- **180 winuxcmd applets** on PATH (`ls`, `grep`, `sed`, `awk`, `find`, `tar`, `top`, `xxd`, ...) — real Windows binaries, not emulated inside the shell; full inventory in `references/quickref.md`.
 - **Launcher verbs** — `setup`, `font`, `doctor`, `plugin`, `skill`, `--self-update`; table in `references/quickref.md`.
 - **Plugin system** — git-clone-only external sources (oh-my-bash, bash-it, bpkg) behind an explicit trust gate, driven by a declarative spec (`~/.niubash/plugins.toml`) with lockfile verbs (`add/list/enable/disable/trust/sync/update/restore/rollback/clean/source/recipe/distro/mirror/ui`).
 - **TUI surfaces** — `niu setup` wizard (theme/prompt/tools), `niu plugin ui` menu, theme gallery, `niu font` picker; all non-interactive-friendly and safe to skip (`-c` loads none of them).

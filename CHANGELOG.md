@@ -6,6 +6,27 @@ All notable changes to Niubash are documented in this file.
 
 ### Added
 
+- Release-CI pre-install of external packages via wpm (niubash#189): the
+  release workflow installs the packages named in
+  `scripts/release/preinstall.json` into the staged WinuxCmd root with
+  `winuxcmd wpm install <pkg> --root <root> --yes` (wpm ships inside
+  winuxcmd.exe — no separate binary) between WinuxCmd staging and packaging,
+  so the Windows release zip and installer carry a working GNU awk out of the
+  box. First entry: `gawk` (GNU Awk 5.4.1; bash-it plugins and completions
+  hard-depend on awk). The manifest also records the shim (`awk.exe`, a
+  winuxcmd.exe hardlink that forwards to the `opt/gawk` payload — wpm's gawk
+  package registers only `gawk`, and bash-it calls plain `awk`) and the
+  owner-ordered exclusions as durable policy: no compression tools
+  (bzip2/gzip — users `wpm install` them themselves), `goawk` forbidden
+  (gawk only), and `link` forbidden forever (MSVC link.exe collision).
+  Installs are fail-open: a failed package (e.g. the arm64 legs while the
+  wpm index carries windows-x64 artifacts only) warns in the step summary
+  and release notes, and never blocks a release; whatever DID install is
+  hard-verified in the staged package (`--version` plus a plugin-shaped
+  `awk '{print $1}'` pipeline through the packaged niu.exe) before upload.
+  The completions corpus carries real `awk --help`/`gawk --help` transcripts;
+  the embedded applet inventory goes 178 → 180 (SKILL.md quickref
+  regenerated, golden-gated).
 - AI agent skill bundle with `niu skill install` / `niu skill status`
   (niubash#188): the shell ships its own agent-facing guide
   (`skills/niubash/SKILL.md` — identity, capability surface, pitfalls,

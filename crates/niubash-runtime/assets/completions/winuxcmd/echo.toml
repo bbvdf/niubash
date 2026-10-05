@@ -12,7 +12,7 @@ description = "enable interpretation of backslash escapes"
 
 [[flags]]
 short = "-E"
-description = "explicitly suppress interpretation of backslash escapes \\a        alert (bell) \\b        backspace \\c        suppress further output \\e        escape character \\E        escape character \\f        form feed \\n        new line \\r        carriage return \\t        horizontal tab \\v        vertical tab \\\\        backslash \\0nnn     the character whose ASCII code is NNN (octal).  NNN can be 0 to 3 octal digits \\xHH      the eight-bit character whose value is HH (hexadecimal).  HH can be one or two hex digits \\uHHHH    the Unicode character whose value is the hexadecimal value HHHH. HHHH can be one to four hex digits. (Not fully implemented on Windows) \\UHHHHHHHH the Unicode character whose value is the hexadecimal value HHHHHHHH. HHHHHHHH can be one to eight hex digits. (Not fully implemented on Windows)"
+description = "explicitly suppress interpretation of backslash escapes"
 
 [[flags]]
 short = "-u"
