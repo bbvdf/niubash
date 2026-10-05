@@ -15,8 +15,8 @@ use crate::syntax_highlighting::NiubashSyntaxHighlighter;
 use reedline::{
     default_emacs_keybindings, default_vi_insert_keybindings, default_vi_normal_keybindings,
     ColumnarMenu, EditCommand, EditMode, Emacs, KeyCode, KeyModifiers, Keybindings, ListMenu,
-    MenuBuilder, Prompt, PromptEditMode, PromptHistorySearch, Reedline, ReedlineEvent,
-    ReedlineMenu, Signal, ValidationResult, Validator, Vi,
+    MenuBuilder, Prompt, PromptEditMode, PromptHistorySearch, PromptViMode, Reedline,
+    ReedlineEvent, ReedlineMenu, Signal, ValidationResult, Validator, Vi,
 };
 
 const COMPLETION_MENU: &str = "completion_menu";
@@ -650,14 +650,22 @@ impl PendingReplInput {
     }
 }
 
-struct ContinuationPrompt {
+pub(crate) struct ContinuationPrompt {
     indicator: String,
+    /// The vi-mode indicator strings carried over from the prompt backend
+    /// (niubash#184). The PromptEditMode itself arrives live from reedline
+    /// on every repaint, so ESC toggling insert/normal inside a multi-line
+    /// edit re-renders the indicator without extra plumbing.
+    vi_insert_indicator: String,
+    vi_normal_indicator: String,
 }
 
 impl ContinuationPrompt {
-    fn new(prompt: &dyn Prompt) -> Self {
+    pub(crate) fn new(prompt: &dyn Prompt, vi_indicators: (String, String)) -> Self {
         Self {
             indicator: prompt.render_prompt_multiline_indicator().into_owned(),
+            vi_insert_indicator: vi_indicators.0,
+            vi_normal_indicator: vi_indicators.1,
         }
     }
 }
@@ -671,8 +679,16 @@ impl Prompt for ContinuationPrompt {
         Cow::Borrowed("")
     }
 
-    fn render_prompt_indicator(&self, _prompt_mode: PromptEditMode) -> Cow<'_, str> {
-        Cow::Borrowed("")
+    fn render_prompt_indicator(&self, prompt_mode: PromptEditMode) -> Cow<'_, str> {
+        // niubash#184: continuation reads carry the same minimal vi-mode
+        // indicator as the main prompt (GNU's PS2 has no mode display, but
+        // knowing insert vs normal before a dd on a multi-line buffer is
+        // exactly where it matters).
+        Cow::Owned(crate::prompt::mode_indicator_for(
+            prompt_mode,
+            &self.vi_insert_indicator,
+            &self.vi_normal_indicator,
+        ))
     }
 
     fn render_prompt_multiline_indicator(&self) -> Cow<'_, str> {
@@ -1187,6 +1203,14 @@ pub fn run_repl(shell: Shell) -> anyhow::Result<()> {
     // line editor is built.
     shell.borrow_mut().load_user_widget_bindings();
     shell.borrow_mut().load_user_compdefs();
+    // niubash#184: the rc's `set -o vi` (the standard bashrc line) must land
+    // in the editor built below. GNU bash resolves the editing mode the same
+    // way after startup files: `set -o vi` runs set_edit_mode
+    // (builtins/set.def:424) → rl_variable_bind("editing-mode") during rc
+    // sourcing, before the first readline prompt. The engine option flags
+    // are read and folded into `editor_mode` here; build_line_editor consumes
+    // the field.
+    shell.borrow_mut().refresh_edit_mode();
     let mut line_editor = build_line_editor(&shell)?;
     let mut pending = PendingReplInput::default();
 
@@ -1201,12 +1225,42 @@ pub fn run_repl(shell: Shell) -> anyhow::Result<()> {
             // already shows the new theme.
             shell.borrow_mut().apply_setup_config_if_pending();
             shell.borrow_mut().run_precmd_hooks();
+            // GNU readline starts every fresh line in insert mode, even in
+            // vi editing mode (lib/readline/readline.c:1243-1249: "Each
+            // line starts in insert mode (the default)" —
+            // _rl_set_insert_mode(RL_IM_DEFAULT, 1) plus
+            // _rl_vi_initialize_line() run per readline call). Reedline
+            // 0.50 keeps ViMode across reads and exposes no reset, so a
+            // line submitted in normal mode would leave the NEXT prompt in
+            // normal mode, where typed letters are motions. When the
+            // previous read ended in vi normal/visual, rebuild the editor:
+            // a fresh Vi starts in insert.
+            if matches!(
+                line_editor.prompt_edit_mode(),
+                PromptEditMode::Vi(PromptViMode::Normal) | PromptEditMode::Vi(PromptViMode::Visual)
+            ) {
+                line_editor = build_line_editor(&shell)?;
+            }
+            // niubash#184: `set -o vi` / `set -o emacs` must switch the LIVE
+            // line editor, like GNU bash: the two options route to one
+            // editing-mode state (set.def:200/235 → set_edit_mode,
+            // set.def:424) whose `rl_variable_bind("editing-mode")` rebinds
+            // the active keymap immediately (bind.c:2001 sv_editmode,
+            // bind.c:2092/2104) — the last `set -o` wins at the next
+            // prompt. Reedline 0.50 exposes no edit-mode setter on a live
+            // engine (only the `with_edit_mode` builder), so a change is
+            // applied by rebuilding through `build_line_editor` — the same
+            // construction path as startup, so menus, hinter and bindings
+            // come along.
+            if shell.borrow_mut().refresh_edit_mode().is_some() {
+                line_editor = build_line_editor(&shell)?;
+            }
             let prompt = shell.borrow().prompt.clone();
             typeahead.disarm_and_reinject();
             line_editor.read_line(&prompt)
         } else {
             let prompt = shell.borrow().prompt.clone();
-            let prompt = ContinuationPrompt::new(&prompt);
+            let prompt = ContinuationPrompt::new(&prompt, prompt.vi_indicators());
             typeahead.disarm_and_reinject();
             line_editor.read_line(&prompt)
         };

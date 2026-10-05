@@ -6,6 +6,27 @@ All notable changes to Niubash are documented in this file.
 
 ### Added
 
+- Vi editing mode wired end-to-end (niubash#184): `set -o vi` / `set -o
+  emacs` now switch the LIVE line editor mid-session, like GNU bash — both
+  options route to one readline editing-mode state (bash
+  `builtins/set.def:424 set_edit_mode` → `rl_variable_bind("editing-mode")`,
+  rebindkeymap applied immediately by readline `bind.c:2092 sv_editmode`).
+  The product re-reads the engine option flags at every prompt
+  (`Shell::refresh_edit_mode`), rebuilds the Reedline editor on a change,
+  and writes the winner back exclusively, so `set -o vi` → `set -o emacs` →
+  `set -o vi` round-trips and `set -o` listings stay mutually exclusive the
+  way GNU reports them. The rc line `set -o vi` works at startup (the
+  editor is built after the rc resolves the mode). Every fresh line starts
+  in insert mode even in vi mode (readline.c:1243 "Each line starts in
+  insert mode"; reedline keeps ViMode across reads) — a line submitted in
+  normal mode no longer leaves the next prompt in normal mode. The floor
+  prompt renders a minimal theme-neutral vi-mode indicator (`i ` insert /
+  `- ` normal, terminal default color, configurable through
+  `prompt_indicators`); a claimed PS1 keeps the theme's own prompt slot
+  (GNU bash ships no built-in indicator). ESC enters normal mode through
+  reedline's built-in vi parser; normal-mode motions (`k` history recall,
+  `dd` line kill) are covered by ConPTY journeys.
+
 - Release-CI pre-install of external packages via wpm (niubash#189): the
   release workflow installs the packages named in
   `scripts/release/preinstall.json` into the staged WinuxCmd root with

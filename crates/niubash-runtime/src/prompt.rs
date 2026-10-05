@@ -33,12 +33,34 @@ impl Default for PromptIndicators {
         Self {
             default: String::new(),
             emacs: String::new(),
-            vi_insert: String::new(),
-            vi_normal: String::new(),
+            // niubash#184: a minimal, theme-neutral vi-mode indicator pair
+            // (insert / normal, ASCII so the editor's width math is exact
+            // on every terminal). GNU bash itself renders no vi-mode
+            // indicator (readline has no mode display); the pair follows
+            // the `i` / `-` convention of bash vi-mode plugins, and stays
+            // quiet in emacs mode like bash. Configurable through
+            // PromptIndicators (config.shell.prompt_indicators).
+            vi_insert: "i ".to_string(),
+            vi_normal: "- ".to_string(),
             multiline: "> ".to_string(),
             history_search: "(history search) ".to_string(),
             history_search_fail: "(history search) ".to_string(),
         }
+    }
+}
+
+/// The mode indicator for a live reedline edit mode, given the vi pair.
+///
+/// Emacs/default render nothing (bash has no emacs-mode indicator); vi
+/// visual reuses the normal indicator, like reedline's own DefaultPrompt
+/// (prompt/default.rs:64 reuses DEFAULT_VI_NORMAL_PROMPT_INDICATOR for
+/// Visual). Used by the continuation prompt; the template prompt keeps its
+/// configurable `{mode}`-template mapping.
+pub(crate) fn mode_indicator_for(mode: PromptEditMode, vi_insert: &str, vi_normal: &str) -> String {
+    match mode {
+        PromptEditMode::Vi(PromptViMode::Insert) => vi_insert.to_string(),
+        PromptEditMode::Vi(_) => vi_normal.to_string(),
+        _ => String::new(),
     }
 }
 
@@ -313,6 +335,14 @@ impl Prompt for NiubashPrompt {
         };
         Cow::Owned(self.render_history_search_template(template, status, &search.term))
     }
+
+    fn get_indicator_color(&self) -> Color {
+        // Theme-neutral vi-mode indicator: reedline's default paints the
+        // indicator cyan; niubash's floor prompt stays uncolored (the
+        // built-in theme stack is retired, niubash#145), so the "i "/"- "
+        // pair renders in the terminal's default color.
+        Color::Default
+    }
 }
 
 /// Bash-compatible prompt values rendered from PS1/PS2 after the shell has run
@@ -388,6 +418,29 @@ pub enum PromptBackend {
     Bash(BashPrompt),
 }
 
+impl PromptBackend {
+    /// The vi-mode indicator strings a continuation read should carry.
+    ///
+    /// Only the template backend carries configured indicators; the segment
+    /// and claimed-PS1 (Bash) backends render no indicator of their own
+    /// (segments presets own their look; a claimed PS1 means the user's
+    /// theme owns the prompt slot — GNU bash likewise ships no built-in
+    /// indicator, vi-mode plugins add their own into PS1), so those use the
+    /// default pair.
+    pub(crate) fn vi_indicators(&self) -> (String, String) {
+        match self {
+            PromptBackend::Template(prompt) => (
+                prompt.indicators.vi_insert.clone(),
+                prompt.indicators.vi_normal.clone(),
+            ),
+            PromptBackend::Segments(_) | PromptBackend::Bash(_) => {
+                let defaults = PromptIndicators::default();
+                (defaults.vi_insert, defaults.vi_normal)
+            }
+        }
+    }
+}
+
 /// Whether a PS1 value carries Git Bash (MSYS2) session machinery that has no
 /// meaning inside this shell (unixwin/niubash#117).
 ///
@@ -460,6 +513,17 @@ impl Prompt for PromptBackend {
             PromptBackend::Template(p) => p.render_prompt_history_search_indicator(search),
             PromptBackend::Segments(p) => p.render_prompt_history_search_indicator(search),
             PromptBackend::Bash(p) => p.render_prompt_history_search_indicator(search),
+        }
+    }
+
+    fn get_indicator_color(&self) -> Color {
+        // Must reach the backend: the editor renders through this enum, and
+        // the default would paint the vi indicator in reedline's cyan even
+        // though every backend wants the theme-neutral terminal default
+        // (niubash#184).
+        match self {
+            PromptBackend::Template(p) => p.get_indicator_color(),
+            PromptBackend::Segments(_) | PromptBackend::Bash(_) => Color::Default,
         }
     }
 }
@@ -569,18 +633,22 @@ mod tests {
     }
 
     #[test]
-    fn default_indicators_preserve_existing_behavior() {
+    fn default_indicators_render_vi_pair_and_stay_quiet_in_emacs() {
+        // niubash#184: emacs mode stays quiet (bash ships no emacs-mode
+        // indicator); vi insert/normal render the minimal ASCII pair so a
+        // vi user can tell the modes apart (dd before you know the mode is
+        // how edit sessions get destroyed).
         let prompt = NiubashPrompt::new(Some("left> ".to_string()), None);
 
         assert_eq!(prompt.render_prompt_indicator(PromptEditMode::Default), "");
         assert_eq!(prompt.render_prompt_indicator(PromptEditMode::Emacs), "");
         assert_eq!(
             prompt.render_prompt_indicator(PromptEditMode::Vi(PromptViMode::Insert)),
-            ""
+            "i "
         );
         assert_eq!(
             prompt.render_prompt_indicator(PromptEditMode::Vi(PromptViMode::Normal)),
-            ""
+            "- "
         );
         assert_eq!(prompt.render_prompt_multiline_indicator(), "> ");
         assert_eq!(
@@ -589,6 +657,50 @@ mod tests {
                 "git".to_string(),
             )),
             "(history search) "
+        );
+    }
+
+    #[test]
+    fn mode_indicator_for_maps_live_reedline_mode() {
+        // The continuation prompt maps the LIVE PromptEditMode reedline
+        // passes per repaint: ESC inside a multi-line edit must flip the
+        // indicator without extra plumbing.
+        assert_eq!(mode_indicator_for(PromptEditMode::Emacs, "i ", "- "), "");
+        assert_eq!(mode_indicator_for(PromptEditMode::Default, "i ", "- "), "");
+        assert_eq!(
+            mode_indicator_for(PromptEditMode::Vi(PromptViMode::Insert), "i ", "- "),
+            "i "
+        );
+        assert_eq!(
+            mode_indicator_for(PromptEditMode::Vi(PromptViMode::Normal), "i ", "- "),
+            "- "
+        );
+        // Visual reuses the normal indicator (reedline DefaultPrompt does
+        // the same for its defaults).
+        assert_eq!(
+            mode_indicator_for(PromptEditMode::Vi(PromptViMode::Visual), "i ", "- "),
+            "- "
+        );
+    }
+
+    #[test]
+    fn continuation_prompt_carries_vi_indicators() {
+        use crate::repl::ContinuationPrompt;
+
+        let backend = PromptBackend::Template(NiubashPrompt::new(Some("P1> ".into()), None));
+        let continuation = ContinuationPrompt::new(&backend, backend.vi_indicators());
+
+        assert_eq!(
+            continuation.render_prompt_indicator(PromptEditMode::Vi(PromptViMode::Insert)),
+            "i "
+        );
+        assert_eq!(
+            continuation.render_prompt_indicator(PromptEditMode::Vi(PromptViMode::Normal)),
+            "- "
+        );
+        assert_eq!(
+            continuation.render_prompt_indicator(PromptEditMode::Emacs),
+            ""
         );
     }
 

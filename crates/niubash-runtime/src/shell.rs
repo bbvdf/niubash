@@ -106,6 +106,12 @@ pub struct Shell {
     pub history_mode: crate::config::HistoryMode,
     pub menu_config: MenuConfig,
     pub editor_mode: EditorMode,
+    /// Last observed engine `set -o emacs` / `set -o vi` flag pair, used by
+    /// [`Shell::refresh_edit_mode`] to recover which of the two the user
+    /// flipped last (GNU's editing-mode is one shared state; the engine
+    /// stores the two options as independent flags). `None` until the first
+    /// observation.
+    edit_flags_seen: Option<(bool, bool)>,
     pub autosuggest: AutosuggestConfig,
     pub syntax_highlighting: SyntaxHighlightConfig,
     pub native_widgets: NativeWidgetConfig,
@@ -375,6 +381,7 @@ impl Shell {
             history_mode: config.history.mode,
             menu_config: config.menus.with_env_overrides(),
             editor_mode: config.editor.edit_mode,
+            edit_flags_seen: None,
             autosuggest: config.autosuggest.with_env_overrides(),
             syntax_highlighting: config.syntax_highlighting.with_env_overrides(),
             native_widgets,
@@ -1193,6 +1200,107 @@ impl Shell {
             .map(str::to_owned)
             .unwrap_or_default();
         self.user_widget_bindings = crate::repl::parse_user_bindkeys(&value);
+    }
+
+    /// Re-resolve the live editing mode from the engine's `set -o emacs` /
+    /// `set -o vi` flags. Returns `Some(new_mode)` when the effective mode
+    /// changed (the REPL rebuilds the line editor for it), `None` otherwise.
+    ///
+    /// GNU semantics being modeled: `set -o emacs` and `set -o vi` are both
+    /// routed to one editing-mode state — bash's o_options table
+    /// (builtins/set.def:200, set.def:235) gives both entries
+    /// `set_edit_mode` (builtins/set.def:424), which calls
+    /// `rl_variable_bind("editing-mode", ...)` (set.def:427); readline binds
+    /// that variable to `sv_editmode` (lib/readline/bind.c:2001), which
+    /// swaps the active keymap immediately (bind.c:2092
+    /// `_rl_keymap = vi_insertion_keymap` / bind.c:2104
+    /// `emacs_standard_keymap`). The switch is therefore live and
+    /// mid-session: it takes effect at the next prompt, and the last
+    /// `set -o` wins. Neither option is listed in SHELLOPTS
+    /// (rubash set/options.rs `shellopts_includes_option` mirrors GNU's
+    /// exclusion), so the flags live in the engine env under
+    /// `__RUBASH_SETOPT_<name>` (rubash set/options.rs `shell_option_key`).
+    ///
+    /// Because the engine keeps the two flags independent while GNU keeps
+    /// one state, the last writer is recovered by diffing against the
+    /// previously observed pair, and the resolved state is written back
+    /// exclusively (the winner's flag on, the other off) — without that
+    /// normalization the pair would freeze at both-on after
+    /// `set -o emacs` (vi stays flagged on), and a later `set -o vi` could
+    /// never be observed as a change. The write goes through the sanctioned
+    /// `Executor::set_shell_option` (the same mutator the `set` builtin
+    /// uses); emacs/vi are excluded from SHELLOPTS, so the write touches
+    /// only the two option keys and makes `set -o` listings exclusive the
+    /// way GNU reports them. A pair where both flags turned on in one
+    /// inter-prompt gap (`set -o emacs; set -o vi` on a single command
+    /// line) is unrecoverable and resolves to vi — the canonical bashrc
+    /// idiom ends there, and re-asserting emacs is one explicit command
+    /// away. GNU's `set +o <active mode>` disables line editing entirely
+    /// (set.def:433-441 `no_line_editing`); that path is not wired here yet
+    /// — a disable-only flip keeps the current mode instead (documented
+    /// follow-up, niubash#184).
+    ///
+    /// inputrc dependency (niubash#185's lane): GNU also seeds the editing
+    /// mode from readline's `set editing-mode` in INPUTRC (~/.inputrc,
+    /// bound.c:2992), which this product does not read yet. Until that
+    /// surface lands, the startup mode comes from the engine flags alone;
+    /// when #185 adds an inputrc reader, its result must feed the same
+    /// initial observation (the `None` branch below) rather than a second
+    /// resolver.
+    pub fn refresh_edit_mode(&mut self) -> Option<EditorMode> {
+        // Value check mirrors rubash set/options.rs shell_option_enabled:
+        // the key holds "1"/"0" and a missing key falls back to the option
+        // default (both emacs and vi default to off).
+        let emacs_on = self.executor.get_env("__RUBASH_SETOPT_emacs") == Some("1");
+        let vi_on = self.executor.get_env("__RUBASH_SETOPT_vi") == Some("1");
+        let now = (emacs_on, vi_on);
+        let resolved = match self.edit_flags_seen.replace(now) {
+            // First observation (startup, after the rc has run): the bashrc
+            // idiom is `set -o vi`; an emacs-only flag or the all-off
+            // default keeps the configured mode.
+            None => {
+                if vi_on {
+                    EditorMode::Vi
+                } else if emacs_on {
+                    EditorMode::Emacs
+                } else {
+                    return None;
+                }
+            }
+            Some(previous) if previous == now => return None,
+            Some((emacs_was, vi_was)) => {
+                match (emacs_on && !emacs_was, vi_on && !vi_was) {
+                    // Only disables (or no-op `set +o` on the inactive
+                    // option) — no new writer, keep the current mode.
+                    (false, false) => return None,
+                    (true, false) => EditorMode::Emacs,
+                    (false, true) => EditorMode::Vi,
+                    // Both flags flipped within one gap: order unknowable,
+                    // resolved toward vi (see the doc comment above).
+                    (true, true) => EditorMode::Vi,
+                }
+            }
+        };
+        self.normalize_edit_mode(resolved);
+        if resolved == self.editor_mode {
+            None
+        } else {
+            self.editor_mode = resolved;
+            Some(resolved)
+        }
+    }
+
+    /// Write `mode` back to the engine flags exclusively (GNU models emacs
+    /// and vi as views of one editing-mode state, so exactly one is on) and
+    /// sync the observed-pair cache to the written state.
+    fn normalize_edit_mode(&mut self, mode: EditorMode) {
+        let pair = match mode {
+            EditorMode::Emacs => (true, false),
+            EditorMode::Vi => (false, true),
+        };
+        self.executor.set_shell_option("emacs", pair.0);
+        self.executor.set_shell_option("vi", pair.1);
+        self.edit_flags_seen = Some(pair);
     }
 
     /// True when the named widget function exists in the shell engine.
@@ -3176,6 +3284,113 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn refresh_edit_mode_rc_vi_switches_at_startup() {
+        // The standard bashrc line: `set -o vi` before the first prompt.
+        let mut shell = test_shell(HookConfig::default());
+        shell.executor.set_shell_option("vi", true);
+        assert_eq!(shell.refresh_edit_mode(), Some(EditorMode::Vi));
+        assert_eq!(shell.editor_mode, EditorMode::Vi);
+        // The normalization makes the flags exclusive, GNU-style: exactly
+        // one of emacs/vi reads on.
+        assert_eq!(shell.executor.get_env("__RUBASH_SETOPT_vi"), Some("1"));
+        assert_ne!(shell.executor.get_env("__RUBASH_SETOPT_emacs"), Some("1"));
+    }
+
+    #[test]
+    fn refresh_edit_mode_defaults_keep_configured_mode_quiet() {
+        let mut shell = test_shell(HookConfig::default());
+        // No engine flags at all: the configured default (emacs) stands and
+        // no editor rebuild is signaled.
+        assert_eq!(shell.refresh_edit_mode(), None);
+        assert_eq!(shell.editor_mode, EditorMode::Emacs);
+        // An explicit `set -o emacs` is also not a change.
+        shell.executor.set_shell_option("emacs", true);
+        assert_eq!(shell.refresh_edit_mode(), None);
+    }
+
+    #[test]
+    fn refresh_edit_mode_live_flip_cycle_vi_emacs_vi() {
+        // The mission journey: `set -o vi` mid-session, `set -o emacs`
+        // returns, `set -o vi` again — the last writer must win every time
+        // (GNU set.def:424 set_edit_mode rebinds editing-mode live through
+        // readline bind.c:2092 sv_editmode).
+        let mut shell = test_shell(HookConfig::default());
+        shell.executor.set_shell_option("vi", true);
+        assert_eq!(shell.refresh_edit_mode(), Some(EditorMode::Vi));
+
+        shell.executor.set_shell_option("emacs", true);
+        assert_eq!(shell.refresh_edit_mode(), Some(EditorMode::Emacs));
+
+        // Without the exclusive write-back the vi flag would still read on
+        // here and this flip would be invisible — the reason normalization
+        // exists.
+        shell.executor.set_shell_option("vi", true);
+        assert_eq!(shell.refresh_edit_mode(), Some(EditorMode::Vi));
+    }
+
+    #[test]
+    fn refresh_edit_mode_noop_flips_and_disables_keep_mode() {
+        let mut shell = test_shell(HookConfig::default());
+        shell.executor.set_shell_option("vi", true);
+        shell.refresh_edit_mode();
+        // Re-asserting the active mode is not a change.
+        shell.executor.set_shell_option("vi", true);
+        assert_eq!(shell.refresh_edit_mode(), None);
+        // `set +o emacs` while vi is active: GNU's set_edit_mode ignores a
+        // disable of the inactive option (set.def:436-441) — no keymap
+        // change.
+        shell.executor.set_shell_option("emacs", false);
+        assert_eq!(shell.refresh_edit_mode(), None);
+        // An explicit `set -o emacs` is a new writer and must win.
+        shell.executor.set_shell_option("emacs", true);
+        assert_eq!(shell.refresh_edit_mode(), Some(EditorMode::Emacs));
+        shell.executor.set_shell_option("vi", true);
+        assert_eq!(shell.refresh_edit_mode(), Some(EditorMode::Vi));
+        // `set +o <active>` is GNU's line-editing-off path (set.def:433-441,
+        // not wired yet): flags drop to all-off, the mode stands.
+        shell.executor.set_shell_option("vi", false);
+        assert_eq!(shell.refresh_edit_mode(), None);
+        assert_eq!(shell.editor_mode, EditorMode::Vi);
+        // ... and the next explicit writer still lands.
+        shell.executor.set_shell_option("emacs", true);
+        assert_eq!(shell.refresh_edit_mode(), Some(EditorMode::Emacs));
+    }
+
+    #[test]
+    fn refresh_edit_mode_both_on_in_one_gap_resolves_vi() {
+        // `set -o emacs; set -o vi` on one line between prompts: the order
+        // is unrecoverable from the two flags; resolve toward the bashrc
+        // idiom (documented tie-break).
+        let mut shell = test_shell(HookConfig::default());
+        shell.executor.set_shell_option("emacs", true);
+        shell.executor.set_shell_option("vi", true);
+        assert_eq!(shell.refresh_edit_mode(), Some(EditorMode::Vi));
+        // The exclusive write-back re-lands the pair, so the next refresh
+        // is a no-op.
+        assert_eq!(shell.refresh_edit_mode(), None);
+    }
+
+    #[test]
+    fn refresh_edit_mode_engine_listing_stays_exclusive() {
+        // GNU reports emacs/vi as exclusive views of one state
+        // (get_edit_mode, set.def:446-451); after the product normalization
+        // the engine's `set -o` listing must agree.
+        let mut shell = test_shell(HookConfig::default());
+        shell.executor.set_shell_option("vi", true);
+        shell.refresh_edit_mode();
+        shell.executor.set_shell_option("emacs", true);
+        shell.refresh_edit_mode();
+        assert_eq!(shell.executor.get_env("__RUBASH_SETOPT_emacs"), Some("1"));
+        assert_eq!(shell.executor.get_env("__RUBASH_SETOPT_vi"), Some("0"));
+        // SHELLOPTS never carries emacs/vi (rubash mirrors GNU's exclusion,
+        // shellopts_includes_option), so the write-back must not add them.
+        let shelopts = shell.executor.get_env("SHELLOPTS").unwrap_or_default();
+        assert!(!shelopts
+            .split(':')
+            .any(|name| name == "emacs" || name == "vi"));
+    }
+
+    #[test]
     fn compatible_shell_path_env_is_explicit_and_non_empty() {
         let _lock = PROCESS_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -4855,6 +5070,7 @@ niu_git_comp() {
             history_mode: crate::config::HistoryMode::default(),
             menu_config: MenuConfig::default(),
             editor_mode: EditorMode::Emacs,
+            edit_flags_seen: None,
             autosuggest: AutosuggestConfig::default(),
             syntax_highlighting: SyntaxHighlightConfig::default(),
             native_widgets: NativeWidgetConfig::default(),
