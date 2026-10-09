@@ -1,0 +1,69 @@
+name: e2e cat redirect (fork verification — not for upstream)
+
+# Temporary verification workflow: builds niu.exe against the fixed rubash
+# fork branch and reproduces niubash#198 end to end.
+#   before the fix: `cat > out.txt` keeps 745 of 82665 bytes (rc 0)
+#   after  the fix: 82665 bytes
+on:
+  push:
+    branches: ["ci/cat-redirect-e2e"]
+  workflow_dispatch:
+
+jobs:
+  windows-e2e:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout rubash fork (branch with the fix)
+        uses: actions/checkout@v4
+        with:
+          repository: bbvdf/rubash
+          ref: fix/cat-redirect-stream
+          path: rubash
+
+      - name: Checkout niubash (this repo)
+        uses: actions/checkout@v4
+        with:
+          path: niubash
+
+      - name: Show the [patch] layout the build will use
+        shell: pwsh
+        run: |
+          Write-Host "workspace:"; Get-ChildItem .. | Select-Object Name
+          git -C ../rubash log --oneline -1
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1.11
+
+      - name: Build niu.exe against the patched engine
+        working-directory: ../niubash
+        run: cargo build --release --locked
+
+      - name: Reproduce niubash#198 (expect 82665 bytes, not 745)
+        working-directory: ../niubash
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, subprocess, sys
+          payload = b"x" * 82665
+          exe = os.path.join("target", "release", "niu.exe")
+          print("binary:", os.path.abspath(exe), os.path.exists(exe))
+          subprocess.run([exe, "-c", "cat > out.txt"], input=payload, cwd=os.getcwd(), check=True)
+          n = os.path.getsize("out.txt")
+          print("on-disk bytes:", n, "expected:", len(payload))
+          sys.exit(0 if n == len(payload) else 1)
+          PY
+
+      - name: Control legs (append / file redirect) — informational
+        working-directory: ../niubash
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, subprocess
+          payload = b"y" * 82665
+          exe = os.path.join("target", "release", "niu.exe")
+          open("in.txt","wb").write(payload)
+          for cmd, out in (("cat >> app.txt", "app.txt"), ("cat < in.txt > fromfile.txt", "fromfile.txt")):
+              subprocess.run([exe, "-c", cmd], input=payload, cwd=os.getcwd(), check=True)
+              print(f"{cmd:28s} -> {os.path.getsize(out)} bytes")
+          PY
