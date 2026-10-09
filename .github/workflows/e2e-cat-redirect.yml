@@ -54,6 +54,14 @@ jobs:
           sys.exit(0 if n == len(payload) else 1)
           PY
 
+      - name: Upload the patched niu.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: niu-fixed-cat-redirect
+          path: niubash/target/release/niu.exe
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Control legs (append / file redirect) — informational
         working-directory: niubash
         shell: bash
