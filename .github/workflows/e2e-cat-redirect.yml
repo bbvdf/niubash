@@ -67,3 +67,40 @@ jobs:
               subprocess.run([exe, "-c", cmd], input=payload, cwd=os.getcwd(), check=True)
               print(f"{cmd:28s} -> {os.path.getsize(out)} bytes")
           PY
+
+  windows-baseline:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout rubash UPSTREAM master (no fix)
+        uses: actions/checkout@v4
+        with:
+          repository: unixwin/rubash
+          ref: master
+          path: rubash
+
+      - name: Checkout niubash (this repo)
+        uses: actions/checkout@v4
+        with:
+          path: niubash
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1.11
+
+      - name: Build niu.exe against upstream master
+        working-directory: niubash
+        run: cargo build --release --locked
+
+      - name: Reproduce niubash#198 on the unpatched engine (expect a tail fragment)
+        working-directory: niubash
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, subprocess, sys
+          payload = b"x" * 82665
+          exe = os.path.join("target", "release", "niu.exe")
+          subprocess.run([exe, "-c", "cat > out.txt"], input=payload, cwd=os.getcwd(), check=True)
+          n = os.path.getsize("out.txt")
+          print("baseline on-disk bytes:", n, "expected(bug): a tail fragment, not", len(payload))
+          sys.exit(0 if n != len(payload) else 1)
+          PY
