@@ -29,18 +29,18 @@ jobs:
       - name: Show the [patch] layout the build will use
         shell: pwsh
         run: |
-          Write-Host "workspace:"; Get-ChildItem .. | Select-Object Name
-          git -C ../rubash log --oneline -1
+          Get-ChildItem . | Select-Object Name
+          git -C rubash log --oneline -1
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1.11
 
       - name: Build niu.exe against the patched engine
-        working-directory: ../niubash
+        working-directory: niubash
         run: cargo build --release --locked
 
       - name: Reproduce niubash#198 (expect 82665 bytes, not 745)
-        working-directory: ../niubash
+        working-directory: niubash
         shell: bash
         run: |
           python - <<'PY'
@@ -55,7 +55,7 @@ jobs:
           PY
 
       - name: Control legs (append / file redirect) — informational
-        working-directory: ../niubash
+        working-directory: niubash
         shell: bash
         run: |
           python - <<'PY'
